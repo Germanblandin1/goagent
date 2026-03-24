@@ -1,0 +1,122 @@
+package goagent
+
+import (
+	"context"
+	"strings"
+)
+
+// ShortTermMemory manages the active conversation history for an Agent.
+// It is used to maintain context across multiple Run calls within a session.
+// Implementations must be safe for concurrent use.
+type ShortTermMemory interface {
+	// Messages returns the messages to include in the next provider request,
+	// with the configured read policy applied (e.g. FixedWindow, TokenWindow).
+	// The returned slice is a defensive copy; callers may modify it freely.
+	Messages(ctx context.Context) ([]Message, error)
+
+	// Append adds msgs to the store in the order provided.
+	// Filtering occurs at read time (Messages), never at write time.
+	Append(ctx context.Context, msgs ...Message) error
+}
+
+// LongTermMemory stores and retrieves messages across sessions by semantic
+// relevance. Unlike ShortTermMemory, retrieval is similarity-based, not
+// positional — the store may contain thousands of messages but only the most
+// relevant ones are surfaced on each Run.
+// Implementations must be safe for concurrent use.
+type LongTermMemory interface {
+	// Store persists msgs for future retrieval.
+	Store(ctx context.Context, msgs ...Message) error
+
+	// Retrieve returns the topK messages most semantically similar to the
+	// given content. The full []ContentBlock is passed so that embedder
+	// implementations that support vision or documents can build a meaningful
+	// query vector even when the prompt contains no text.
+	Retrieve(ctx context.Context, query []ContentBlock, topK int) ([]Message, error)
+}
+
+// WritePolicy decides what to persist after a completed turn. It is called
+// once per Run after the final answer is produced.
+//
+// Returning nil discards the turn — nothing is written to long-term memory.
+// Returning a non-nil slice (even an empty one) stores exactly those messages.
+//
+// This design lets policies both filter and transform: a policy may return the
+// original user+assistant pair unchanged (like StoreAlways), a condensed single
+// message (like a summarising judge agent), or any custom set of messages.
+//
+// prompt is the user Message that opened the turn (may contain images,
+// documents, or other multimodal blocks). response is the final assistant
+// Message. Both are passed in full so policies can inspect or forward binary
+// content without losing it.
+type WritePolicy func(prompt, response Message) []Message
+
+// StoreAlways is a WritePolicy that persists every turn as the original
+// user+assistant message pair. It is the default when WithLongTermMemory is
+// configured without an explicit WritePolicy.
+var StoreAlways WritePolicy = func(p, r Message) []Message {
+	return []Message{p, r}
+}
+
+// MinLength returns a WritePolicy that stores the original user+assistant pair
+// only when the combined character count of their text content exceeds n.
+// Returns nil (discard) when the combined length is n or fewer characters.
+// Useful for filtering out trivial exchanges ("ok", "gracias", "seguí") that
+// add noise to the long-term store without carrying durable information.
+func MinLength(n int) WritePolicy {
+	return func(p, r Message) []Message {
+		if len(p.TextContent())+len(r.TextContent()) <= n {
+			return nil
+		}
+		return []Message{p, r}
+	}
+}
+
+// VectorStore stores (message, embedding) pairs and supports similarity search.
+// This module does not ship a VectorStore implementation; the caller must
+// supply one (e.g. a pgvector client, a Chroma adapter, or an in-process
+// approximate nearest-neighbour store).
+type VectorStore interface {
+	// Upsert stores or updates a message with its embedding vector.
+	// id must be a stable identifier for the message (e.g. content hash).
+	Upsert(ctx context.Context, id string, vector []float32, msg Message) error
+
+	// Search returns the topK messages most similar to the given vector.
+	Search(ctx context.Context, vector []float32, topK int) ([]Message, error)
+}
+
+// Embedder converts message content into a dense vector representation
+// suitable for semantic similarity search. Implementations receive the full
+// []ContentBlock so they can handle text, image, and document blocks natively
+// — for example, by routing ContentImage blocks to a vision embedding model.
+//
+// The vector for a given content slice must be consistent across calls
+// (deterministic given the same model and input).
+//
+// Use TextFrom to extract and concatenate all text blocks in implementations
+// that only support text.
+type Embedder interface {
+	Embed(ctx context.Context, content []ContentBlock) ([]float32, error)
+}
+
+// TextFrom extracts and concatenates the text from a slice of ContentBlocks.
+// Non-text blocks are ignored. Adjacent text values are separated by a space.
+//
+// Intended as a convenience for Embedder implementations that only handle
+// text:
+//
+//	func (e *myEmbedder) Embed(ctx context.Context, content []goagent.ContentBlock) ([]float32, error) {
+//	    return e.client.Embed(ctx, goagent.TextFrom(content))
+//	}
+func TextFrom(blocks []ContentBlock) string {
+	var b strings.Builder
+	for _, block := range blocks {
+		if block.Type == ContentText {
+			if b.Len() > 0 {
+				b.WriteByte(' ')
+			}
+			b.WriteString(block.Text)
+		}
+	}
+	return b.String()
+}
