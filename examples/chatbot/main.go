@@ -36,6 +36,11 @@ func main() {
 		goagent.WithModel("gpt-oss:120b-cloud"),
 		goagent.WithShortTermMemory(mem),
 		goagent.WithSystemPrompt("You are a helpful and concise assistant. Your name is GoAgentBot."),
+		goagent.WithHooks(goagent.Hooks{
+			OnThinking: func(text string) {
+				fmt.Printf("\033[90m💭 %s\033[0m\n\n", text)
+			},
+		}),
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
