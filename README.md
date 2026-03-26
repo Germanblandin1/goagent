@@ -63,6 +63,31 @@ goagent/                      Core — Agent, ReAct loop, interfaces
     └── testutil/             Shared mocks for Provider, Tool, Memory
 ```
 
+### Component diagram
+
+```
+                         ┌─────────────────────────────┐
+   prompt ──────────────▶│           Agent              │
+   answer ◀──────────────│        (ReAct loop)          │
+                         └──────┬──────────┬────────────┘
+                                │          │
+                  ┌─────────────▼──┐  ┌────▼─────────────────────────┐
+                  │    Provider    │  │            Hooks              │
+                  │────────────────│  │───────────────────────────────│
+                  │ anthropic      │  │ OnIterationStart  OnThinking  │
+                  │ ollama         │  │ OnToolCall        OnResponse  │
+                  └────────────────┘  │ OnToolResult                 │
+                                      └──────────────────────────────┘
+          ┌───────────────────────────────────────────────────────┐
+          │                     Memory (optional)                 │
+          │  ShortTerm (storage + policy)   LongTerm (vector)    │
+          └───────────────────────────────────────────────────────┘
+                  ┌──────────────────────────────────┐
+                  │      Tools (zero or more)         │
+                  │  ToolFunc  ToolBlocksFunc  custom │
+                  └──────────────────────────────────┘
+```
+
 ## Concepts
 
 ### ReAct loop
@@ -70,7 +95,26 @@ goagent/                      Core — Agent, ReAct loop, interfaces
 `Agent.Run` alternates between calling the model and dispatching tool calls until the model produces a final answer, the context is cancelled, or the iteration budget is exhausted.
 
 ```
-prompt → [model] → tool calls → [tools] → observations → [model] → ... → answer
+                    ┌──────────────────────┐
+                    │        prompt        │
+                    └──────────┬───────────┘
+                               │
+                    ┌──────────▼───────────┐
+             ┌─────▶│        model         │◀── OnIterationStart
+             │      └──────────┬───────────┘
+             │                 │
+             │      ┌──────────▼───────────────────────┐
+             │      │    response has tool calls?       │
+             │      └──────────┬────────────┬───────────┘
+             │                yes           no
+             │      ┌──────────▼──────┐  ┌──▼─────────────┐
+             │      │ dispatch tools  │  │     answer      │
+             │      │  (concurrent)   │  │    (return)     │
+             │      │  OnToolCall     │  └────────────────-┘
+             │      │  OnToolResult   │       OnResponse
+             │      └──────────┬──────┘
+             │                 │
+             └─────────────────┘  (next iteration)
 ```
 
 ### Tools
@@ -192,6 +236,76 @@ answer, err := agent.RunBlocks(ctx,
 )
 ```
 
+### Extended thinking
+
+Extended thinking lets supported models reason internally before responding. Thinking blocks are visible via the `OnThinking` hook and are preserved during the loop (required by the API) but stripped before writing to memory.
+
+```go
+// Fixed token budget — recommended for most tasks
+agent := goagent.New(
+    goagent.WithProvider(anthropic.New()),
+    goagent.WithModel("claude-sonnet-4-6"),
+    goagent.WithThinking(10_000),  // 4 000–32 000 tokens depending on complexity
+)
+
+// Adaptive mode — model decides how much to reason
+agent := goagent.New(
+    goagent.WithProvider(anthropic.New()),
+    goagent.WithModel("claude-sonnet-4-6"),
+    goagent.WithAdaptiveThinking(),
+)
+```
+
+Ollama captures reasoning from the `reasoning` field or `<think>…</think>` tags automatically; no configuration needed.
+
+### Effort
+
+Effort controls the model's overall computational investment, affecting text quality, tool-call accuracy, and reasoning depth. It is orthogonal to thinking — both can be combined freely.
+
+```go
+agent := goagent.New(
+    goagent.WithProvider(anthropic.New()),
+    goagent.WithModel("claude-sonnet-4-6"),
+    goagent.WithEffort("medium"),  // "high" | "medium" | "low" | "" (model default)
+)
+```
+
+### Observability hooks
+
+Hooks provide synchronous callbacks for observing ReAct loop events without modifying agent behaviour. The zero-value `Hooks{}` is a complete no-op — only set what you need.
+
+```go
+agent := goagent.New(
+    goagent.WithProvider(ollama.New()),
+    goagent.WithModel("qwen3"),
+    goagent.WithHooks(goagent.Hooks{
+        OnIterationStart: func(iteration int) {
+            fmt.Printf("── iteration %d ──\n", iteration+1)
+        },
+        OnThinking: func(text string) {
+            fmt.Printf("\033[90m💭 %s\033[0m\n", text)  // grey
+        },
+        OnToolCall: func(name string, args map[string]any) {
+            fmt.Printf("→ %s(%v)\n", name, args)
+        },
+        OnToolResult: func(name string, _ []goagent.ContentBlock, d time.Duration, err error) {
+            fmt.Printf("← %s in %s (err=%v)\n", name, d, err)
+        },
+        OnResponse: func(text string, iterations int) {
+            fmt.Printf("done in %d iteration(s)\n", iterations)
+        },
+    }),
+)
+```
+
+| Hook | When fired |
+|---|---|
+| `OnIterationStart` | Before each call to the model (0-indexed) |
+| `OnThinking` | Once per thinking block in the model response |
+| `OnToolCall` | Before each tool is dispatched |
+| `OnToolResult` | After each tool completes, with duration and optional error |
+| `OnResponse` | Before `Run` returns, even on `MaxIterationsError` (iterations is 1-indexed) |
+
 ## Configuration options
 
 | Option | Default | Description |
@@ -201,6 +315,10 @@ answer, err := agent.RunBlocks(ctx,
 | `WithTool(t)` | — | Register a tool (repeatable) |
 | `WithSystemPrompt(s)` | — | System-level instruction for every run |
 | `WithMaxIterations(n)` | `10` | Maximum ReAct iterations before giving up |
+| `WithThinking(budgetTokens)` | — | Enable extended thinking with a fixed token budget (4 000–32 000) |
+| `WithAdaptiveThinking()` | — | Enable extended thinking in adaptive mode (model chooses budget) |
+| `WithEffort(level)` | `""` | Output-effort level: `"high"`, `"medium"`, `"low"`, or `""` (model default) |
+| `WithHooks(h)` | — | Observability callbacks for ReAct loop events |
 | `WithShortTermMemory(m)` | — | Conversation history between runs |
 | `WithLongTermMemory(m)` | — | Semantic retrieval across sessions |
 | `WithWritePolicy(p)` | `StoreAlways` | Controls what gets persisted to long-term memory |

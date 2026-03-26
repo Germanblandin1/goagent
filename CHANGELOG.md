@@ -5,7 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.2] - 2026-03-26
+
+### Added
+
+**Extended thinking (`goagent`)**
+- `WithThinking(budgetTokens int)` — enables extended thinking with a fixed token budget; recommended range 4 000–32 000 tokens depending on task complexity
+- `WithAdaptiveThinking()` — enables extended thinking in adaptive mode; the model decides how much to reason; preferred for budgets above 32 000 tokens
+- `ThinkingConfig` struct in `CompletionRequest` carries the configuration to the provider
+- `ContentThinking` content type and `ThinkingData` struct expose thinking blocks in responses; `ThinkingBlock(thinking, signature)` helper constructs one
+- Thinking blocks are preserved during the ReAct loop (required by the Anthropic API for multi-turn interactions) and stripped before persisting to short-term memory
+
+**Effort (`goagent`)**
+- `WithEffort(level string)` — sets the model's output-effort level; accepted values: `"high"`, `"medium"`, `"low"`, or `""` (model default); affects text quality, tool-call accuracy, and reasoning depth; orthogonal to thinking
+
+**Observability hooks (`goagent`)**
+- `Hooks` struct with five optional, nil-safe callbacks: `OnIterationStart`, `OnThinking`, `OnToolCall`, `OnToolResult`, `OnResponse`
+- `WithHooks(h Hooks)` agent option to register hooks; zero-value `Hooks{}` is a complete no-op
+- `OnIterationStart(iteration int)` — fired at the start of each ReAct iteration (0-indexed)
+- `OnThinking(text string)` — fired once per thinking block when the model produces extended thinking
+- `OnToolCall(name string, args map[string]any)` — fired before each tool execution
+- `OnToolResult(name string, content []ContentBlock, duration time.Duration, err error)` — fired after each tool execution with timing and optional error
+- `OnResponse(text string, iterations int)` — fired before `Run` returns, including on `MaxIterationsError`; `iterations` is 1-indexed
+- `ToolResult.Duration` field records tool execution time; zero only when the tool was not found
+
+**Anthropic provider (`goagent/providers/anthropic`)**
+- Extended thinking: translates `ThinkingConfig` to SDK params; parses `"thinking"` and `"redacted_thinking"` response blocks; echoes thinking blocks back in subsequent turns
+- Effort: translates `CompletionRequest.Effort` to `OutputConfig` SDK param
+
+**Ollama provider (`goagent/providers/ollama`)**
+- Captures reasoning from the `reasoning` field in the Ollama HTTP response (newer Ollama builds)
+- Falls back to parsing `<think>…</think>` tags from text content when the `reasoning` field is absent
+- Thinking blocks are not echoed back to local models (not required by Ollama)
+
+**Examples**
+- `examples/chatbot`: uses `OnThinking` hook to display model reasoning in grey text in the terminal
 
 ## [0.1.1] - 2026-03-21
 
@@ -73,5 +107,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Mock implementations in `internal/testutil` (`MockProvider`, `MockTool`, `MockMemory`)
 - Full test suite with race-detector coverage (`go test -race`)
 
-[0.1.1]: https://github.com/Germanblandin1/goagent/releases/tag/v0.1.1
-[0.1.0]: https://github.com/Germanblandin1/goagent/releases/tag/v0.1.0
