@@ -3,10 +3,12 @@
 package ollama
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -18,7 +20,8 @@ const defaultBaseURL = "http://localhost:11434/v1"
 
 // Provider implements goagent.Provider using Ollama's OpenAI-compatible endpoint.
 type Provider struct {
-	client *openai.Client
+	baseURL    string
+	httpClient *http.Client
 }
 
 // Option is a functional option for configuring a Provider.
@@ -29,24 +32,43 @@ type Option func(*Provider)
 // Use this option when Ollama runs on a different host or port, or when
 // targeting a remote Ollama instance.
 func WithBaseURL(url string) Option {
-	return func(p *Provider) {
-		cfg := openai.DefaultConfig("ollama")
-		cfg.BaseURL = url
-		p.client = openai.NewClientWithConfig(cfg)
-	}
+	return func(p *Provider) { p.baseURL = url }
 }
 
 // New creates a Provider connecting to Ollama at the default base URL.
 // The model is set at the agent level via goagent.WithModel.
 func New(opts ...Option) *Provider {
-	cfg := openai.DefaultConfig("ollama") // Ollama does not validate the token.
-	cfg.BaseURL = defaultBaseURL
-
-	p := &Provider{client: openai.NewClientWithConfig(cfg)}
+	p := &Provider{
+		baseURL:    defaultBaseURL,
+		httpClient: &http.Client{},
+	}
 	for _, opt := range opts {
 		opt(p)
 	}
 	return p
+}
+
+// ollamaMessage is a raw Ollama API message that captures the reasoning field
+// which the go-openai SDK silently drops.
+type ollamaMessage struct {
+	Role       string          `json:"role"`
+	Content    string          `json:"content"`
+	Reasoning  string          `json:"reasoning,omitempty"` // Ollama-specific thinking field
+	ToolCalls  []openai.ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+}
+
+type ollamaChoice struct {
+	Message      ollamaMessage       `json:"message"`
+	FinishReason openai.FinishReason `json:"finish_reason"`
+}
+
+type ollamaResponse struct {
+	Choices []ollamaChoice `json:"choices"`
+	Usage   struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage"`
 }
 
 // Complete sends a chat completion request to the Ollama API and returns the
@@ -66,13 +88,13 @@ func New(opts ...Option) *Provider {
 // error is returned wrapped as "ollama completion: <cause>". A connection
 // refused error typically means Ollama is not running on the configured URL.
 func (p *Provider) Complete(ctx context.Context, req goagent.CompletionRequest) (goagent.CompletionResponse, error) {
+	if req.Model == "" {
+		return goagent.CompletionResponse{}, fmt.Errorf("ollama: model not set; use goagent.WithModel")
+	}
+
 	messages, err := toOpenAIMessages(req)
 	if err != nil {
 		return goagent.CompletionResponse{}, fmt.Errorf("building messages: %w", err)
-	}
-
-	if req.Model == "" {
-		return goagent.CompletionResponse{}, fmt.Errorf("ollama: model not set; use goagent.WithModel")
 	}
 
 	chatReq := openai.ChatCompletionRequest{
@@ -85,9 +107,37 @@ func (p *Provider) Complete(ctx context.Context, req goagent.CompletionRequest) 
 		chatReq.ToolChoice = "auto"
 	}
 
-	resp, err := p.client.CreateChatCompletion(ctx, chatReq)
+	body, err := json.Marshal(chatReq)
+	if err != nil {
+		return goagent.CompletionResponse{}, fmt.Errorf("ollama: marshaling request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return goagent.CompletionResponse{}, fmt.Errorf("ollama: creating request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpResp, err := p.httpClient.Do(httpReq)
 	if err != nil {
 		return goagent.CompletionResponse{}, fmt.Errorf("ollama completion: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode != http.StatusOK {
+		var errBody struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(httpResp.Body).Decode(&errBody)
+		if errBody.Error != "" {
+			return goagent.CompletionResponse{}, fmt.Errorf("ollama completion: status %d: %s", httpResp.StatusCode, errBody.Error)
+		}
+		return goagent.CompletionResponse{}, fmt.Errorf("ollama completion: status %d", httpResp.StatusCode)
+	}
+
+	var resp ollamaResponse
+	if err := json.NewDecoder(httpResp.Body).Decode(&resp); err != nil {
+		return goagent.CompletionResponse{}, fmt.Errorf("ollama: decoding response: %w", err)
 	}
 
 	return toGoAgentResponse(resp)
@@ -224,15 +274,31 @@ func toOpenAITools(defs []goagent.ToolDefinition) []openai.Tool {
 	return out
 }
 
-func toGoAgentResponse(resp openai.ChatCompletionResponse) (goagent.CompletionResponse, error) {
+func toGoAgentResponse(resp ollamaResponse) (goagent.CompletionResponse, error) {
 	if len(resp.Choices) == 0 {
 		return goagent.CompletionResponse{}, fmt.Errorf("ollama: empty choices in response")
 	}
 
 	choice := resp.Choices[0]
+
+	// Build content blocks. The reasoning field takes priority over <think>
+	// tags in the content text — some Ollama models use one mechanism, some
+	// use the other, and some use both. We avoid duplicating the thinking.
+	var content []goagent.ContentBlock
+	if choice.Message.Reasoning != "" {
+		// Model returned thinking in the dedicated reasoning field.
+		content = append(content, goagent.ThinkingBlock(strings.TrimSpace(choice.Message.Reasoning), ""))
+		if text := strings.TrimSpace(choice.Message.Content); text != "" {
+			content = append(content, goagent.TextBlock(text))
+		}
+	} else {
+		// Fall back to parsing <think>...</think> tags from the content text.
+		content = parseThinkingFromText(choice.Message.Content)
+	}
+
 	msg := goagent.Message{
 		Role:    goagent.RoleAssistant,
-		Content: parseThinkingFromText(choice.Message.Content),
+		Content: content,
 	}
 
 	for _, tc := range choice.Message.ToolCalls {
