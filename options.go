@@ -15,6 +15,8 @@ type options struct {
 	longTermTopK   int
 	traceTools     bool
 	logger         *slog.Logger
+	thinking       *ThinkingConfig
+	effort         string
 }
 
 // Option is a functional option for configuring an Agent.
@@ -99,6 +101,52 @@ func WithShortTermTraceTools(include bool) Option {
 // WithLogger sets the structured logger used for debug output.
 func WithLogger(l *slog.Logger) Option {
 	return func(o *options) { o.logger = l }
+}
+
+// WithThinking enables extended thinking with a fixed token budget.
+// The model uses up to budgetTokens tokens for internal reasoning before
+// responding or invoking a tool.
+//
+// Minimum: 1024 tokens. Recommended ranges:
+//   - Simple tasks: 4 000–8 000
+//   - Complex tasks (math, code): 10 000–16 000
+//   - Deep reasoning: 16 000–32 000
+//
+// For budgets above 32 000 tokens, consider WithAdaptiveThinking instead.
+// Supported models: claude-sonnet-4-6, claude-opus-4-6, claude-sonnet-3-7,
+// claude-opus-4, claude-opus-4-5.
+func WithThinking(budgetTokens int) Option {
+	return func(o *options) {
+		o.thinking = &ThinkingConfig{Enabled: true, BudgetTokens: budgetTokens}
+	}
+}
+
+// WithAdaptiveThinking enables thinking in adaptive mode: the model decides
+// how much to reason based on the complexity of each prompt.
+// Recommended for claude-opus-4-6 and claude-sonnet-4-6.
+//
+// On models that do not support adaptive mode, the provider may fall back to
+// a manual budget.
+func WithAdaptiveThinking() Option {
+	return func(o *options) {
+		o.thinking = &ThinkingConfig{Enabled: true, BudgetTokens: 0}
+	}
+}
+
+// WithEffort controls the overall effort the model puts into its response,
+// affecting text quality, tool call accuracy, and reasoning depth.
+//
+// Valid values:
+//   - "high":   maximum effort — equivalent to the model's default behaviour.
+//   - "medium": balanced quality and cost — suitable for most tasks.
+//   - "low":    faster and cheaper responses — best for simple classification
+//     or extraction tasks.
+//
+// Effort and thinking are orthogonal and can be combined freely.
+// Supported models: claude-opus-4-6, claude-sonnet-4-6, claude-opus-4-5.
+// Models that do not support effort silently ignore this setting.
+func WithEffort(level string) Option {
+	return func(o *options) { o.effort = level }
 }
 
 // defaults returns the baseline options before any Option is applied.

@@ -139,3 +139,75 @@ func TestHasContentType(t *testing.T) {
 		}
 	})
 }
+
+func TestThinkingBlock(t *testing.T) {
+	t.Parallel()
+
+	b := goagent.ThinkingBlock("the reasoning", "sig123")
+
+	if b.Type != goagent.ContentThinking {
+		t.Errorf("Type = %q, want %q", b.Type, goagent.ContentThinking)
+	}
+	if b.Thinking == nil {
+		t.Fatal("Thinking field is nil")
+	}
+	if b.Thinking.Thinking != "the reasoning" {
+		t.Errorf("Thinking.Thinking = %q, want %q", b.Thinking.Thinking, "the reasoning")
+	}
+	if b.Thinking.Signature != "sig123" {
+		t.Errorf("Thinking.Signature = %q, want %q", b.Thinking.Signature, "sig123")
+	}
+	// Other fields must be zero value.
+	if b.Text != "" || b.Image != nil || b.Document != nil {
+		t.Error("non-thinking fields should be zero value")
+	}
+}
+
+func TestThinkingBlock_EmptySignature(t *testing.T) {
+	t.Parallel()
+
+	// Local models (Ollama) produce thinking blocks without a signature.
+	b := goagent.ThinkingBlock("local reasoning", "")
+	if b.Thinking == nil {
+		t.Fatal("Thinking field is nil")
+	}
+	if b.Thinking.Signature != "" {
+		t.Errorf("Signature = %q, want empty string", b.Thinking.Signature)
+	}
+}
+
+func TestTextContent_IgnoresThinkingBlocks(t *testing.T) {
+	t.Parallel()
+
+	msg := goagent.Message{
+		Role: goagent.RoleAssistant,
+		Content: []goagent.ContentBlock{
+			goagent.ThinkingBlock("internal reasoning", "sig"),
+			goagent.TextBlock("final answer"),
+		},
+	}
+
+	got := msg.TextContent()
+	if got != "final answer" {
+		t.Errorf("TextContent() = %q, want %q", got, "final answer")
+	}
+}
+
+func TestHasContentType_Thinking(t *testing.T) {
+	t.Parallel()
+
+	msg := goagent.Message{
+		Role: goagent.RoleAssistant,
+		Content: []goagent.ContentBlock{
+			goagent.ThinkingBlock("reasoning", "sig"),
+			goagent.TextBlock("answer"),
+		},
+	}
+
+	if !msg.HasContentType(goagent.ContentThinking) {
+		t.Error("HasContentType(ContentThinking) = false, want true")
+	}
+	if !msg.HasContentType(goagent.ContentText) {
+		t.Error("HasContentType(ContentText) = false, want true")
+	}
+}

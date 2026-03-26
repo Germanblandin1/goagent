@@ -16,19 +16,30 @@ const (
 	// ContentDocument indicates the block contains a document.
 	// Supported formats: PDF, plain text.
 	ContentDocument ContentType = "document"
+
+	// ContentThinking indicates the block contains the model's internal
+	// reasoning produced before the final response or a tool call.
+	// The text may be a summary (Claude 4+) or the full chain-of-thought
+	// (Claude Sonnet 3.7, local models).
+	//
+	// Thinking blocks are produced by the model and must not be constructed
+	// by callers except when echoing them back to the provider (which the
+	// Agent does automatically). Use ThinkingBlock to build one if needed.
+	ContentThinking ContentType = "thinking"
 )
 
 // ContentBlock represents a unit of content within a message.
-// Exactly one of Text, Image, or Document is valid depending on the value
-// of Type. The others are zero value.
+// Exactly one of Text, Image, Document, or Thinking is valid depending on
+// the value of Type. The others are zero value.
 //
-// Use the helpers Text, Image, and Document to construct content blocks
-// instead of building the struct directly.
+// Use the helpers TextBlock, ImageBlock, DocumentBlock, and ThinkingBlock
+// to construct content blocks instead of building the struct directly.
 type ContentBlock struct {
 	Type     ContentType
 	Text     string
 	Image    *ImageData
 	Document *DocumentData
+	Thinking *ThinkingData
 }
 
 // ImageData holds an image to send to the model.
@@ -51,6 +62,22 @@ type DocumentData struct {
 	MediaType string // MIME type: "application/pdf", "text/plain"
 	Data      []byte // raw document content
 	Title     string // optional — gives the model context about the document
+}
+
+// ThinkingData holds the model's internal reasoning produced during extended
+// thinking. The Agent preserves this data within a turn so the provider can
+// echo it back to the API (required by Anthropic for thinking continuity).
+//
+// Thinking is the reasoning text — may be a summary in Claude 4+ or the
+// full chain-of-thought in Claude Sonnet 3.7 and local models.
+//
+// Signature is the opaque cryptographic token issued by the Anthropic API to
+// verify the block's authenticity. It must be echoed back unchanged and must
+// never be logged, inspected, or modified. For local models (Ollama) that do
+// not use this mechanism, Signature is an empty string.
+type ThinkingData struct {
+	Thinking  string
+	Signature string
 }
 
 // validImageTypes lists the MIME types accepted for image content.
@@ -100,6 +127,16 @@ func DocumentBlock(data []byte, mediaType, title string) ContentBlock {
 	return ContentBlock{
 		Type:     ContentDocument,
 		Document: &DocumentData{MediaType: mediaType, Data: data, Title: title},
+	}
+}
+
+// ThinkingBlock creates a ContentBlock that carries the model's internal
+// reasoning. signature is the opaque cryptographic token from the Anthropic
+// API; pass an empty string for local models that do not use this mechanism.
+func ThinkingBlock(thinking, signature string) ContentBlock {
+	return ContentBlock{
+		Type:     ContentThinking,
+		Thinking: &ThinkingData{Thinking: thinking, Signature: signature},
 	}
 }
 

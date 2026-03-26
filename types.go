@@ -87,6 +87,22 @@ func (s StopReason) String() string {
 	}
 }
 
+// ThinkingConfig configures the model's extended thinking mode.
+//
+// Manual mode: Enabled true, BudgetTokens > 0.
+// The model uses up to BudgetTokens tokens for internal reasoning before
+// responding or invoking a tool. Minimum: 1024 tokens.
+//
+// Adaptive mode: Enabled true, BudgetTokens 0.
+// The model decides how much to reason based on prompt complexity.
+// Recommended for Opus 4.6 and Sonnet 4.6.
+//
+// Disabled: Enabled false (or nil pointer in CompletionRequest).
+type ThinkingConfig struct {
+	Enabled      bool
+	BudgetTokens int
+}
+
 // CompletionRequest is the input to a provider's Complete call.
 type CompletionRequest struct {
 	// Model is the exact model identifier forwarded to the provider
@@ -110,6 +126,19 @@ type CompletionRequest struct {
 	// Nil or empty means no tool use is available for this request.
 	// Providers must not error when this field is nil.
 	Tools []ToolDefinition
+
+	// Thinking configures extended thinking for this request.
+	// nil means thinking is disabled (default behaviour).
+	// Providers that do not support thinking must ignore this field.
+	Thinking *ThinkingConfig
+
+	// Effort controls the overall effort the model puts into its response,
+	// affecting text, tool calls, and thinking (when enabled).
+	// Valid values: "high", "medium", "low". Empty string means the model's
+	// default (equivalent to "high"). Thinking and Effort are orthogonal —
+	// each can be set independently.
+	// Providers that do not support effort must ignore this field.
+	Effort string
 }
 
 // CompletionResponse is the output from a provider's Complete call.

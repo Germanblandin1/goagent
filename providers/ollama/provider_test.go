@@ -268,3 +268,169 @@ func TestProvider_DocumentContent_ReturnsUnsupportedError(t *testing.T) {
 		t.Errorf("expected ErrUnsupportedContent, got: %v", err)
 	}
 }
+
+// ── Extended Thinking (Ollama) ───────────────────────────────────────────────
+
+func TestProvider_ParseThinkingFromText(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		responseContent string
+		wantThinking    string // empty = no thinking block expected
+		wantText        string
+	}{
+		{
+			name:            "think tags with reasoning and answer",
+			responseContent: "<think>I need to add</think>The answer is 4",
+			wantThinking:    "I need to add",
+			wantText:        "The answer is 4",
+		},
+		{
+			name:            "no think tags — plain text",
+			responseContent: "just a plain answer",
+			wantThinking:    "",
+			wantText:        "just a plain answer",
+		},
+		{
+			name:            "unclosed think tag — treat all as text",
+			responseContent: "<think>unclosed reasoning",
+			wantThinking:    "",
+			wantText:        "<think>unclosed reasoning",
+		},
+		{
+			name:            "empty think tags — no thinking block, text preserved",
+			responseContent: "<think></think>the answer",
+			wantThinking:    "",
+			wantText:        "the answer",
+		},
+		{
+			name:            "thinking only, no text after",
+			responseContent: "<think>pure reasoning</think>",
+			wantThinking:    "pure reasoning",
+			wantText:        "",
+		},
+		{
+			name:            "whitespace trimmed in thinking and text",
+			responseContent: "<think>  spaced reasoning  </think>  spaced answer  ",
+			wantThinking:    "spaced reasoning",
+			wantText:        "spaced answer",
+		},
+		{
+			name:            "empty response",
+			responseContent: "",
+			wantThinking:    "",
+			wantText:        "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			body := `{"choices":[{"message":{"role":"assistant","content":` +
+				jsonString(tt.responseContent) +
+				`},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`
+
+			srv := fakeServer(t, body)
+			p := ollama.New(ollama.WithBaseURL(srv.URL + "/v1"))
+
+			resp, err := p.Complete(context.Background(), goagent.CompletionRequest{
+				Model:    "qwq",
+				Messages: []goagent.Message{goagent.UserMessage("question")},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if tt.wantThinking != "" {
+				if !resp.Message.HasContentType(goagent.ContentThinking) {
+					t.Fatal("expected thinking block, got none")
+				}
+				var found string
+				for _, b := range resp.Message.Content {
+					if b.Type == goagent.ContentThinking && b.Thinking != nil {
+						found = b.Thinking.Thinking
+					}
+				}
+				if found != tt.wantThinking {
+					t.Errorf("ThinkingBlock.Thinking = %q, want %q", found, tt.wantThinking)
+				}
+			} else {
+				if resp.Message.HasContentType(goagent.ContentThinking) {
+					t.Error("unexpected thinking block in response")
+				}
+			}
+
+			if tt.wantText != "" {
+				if resp.Message.TextContent() != tt.wantText {
+					t.Errorf("TextContent() = %q, want %q", resp.Message.TextContent(), tt.wantText)
+				}
+			}
+		})
+	}
+}
+
+func TestProvider_ThinkingBlocksDiscardedInRequest(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, stopResponse, &captured)
+	p := ollama.New(ollama.WithBaseURL(srv.URL + "/v1"))
+
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model: "qwq",
+		Messages: []goagent.Message{
+			goagent.UserMessage("question"),
+			{
+				Role: goagent.RoleAssistant,
+				Content: []goagent.ContentBlock{
+					goagent.ThinkingBlock("internal reasoning", ""), // should be discarded
+					goagent.TextBlock("answer text"),
+				},
+			},
+		},
+	})
+
+	messages, _ := captured["messages"].([]any)
+	for _, m := range messages {
+		msg, _ := m.(map[string]any)
+		if msg["role"] != "assistant" {
+			continue
+		}
+		// In the Ollama provider, content is a plain string (single text block optimization).
+		// Thinking blocks must have been discarded, leaving only the text.
+		content, _ := msg["content"].(string)
+		if strings.Contains(content, "internal reasoning") {
+			t.Errorf("thinking block content leaked into Ollama request: %q", content)
+		}
+	}
+}
+
+func TestProvider_ThinkingAndEffortIgnored(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, stopResponse, &captured)
+	p := ollama.New(ollama.WithBaseURL(srv.URL + "/v1"))
+
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:    "qwq",
+		Messages: []goagent.Message{goagent.UserMessage("hi")},
+		Thinking: &goagent.ThinkingConfig{Enabled: true, BudgetTokens: 4096},
+		Effort:   "high",
+	})
+
+	if _, present := captured["thinking"]; present {
+		t.Errorf("'thinking' field should not be sent to Ollama, but was present: %v", captured["thinking"])
+	}
+	if _, present := captured["output_config"]; present {
+		t.Errorf("'output_config' field should not be sent to Ollama, but was present: %v", captured["output_config"])
+	}
+}
+
+// jsonString encodes s as a JSON string literal, e.g. `"hello"`.
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}

@@ -645,3 +645,206 @@ func TestAgentRun_SystemPromptForwarded(t *testing.T) {
 		t.Errorf("SystemPrompt = %q, want %q", calls[0].SystemPrompt, "be concise")
 	}
 }
+
+// ── Extended Thinking & Effort ───────────────────────────────────────────────
+
+func TestAgentRun_WithThinking_PropagatedToProvider(t *testing.T) {
+	t.Parallel()
+
+	mp := testutil.NewMockProvider(endTurnResp("ok"))
+	a := goagent.New(
+		goagent.WithProvider(mp),
+		goagent.WithThinking(8000),
+	)
+
+	_, _ = a.Run(context.Background(), "hello")
+
+	calls := mp.Calls()
+	if len(calls) == 0 {
+		t.Fatal("no provider calls recorded")
+	}
+	cfg := calls[0].Thinking
+	if cfg == nil {
+		t.Fatal("Thinking is nil, want non-nil ThinkingConfig")
+	}
+	if !cfg.Enabled {
+		t.Error("ThinkingConfig.Enabled = false, want true")
+	}
+	if cfg.BudgetTokens != 8000 {
+		t.Errorf("ThinkingConfig.BudgetTokens = %d, want 8000", cfg.BudgetTokens)
+	}
+}
+
+func TestAgentRun_WithAdaptiveThinking_PropagatedToProvider(t *testing.T) {
+	t.Parallel()
+
+	mp := testutil.NewMockProvider(endTurnResp("ok"))
+	a := goagent.New(
+		goagent.WithProvider(mp),
+		goagent.WithAdaptiveThinking(),
+	)
+
+	_, _ = a.Run(context.Background(), "hello")
+
+	calls := mp.Calls()
+	if len(calls) == 0 {
+		t.Fatal("no provider calls recorded")
+	}
+	cfg := calls[0].Thinking
+	if cfg == nil {
+		t.Fatal("Thinking is nil, want non-nil ThinkingConfig")
+	}
+	if !cfg.Enabled {
+		t.Error("ThinkingConfig.Enabled = false, want true")
+	}
+	if cfg.BudgetTokens != 0 {
+		t.Errorf("ThinkingConfig.BudgetTokens = %d, want 0 (adaptive)", cfg.BudgetTokens)
+	}
+}
+
+func TestAgentRun_WithEffort_PropagatedToProvider(t *testing.T) {
+	t.Parallel()
+
+	mp := testutil.NewMockProvider(endTurnResp("ok"))
+	a := goagent.New(
+		goagent.WithProvider(mp),
+		goagent.WithEffort("medium"),
+	)
+
+	_, _ = a.Run(context.Background(), "hello")
+
+	calls := mp.Calls()
+	if len(calls) == 0 {
+		t.Fatal("no provider calls recorded")
+	}
+	if calls[0].Effort != "medium" {
+		t.Errorf("Effort = %q, want %q", calls[0].Effort, "medium")
+	}
+}
+
+func TestAgentRun_ThinkingAndEffort_Combined(t *testing.T) {
+	t.Parallel()
+
+	mp := testutil.NewMockProvider(endTurnResp("ok"))
+	a := goagent.New(
+		goagent.WithProvider(mp),
+		goagent.WithThinking(4096),
+		goagent.WithEffort("low"),
+	)
+
+	_, _ = a.Run(context.Background(), "hello")
+
+	calls := mp.Calls()
+	if len(calls) == 0 {
+		t.Fatal("no provider calls recorded")
+	}
+	req := calls[0]
+	if req.Thinking == nil || !req.Thinking.Enabled || req.Thinking.BudgetTokens != 4096 {
+		t.Errorf("Thinking = %+v, want {Enabled:true BudgetTokens:4096}", req.Thinking)
+	}
+	if req.Effort != "low" {
+		t.Errorf("Effort = %q, want %q", req.Effort, "low")
+	}
+}
+
+func TestAgentRun_NoThinking_ThinkingFieldNil(t *testing.T) {
+	t.Parallel()
+
+	mp := testutil.NewMockProvider(endTurnResp("ok"))
+	a := goagent.New(goagent.WithProvider(mp))
+
+	_, _ = a.Run(context.Background(), "hello")
+
+	calls := mp.Calls()
+	if len(calls) == 0 {
+		t.Fatal("no provider calls recorded")
+	}
+	if calls[0].Thinking != nil {
+		t.Errorf("Thinking = %+v, want nil (no thinking configured)", calls[0].Thinking)
+	}
+	if calls[0].Effort != "" {
+		t.Errorf("Effort = %q, want empty string (no effort configured)", calls[0].Effort)
+	}
+}
+
+func TestAgentRun_ThinkingPreservedDuringToolUse(t *testing.T) {
+	t.Parallel()
+
+	// First response: thinking block + tool call.
+	// Second response: thinking block + final text.
+	calcTool := testutil.NewMockTool("calc", "arithmetic", "42")
+	firstResp := goagent.CompletionResponse{
+		Message: goagent.Message{
+			Role: goagent.RoleAssistant,
+			Content: []goagent.ContentBlock{
+				goagent.ThinkingBlock("I need to use calc", "sig1"),
+			},
+			ToolCalls: []goagent.ToolCall{
+				{ID: "c1", Name: "calc", Arguments: map[string]any{}},
+			},
+		},
+		StopReason: goagent.StopReasonToolUse,
+	}
+	secondResp := endTurnResp("the answer is 42")
+
+	mp := testutil.NewMockProvider(firstResp, secondResp)
+	a := goagent.New(
+		goagent.WithProvider(mp),
+		goagent.WithTool(calcTool),
+		goagent.WithThinking(4096),
+	)
+
+	_, _ = a.Run(context.Background(), "what is 6*7")
+
+	calls := mp.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 provider calls, got %d", len(calls))
+	}
+
+	// The second call must include the thinking block from the first assistant
+	// message in its Messages slice.
+	secondCallMsgs := calls[1].Messages
+	var foundThinking bool
+	for _, msg := range secondCallMsgs {
+		if msg.HasContentType(goagent.ContentThinking) {
+			foundThinking = true
+			break
+		}
+	}
+	if !foundThinking {
+		t.Error("second provider call does not contain the thinking block from the first response; thinking continuity broken")
+	}
+}
+
+func TestAgentRun_ThinkingStrippedBeforePersist(t *testing.T) {
+	t.Parallel()
+
+	// Provider returns a response with a thinking block.
+	respWithThinking := goagent.CompletionResponse{
+		Message: goagent.Message{
+			Role: goagent.RoleAssistant,
+			Content: []goagent.ContentBlock{
+				goagent.ThinkingBlock("internal reasoning", "sig"),
+				goagent.TextBlock("final answer"),
+			},
+		},
+		StopReason: goagent.StopReasonEndTurn,
+	}
+
+	mem := testutil.NewMockMemory()
+	mp := testutil.NewMockProvider(respWithThinking)
+	a := goagent.New(
+		goagent.WithProvider(mp),
+		goagent.WithShortTermMemory(mem),
+		goagent.WithThinking(4096),
+	)
+
+	_, _ = a.Run(context.Background(), "a question")
+
+	stored := mem.All()
+	for _, msg := range stored {
+		if msg.HasContentType(goagent.ContentThinking) {
+			t.Errorf("thinking block found in stored message (role=%q) — should have been stripped before persist", msg.Role)
+		}
+	}
+}

@@ -296,3 +296,261 @@ func TestProvider_ToolResultMessages(t *testing.T) {
 		t.Errorf("tool_use_id = %v, want toolu_01", block["tool_use_id"])
 	}
 }
+
+// ── Extended Thinking & Effort ───────────────────────────────────────────────
+
+func TestProvider_ThinkingConfigManual_SentInRequest(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, textResponse, &captured)
+	p := newTestProvider(t, srv)
+
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:    "claude-sonnet-4-6",
+		Messages: []goagent.Message{goagent.UserMessage("hi")},
+		Thinking: &goagent.ThinkingConfig{Enabled: true, BudgetTokens: 8000},
+	})
+
+	thinking, ok := captured["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("'thinking' field missing or not an object in request; captured: %v", captured)
+	}
+	if thinking["type"] != "enabled" {
+		t.Errorf("thinking.type = %v, want %q", thinking["type"], "enabled")
+	}
+	budget, _ := thinking["budget_tokens"].(float64)
+	if budget != 8000 {
+		t.Errorf("thinking.budget_tokens = %v, want 8000", thinking["budget_tokens"])
+	}
+}
+
+func TestProvider_ThinkingConfigAdaptive_SentInRequest(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, textResponse, &captured)
+	p := newTestProvider(t, srv)
+
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:    "claude-opus-4-6",
+		Messages: []goagent.Message{goagent.UserMessage("hi")},
+		Thinking: &goagent.ThinkingConfig{Enabled: true, BudgetTokens: 0},
+	})
+
+	thinking, ok := captured["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("'thinking' field missing or not an object; captured: %v", captured)
+	}
+	if thinking["type"] != "adaptive" {
+		t.Errorf("thinking.type = %v, want %q", thinking["type"], "adaptive")
+	}
+}
+
+func TestProvider_NoThinking_FieldOmitted(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, textResponse, &captured)
+	p := newTestProvider(t, srv)
+
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:    "claude-sonnet-4-6",
+		Messages: []goagent.Message{goagent.UserMessage("hi")},
+		// No Thinking field.
+	})
+
+	if _, present := captured["thinking"]; present {
+		t.Errorf("'thinking' field should be omitted when not configured, but was present: %v", captured["thinking"])
+	}
+}
+
+func TestProvider_Effort_SentInRequest(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, textResponse, &captured)
+	p := newTestProvider(t, srv)
+
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:    "claude-sonnet-4-6",
+		Messages: []goagent.Message{goagent.UserMessage("hi")},
+		Effort:   "medium",
+	})
+
+	outputConfig, ok := captured["output_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("'output_config' field missing or not an object; captured: %v", captured)
+	}
+	if outputConfig["effort"] != "medium" {
+		t.Errorf("output_config.effort = %v, want %q", outputConfig["effort"], "medium")
+	}
+}
+
+func TestProvider_NoEffort_FieldOmitted(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, textResponse, &captured)
+	p := newTestProvider(t, srv)
+
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:    "claude-sonnet-4-6",
+		Messages: []goagent.Message{goagent.UserMessage("hi")},
+	})
+
+	if _, present := captured["output_config"]; present {
+		t.Errorf("'output_config' should be omitted when effort is empty, but was: %v", captured["output_config"])
+	}
+}
+
+func TestProvider_ThinkingBlockInResponse(t *testing.T) {
+	t.Parallel()
+
+	body := `{
+	  "id": "msg_think",
+	  "type": "message",
+	  "role": "assistant",
+	  "content": [
+	    {"type": "thinking", "thinking": "let me reason...", "signature": "sigABC"},
+	    {"type": "text", "text": "the answer"}
+	  ],
+	  "model": "claude-sonnet-4-6",
+	  "stop_reason": "end_turn",
+	  "usage": {"input_tokens": 10, "output_tokens": 20}
+	}`
+	srv := fakeAnthropicServer(t, body)
+	p := newTestProvider(t, srv)
+
+	resp, err := p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:    "claude-sonnet-4-6",
+		Messages: []goagent.Message{goagent.UserMessage("hi")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !resp.Message.HasContentType(goagent.ContentThinking) {
+		t.Fatal("response does not contain a thinking block")
+	}
+	var thinkingBlock goagent.ContentBlock
+	for _, b := range resp.Message.Content {
+		if b.Type == goagent.ContentThinking {
+			thinkingBlock = b
+			break
+		}
+	}
+	if thinkingBlock.Thinking == nil {
+		t.Fatal("ContentBlock.Thinking is nil")
+	}
+	if thinkingBlock.Thinking.Thinking != "let me reason..." {
+		t.Errorf("Thinking.Thinking = %q, want %q", thinkingBlock.Thinking.Thinking, "let me reason...")
+	}
+	if thinkingBlock.Thinking.Signature != "sigABC" {
+		t.Errorf("Thinking.Signature = %q, want %q", thinkingBlock.Thinking.Signature, "sigABC")
+	}
+	if resp.Message.TextContent() != "the answer" {
+		t.Errorf("TextContent() = %q, want %q", resp.Message.TextContent(), "the answer")
+	}
+}
+
+func TestProvider_RedactedThinkingBlockInResponse(t *testing.T) {
+	t.Parallel()
+
+	body := `{
+	  "id": "msg_redacted",
+	  "type": "message",
+	  "role": "assistant",
+	  "content": [
+	    {"type": "redacted_thinking", "data": "encryptedABC"},
+	    {"type": "text", "text": "answer despite redaction"}
+	  ],
+	  "model": "claude-sonnet-4-6",
+	  "stop_reason": "end_turn",
+	  "usage": {"input_tokens": 5, "output_tokens": 10}
+	}`
+	srv := fakeAnthropicServer(t, body)
+	p := newTestProvider(t, srv)
+
+	resp, err := p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:    "claude-sonnet-4-6",
+		Messages: []goagent.Message{goagent.UserMessage("hi")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !resp.Message.HasContentType(goagent.ContentThinking) {
+		t.Fatal("response does not contain a thinking block for the redacted block")
+	}
+	var thinkingBlock goagent.ContentBlock
+	for _, b := range resp.Message.Content {
+		if b.Type == goagent.ContentThinking {
+			thinkingBlock = b
+			break
+		}
+	}
+	if thinkingBlock.Thinking == nil {
+		t.Fatal("ContentBlock.Thinking is nil")
+	}
+	if thinkingBlock.Thinking.Thinking != "[redacted]" {
+		t.Errorf("Thinking.Thinking = %q, want %q", thinkingBlock.Thinking.Thinking, "[redacted]")
+	}
+	// data field stored as Signature so it can be echoed back correctly.
+	if thinkingBlock.Thinking.Signature != "encryptedABC" {
+		t.Errorf("Thinking.Signature = %q, want %q", thinkingBlock.Thinking.Signature, "encryptedABC")
+	}
+}
+
+func TestProvider_ThinkingBlocksPassedBackToAPI(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, textResponse, &captured)
+	p := newTestProvider(t, srv)
+
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model: "claude-sonnet-4-6",
+		Messages: []goagent.Message{
+			goagent.UserMessage("what is 2+2"),
+			{
+				Role: goagent.RoleAssistant,
+				Content: []goagent.ContentBlock{
+					goagent.ThinkingBlock("I need to add 2+2", "sigXYZ"),
+					goagent.TextBlock(""),
+				},
+				ToolCalls: []goagent.ToolCall{
+					{ID: "t1", Name: "calc", Arguments: map[string]any{"a": 2, "b": 2}},
+				},
+			},
+			{Role: goagent.RoleTool, Content: []goagent.ContentBlock{goagent.TextBlock("4")}, ToolCallID: "t1"},
+		},
+	})
+
+	messages, ok := captured["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		t.Fatal("no messages in captured request")
+	}
+
+	// Find the assistant message in the captured JSON.
+	var foundThinkingInAssistant bool
+	for _, m := range messages {
+		msg, _ := m.(map[string]any)
+		if msg["role"] != "assistant" {
+			continue
+		}
+		content, _ := msg["content"].([]any)
+		for _, cb := range content {
+			block, _ := cb.(map[string]any)
+			if block["type"] == "thinking" {
+				foundThinkingInAssistant = true
+				if block["signature"] != "sigXYZ" {
+					t.Errorf("thinking block signature = %v, want %q", block["signature"], "sigXYZ")
+				}
+			}
+		}
+	}
+	if !foundThinkingInAssistant {
+		t.Error("thinking block not found in assistant message sent to API")
+	}
+}

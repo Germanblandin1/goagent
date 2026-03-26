@@ -100,6 +100,9 @@ func (p *Provider) Complete(ctx context.Context, req goagent.CompletionRequest) 
 		}
 	}
 
+	params.Thinking = buildThinkingParam(req.Thinking)
+	params.OutputConfig = buildOutputConfig(req.Effort)
+
 	resp, err := p.client.Messages.New(ctx, params)
 	if err != nil {
 		return goagent.CompletionResponse{}, fmt.Errorf("anthropic completion: %w", err)
@@ -215,8 +218,22 @@ func toAssistantBlocks(m goagent.Message) ([]sdk.ContentBlockParamUnion, error) 
 	var out []sdk.ContentBlockParamUnion
 
 	for _, b := range m.Content {
-		if b.Type == goagent.ContentText && b.Text != "" {
-			out = append(out, sdk.NewTextBlock(b.Text))
+		switch b.Type {
+		case goagent.ContentThinking:
+			if b.Thinking != nil {
+				// Redacted thinking blocks must be echoed back as RedactedThinkingBlockParam
+				// so the API can verify the encrypted data. Regular thinking blocks use
+				// ThinkingBlockParam with the opaque signature.
+				if b.Thinking.Thinking == "[redacted]" {
+					out = append(out, sdk.NewRedactedThinkingBlock(b.Thinking.Signature))
+				} else {
+					out = append(out, sdk.NewThinkingBlock(b.Thinking.Signature, b.Thinking.Thinking))
+				}
+			}
+		case goagent.ContentText:
+			if b.Text != "" {
+				out = append(out, sdk.NewTextBlock(b.Text))
+			}
 		}
 	}
 
@@ -278,6 +295,13 @@ func toGoAgentResponse(resp *sdk.Message) goagent.CompletionResponse {
 		switch block.Type {
 		case "text":
 			msg.Content = append(msg.Content, goagent.TextBlock(block.Text))
+		case "thinking":
+			msg.Content = append(msg.Content, goagent.ThinkingBlock(block.Thinking, block.Signature))
+		case "redacted_thinking":
+			// The model redacted its reasoning for safety reasons. Preserve it
+			// as a thinking block so it can be echoed back to the API. The
+			// encrypted data is stored in Signature (treated as opaque token).
+			msg.Content = append(msg.Content, goagent.ThinkingBlock("[redacted]", block.Data))
 		case "tool_use":
 			var args map[string]any
 			if len(block.Input) > 0 {
@@ -317,4 +341,27 @@ func toStopReason(r sdk.StopReason) goagent.StopReason {
 	default:
 		return goagent.StopReasonEndTurn
 	}
+}
+
+// buildThinkingParam translates a goagent ThinkingConfig to the SDK union type.
+// Returns the zero value (omitted by omitzero) when thinking is disabled.
+func buildThinkingParam(cfg *goagent.ThinkingConfig) sdk.ThinkingConfigParamUnion {
+	if cfg == nil || !cfg.Enabled {
+		return sdk.ThinkingConfigParamUnion{}
+	}
+	if cfg.BudgetTokens > 0 {
+		// Manual mode: fixed token budget.
+		return sdk.ThinkingConfigParamOfEnabled(int64(cfg.BudgetTokens))
+	}
+	// Adaptive mode: the model decides how much to reason.
+	return sdk.ThinkingConfigParamUnion{OfAdaptive: &sdk.ThinkingConfigAdaptiveParam{}}
+}
+
+// buildOutputConfig translates an effort string to the SDK OutputConfigParam.
+// Returns the zero value (omitted by omitzero) when effort is not configured.
+func buildOutputConfig(effort string) sdk.OutputConfigParam {
+	if effort == "" {
+		return sdk.OutputConfigParam{}
+	}
+	return sdk.OutputConfigParam{Effort: sdk.OutputConfigEffort(effort)}
 }

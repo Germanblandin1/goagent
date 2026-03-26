@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	openai "github.com/sashabaranov/go-openai"
 
@@ -186,6 +187,10 @@ func toOpenAIParts(blocks []goagent.ContentBlock) ([]openai.ChatMessagePart, err
 				Provider:    "ollama",
 				Reason:      "OpenAI-compatible API does not support document content",
 			}
+		case goagent.ContentThinking:
+			// Local models do not expect thinking blocks echoed back —
+			// discard silently.
+			continue
 		}
 	}
 	return parts, nil
@@ -227,7 +232,7 @@ func toGoAgentResponse(resp openai.ChatCompletionResponse) (goagent.CompletionRe
 	choice := resp.Choices[0]
 	msg := goagent.Message{
 		Role:    goagent.RoleAssistant,
-		Content: []goagent.ContentBlock{goagent.TextBlock(choice.Message.Content)},
+		Content: parseThinkingFromText(choice.Message.Content),
 	}
 
 	for _, tc := range choice.Message.ToolCalls {
@@ -265,4 +270,47 @@ func toStopReason(r openai.FinishReason) goagent.StopReason {
 	default:
 		return goagent.StopReasonEndTurn
 	}
+}
+
+// parseThinkingFromText parses a model response that may contain a
+// <think>...</think> reasoning block at the start of the text.
+// This is the mechanism used by local thinking models (QwQ, DeepSeek-R1,
+// Phi-4-reasoning) — they emit reasoning as inline tags, not as a separate
+// content type. The Signature field is always empty for local models.
+//
+// Malformed tags (unclosed, empty content) are returned as plain text
+// without panicking.
+func parseThinkingFromText(text string) []goagent.ContentBlock {
+	const openTag = "<think>"
+	const closeTag = "</think>"
+
+	thinkStart := strings.Index(text, openTag)
+	if thinkStart == -1 {
+		return []goagent.ContentBlock{goagent.TextBlock(text)}
+	}
+
+	thinkEnd := strings.Index(text, closeTag)
+	if thinkEnd == -1 {
+		// Unclosed tag — treat entire response as plain text.
+		return []goagent.ContentBlock{goagent.TextBlock(text)}
+	}
+
+	var blocks []goagent.ContentBlock
+
+	thinking := strings.TrimSpace(text[thinkStart+len(openTag) : thinkEnd])
+	if thinking != "" {
+		blocks = append(blocks, goagent.ThinkingBlock(thinking, ""))
+	}
+
+	rest := strings.TrimSpace(text[thinkEnd+len(closeTag):])
+	if rest != "" {
+		blocks = append(blocks, goagent.TextBlock(rest))
+	}
+
+	if len(blocks) == 0 {
+		// Both thinking and rest were empty — return an empty text block
+		// to avoid a nil Content slice.
+		blocks = append(blocks, goagent.TextBlock(""))
+	}
+	return blocks
 }

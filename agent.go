@@ -159,6 +159,8 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 			SystemPrompt: a.opts.systemPrompt,
 			Messages:     messages,
 			Tools:        toolDefs,
+			Thinking:     a.opts.thinking,
+			Effort:       a.opts.effort,
 		}
 
 		resp, err := a.opts.provider.Complete(ctx, req)
@@ -253,7 +255,9 @@ func (a *Agent) persistTurn(ctx context.Context, messages []Message, historyLen 
 		var toStore []Message
 		if a.opts.traceTools {
 			// Full trace: user msg + all assistant/tool turns from this Run.
-			toStore = messages[historyLen:]
+			// Thinking blocks are stripped — they have no value in historical
+			// context and the API discards them from prior turns anyway.
+			toStore = stripThinking(messages[historyLen:])
 		} else {
 			// Condensed: only user message + final assistant answer.
 			toStore = []Message{
@@ -280,4 +284,26 @@ func (a *Agent) persistTurn(ctx context.Context, messages []Message, historyLen 
 			}
 		}
 	}
+}
+
+// stripThinking returns a copy of msgs with all ContentThinking blocks
+// removed from each message's Content. The original slice is not modified.
+// Used to clean messages before persisting to memory — thinking blocks have
+// no value in historical context once the turn is complete.
+func stripThinking(msgs []Message) []Message {
+	result := make([]Message, 0, len(msgs))
+	for _, msg := range msgs {
+		cleaned := Message{
+			Role:       msg.Role,
+			ToolCalls:  msg.ToolCalls,
+			ToolCallID: msg.ToolCallID,
+		}
+		for _, block := range msg.Content {
+			if block.Type != ContentThinking {
+				cleaned.Content = append(cleaned.Content, block)
+			}
+		}
+		result = append(result, cleaned)
+	}
+	return result
 }
