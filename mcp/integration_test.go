@@ -36,7 +36,7 @@ func newTestClient(t *testing.T, s *Server) *Client {
 
 func TestClientServer_ToolDiscovery(t *testing.T) {
 	s := NewServer("test-server", "0.0.1")
-	s.AddTool("echo", "Returns the same text", nil,
+	s.MustAddTool("echo", "Returns the same text", nil,
 		func(_ context.Context, args map[string]any) (string, error) {
 			text, _ := args["text"].(string)
 			return text, nil
@@ -56,7 +56,7 @@ func TestClientServer_ToolDiscovery(t *testing.T) {
 
 func TestClientServer_Execute_Success(t *testing.T) {
 	s := NewServer("test-server", "0.0.1")
-	s.AddTool("echo", "Returns the same text", nil,
+	s.MustAddTool("echo", "Returns the same text", nil,
 		func(_ context.Context, args map[string]any) (string, error) {
 			text, _ := args["text"].(string)
 			return text, nil
@@ -80,10 +80,10 @@ func TestClientServer_Execute_Success(t *testing.T) {
 
 func TestRouter_ClientFor(t *testing.T) {
 	s1 := NewServer("server1", "0.0.1")
-	s1.AddTool("tool_a", "Tool A", nil, func(_ context.Context, _ map[string]any) (string, error) { return "a", nil })
+	s1.MustAddTool("tool_a", "Tool A", nil, func(_ context.Context, _ map[string]any) (string, error) { return "a", nil })
 
 	s2 := NewServer("server2", "0.0.1")
-	s2.AddTool("tool_b", "Tool B", nil, func(_ context.Context, _ map[string]any) (string, error) { return "b", nil })
+	s2.MustAddTool("tool_b", "Tool B", nil, func(_ context.Context, _ map[string]any) (string, error) { return "b", nil })
 
 	c1 := newTestClient(t, s1)
 	c2 := newTestClient(t, s2)
@@ -103,10 +103,10 @@ func TestRouter_ClientFor(t *testing.T) {
 
 func TestRouter_DuplicateName_LastWins(t *testing.T) {
 	s1 := NewServer("server1", "0.0.1")
-	s1.AddTool("shared", "From server 1", nil, func(_ context.Context, _ map[string]any) (string, error) { return "s1", nil })
+	s1.MustAddTool("shared", "From server 1", nil, func(_ context.Context, _ map[string]any) (string, error) { return "s1", nil })
 
 	s2 := NewServer("server2", "0.0.1")
-	s2.AddTool("shared", "From server 2", nil, func(_ context.Context, _ map[string]any) (string, error) { return "s2", nil })
+	s2.MustAddTool("shared", "From server 2", nil, func(_ context.Context, _ map[string]any) (string, error) { return "s2", nil })
 
 	c1 := newTestClient(t, s1)
 	c2 := newTestClient(t, s2)
@@ -124,7 +124,7 @@ func TestRouter_DuplicateName_LastWins(t *testing.T) {
 
 func TestClient_Close_Idempotent(t *testing.T) {
 	s := NewServer("test-server", "0.0.1")
-	s.AddTool("noop", "No-op", nil, func(_ context.Context, _ map[string]any) (string, error) { return "", nil })
+	s.MustAddTool("noop", "No-op", nil, func(_ context.Context, _ map[string]any) (string, error) { return "", nil })
 	client := newTestClient(t, s)
 
 	if err := client.Close(); err != nil {

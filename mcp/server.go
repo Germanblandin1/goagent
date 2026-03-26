@@ -48,11 +48,17 @@ func NewServer(name, version string) *Server {
 
 // AddTool registers a Go function as an MCP tool.
 // schema may be nil if the tool requires no arguments.
-// schema may be a struct annotated with json tags.
+// schema must be a JSON-serializable value (struct with json tags, map, etc.).
+//
+// Returns an error if schema cannot be marshalled to JSON.
+// Use [Server.MustAddTool] during server construction when a schema
+// serialisation failure is a programming error that should halt startup.
+// Use AddTool when registering tools dynamically (e.g. loaded at runtime,
+// in tests that exercise error paths) and you need to handle the error.
 //
 // Example:
 //
-//	s.AddTool("get_weather",
+//	if err := s.AddTool("get_weather",
 //	    "Returns the current weather for a city",
 //	    struct {
 //	        City string `json:"city"`
@@ -61,16 +67,18 @@ func NewServer(name, version string) *Server {
 //	        city, _ := args["city"].(string)
 //	        return fetchWeather(city)
 //	    },
-//	)
-func (s *Server) AddTool(name, description string, schema any, fn ToolHandlerFunc) {
+//	); err != nil {
+//	    return err
+//	}
+func (s *Server) AddTool(name, description string, schema any, fn ToolHandlerFunc) error {
 	var opts []mcp.ToolOption
 	opts = append(opts, mcp.WithDescription(description))
 	if schema != nil {
 		raw, err := json.Marshal(schema)
-		if err == nil {
-			// TODO: Handle error case. URGENT
-			opts = append(opts, mcp.WithRawInputSchema(raw))
+		if err != nil {
+			return fmt.Errorf("AddTool %q: invalid schema: %w", name, err)
 		}
+		opts = append(opts, mcp.WithRawInputSchema(raw))
 	}
 
 	tool := mcp.NewTool(name, opts...)
@@ -82,6 +90,34 @@ func (s *Server) AddTool(name, description string, schema any, fn ToolHandlerFun
 		}
 		return mcp.NewToolResultText(result), nil
 	})
+	return nil
+}
+
+// MustAddTool is like [Server.AddTool] but panics if schema cannot be
+// marshalled to JSON.
+//
+// Use MustAddTool during server construction (main, TestMain, init-like
+// functions) where a bad schema is a programming error and crashing early
+// is the right behaviour. Use [Server.AddTool] when you need to handle the
+// error explicitly.
+//
+// Example:
+//
+//	s := mcp.NewServer("weather", "1.0.0")
+//	s.MustAddTool("get_weather",
+//	    "Returns the current weather for a city",
+//	    struct {
+//	        City string `json:"city"`
+//	    }{},
+//	    func(ctx context.Context, args map[string]any) (string, error) {
+//	        city, _ := args["city"].(string)
+//	        return fetchWeather(city)
+//	    },
+//	)
+func (s *Server) MustAddTool(name, description string, schema any, fn ToolHandlerFunc) {
+	if err := s.AddTool(name, description, schema, fn); err != nil {
+		panic(err)
+	}
 }
 
 // Inner returns the underlying MCPServer for advanced use cases.
