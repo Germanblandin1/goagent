@@ -17,6 +17,7 @@ type options struct {
 	logger         *slog.Logger
 	thinking       *ThinkingConfig
 	effort         string
+	hooks          Hooks
 }
 
 // Option is a functional option for configuring an Agent.
@@ -147,6 +148,23 @@ func WithAdaptiveThinking() Option {
 // Models that do not support effort silently ignore this setting.
 func WithEffort(level string) Option {
 	return func(o *options) { o.effort = level }
+}
+
+// WithHooks registra callbacks de observabilidad para el loop ReAct.
+// Todos los campos de Hooks son opcionales — solo los hooks no-nil se invocan.
+//
+// Ejemplo:
+//
+//	agent := goagent.New(
+//	    goagent.WithProvider(provider),
+//	    goagent.WithHooks(goagent.Hooks{
+//	        OnToolCall: func(name string, args map[string]any) {
+//	            fmt.Printf("calling tool: %s\n", name)
+//	        },
+//	    }),
+//	)
+func WithHooks(h Hooks) Option {
+	return func(o *options) { o.hooks = h }
 }
 
 // defaults returns the baseline options before any Option is applied.

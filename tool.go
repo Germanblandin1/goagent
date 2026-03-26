@@ -1,6 +1,9 @@
 package goagent
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Tool is the interface that callers implement to give capabilities to an agent.
 //
@@ -98,4 +101,7 @@ type ToolResult struct {
 	Name       string
 	Content    []ContentBlock
 	Err        error
+	// Duration is how long Execute took. It is zero when the tool was not
+	// found (ErrToolNotFound) — no execution occurred in that case.
+	Duration time.Duration
 }

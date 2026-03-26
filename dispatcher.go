@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 )
 
 // dispatcher executes tool calls, running them in parallel via goroutines.
@@ -52,16 +53,21 @@ func (d *dispatcher) execute(ctx context.Context, tc ToolCall) ToolResult {
 			ToolCallID: tc.ID,
 			Name:       tc.Name,
 			Err:        fmt.Errorf("%w: %s", ErrToolNotFound, tc.Name),
+			// Duration is zero — no execution occurred.
 		}
 	}
 
+	start := time.Now()
 	content, err := t.Execute(ctx, tc.Arguments)
+	duration := time.Since(start)
+
 	if err != nil {
 		d.logger.Debug("tool execution failed", "tool", tc.Name, "error", err)
 		return ToolResult{
 			ToolCallID: tc.ID,
 			Name:       tc.Name,
 			Err:        &ToolExecutionError{ToolName: tc.Name, Args: tc.Arguments, Cause: err},
+			Duration:   duration,
 		}
 	}
 
@@ -70,5 +76,6 @@ func (d *dispatcher) execute(ctx context.Context, tc ToolCall) ToolResult {
 		ToolCallID: tc.ID,
 		Name:       tc.Name,
 		Content:    content,
+		Duration:   duration,
 	}
 }

@@ -154,6 +154,10 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 		default:
 		}
 
+		if fn := a.opts.hooks.OnIterationStart; fn != nil {
+			fn(i)
+		}
+
 		req := CompletionRequest{
 			Model:        a.opts.model,
 			SystemPrompt: a.opts.systemPrompt,
@@ -171,6 +175,14 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 		messages = append(messages, resp.Message)
 		lastContent = resp.Message.TextContent()
 
+		if fn := a.opts.hooks.OnThinking; fn != nil {
+			for _, block := range resp.Message.Content {
+				if block.Type == ContentThinking && block.Thinking != nil {
+					fn(block.Thinking.Thinking)
+				}
+			}
+		}
+
 		a.opts.logger.Debug("agent iteration",
 			"iteration", i+1,
 			"stop_reason", resp.StopReason,
@@ -180,12 +192,27 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 
 		// Model produced a final answer — persist and return.
 		if resp.StopReason != StopReasonToolUse || len(resp.Message.ToolCalls) == 0 {
+			if fn := a.opts.hooks.OnResponse; fn != nil {
+				fn(lastContent, i+1)
+			}
 			a.persistTurn(ctx, messages, historyLen, lastContent)
 			return lastContent, nil
 		}
 
+		if fn := a.opts.hooks.OnToolCall; fn != nil {
+			for _, tc := range resp.Message.ToolCalls {
+				fn(tc.Name, tc.Arguments)
+			}
+		}
+
 		// Dispatch tool calls (fan-out/fan-in).
 		results := d.dispatch(ctx, resp.Message.ToolCalls)
+
+		if fn := a.opts.hooks.OnToolResult; fn != nil {
+			for _, r := range results {
+				fn(r.Name, r.Content, r.Duration, r.Err)
+			}
+		}
 
 		for _, r := range results {
 			var toolContent []ContentBlock
@@ -203,6 +230,9 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 	}
 
 	// Iteration budget exhausted — persist what we have and return an error.
+	if fn := a.opts.hooks.OnResponse; fn != nil {
+		fn(lastContent, a.opts.maxIterations)
+	}
 	a.persistTurn(ctx, messages, historyLen, lastContent)
 	return "", &MaxIterationsError{
 		Iterations:  a.opts.maxIterations,
