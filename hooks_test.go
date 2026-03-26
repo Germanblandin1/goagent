@@ -79,7 +79,10 @@ func TestHooks_OnIterationStart(t *testing.T) {
 				opts = append(opts, goagent.WithTool(tt.tool))
 			}
 
-			agent := goagent.New(opts...)
+			agent, err := goagent.New(opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
 			_, _ = agent.Run(context.Background(), "test")
 
 			if callCount != tt.wantCallCount {
@@ -99,7 +102,7 @@ func TestHooks_OnThinking(t *testing.T) {
 
 	var gotTexts []string
 
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(testutil.NewMockProvider(
 			thinkingResp("step one", "final answer"),
 		)),
@@ -109,8 +112,11 @@ func TestHooks_OnThinking(t *testing.T) {
 			},
 		}),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := agent.Run(context.Background(), "think")
+	_, err = agent.Run(context.Background(), "think")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -141,7 +147,7 @@ func TestHooks_OnThinking_MultipleBlocks(t *testing.T) {
 		StopReason: goagent.StopReasonEndTurn,
 	}
 
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(testutil.NewMockProvider(resp)),
 		goagent.WithHooks(goagent.Hooks{
 			OnThinking: func(text string) {
@@ -149,8 +155,11 @@ func TestHooks_OnThinking_MultipleBlocks(t *testing.T) {
 			},
 		}),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := agent.Run(context.Background(), "think")
+	_, err = agent.Run(context.Background(), "think")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -171,14 +180,17 @@ func TestHooks_OnThinking_NoThinking(t *testing.T) {
 
 	called := false
 
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("answer"))),
 		goagent.WithHooks(goagent.Hooks{
 			OnThinking: func(text string) { called = true },
 		}),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := agent.Run(context.Background(), "hello")
+	_, err = agent.Run(context.Background(), "hello")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -230,7 +242,7 @@ func TestHooks_OnToolCall(t *testing.T) {
 
 			var gotNames []string
 
-			agent := goagent.New(
+			agent, err := goagent.New(
 				goagent.WithProvider(testutil.NewMockProvider(tt.responses...)),
 				goagent.WithTool(testutil.NewMockTool("calc", "arithmetic", "42")),
 				goagent.WithTool(testutil.NewMockTool("search", "web search", "result")),
@@ -240,8 +252,11 @@ func TestHooks_OnToolCall(t *testing.T) {
 					},
 				}),
 			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-			_, err := agent.Run(context.Background(), "test")
+			_, err = agent.Run(context.Background(), "test")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -268,7 +283,7 @@ func TestHooks_OnToolResult_Success(t *testing.T) {
 	}
 	var got []result
 
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(testutil.NewMockProvider(
 			toolUseResp("t1", "calc", map[string]any{}),
 			endTurnResp("done"),
@@ -280,8 +295,11 @@ func TestHooks_OnToolResult_Success(t *testing.T) {
 			},
 		}),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := agent.Run(context.Background(), "test")
+	_, err = agent.Run(context.Background(), "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -307,7 +325,7 @@ func TestHooks_OnToolResult_Error(t *testing.T) {
 	toolErr := errors.New("tool failed")
 	var gotErr error
 
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(testutil.NewMockProvider(
 			toolUseResp("t1", "bad", map[string]any{}),
 			endTurnResp("done"),
@@ -319,8 +337,11 @@ func TestHooks_OnToolResult_Error(t *testing.T) {
 			},
 		}),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := agent.Run(context.Background(), "test")
+	_, err = agent.Run(context.Background(), "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -383,8 +404,11 @@ func TestHooks_OnResponse(t *testing.T) {
 				opts = append(opts, goagent.WithTool(tt.tool))
 			}
 
-			agent := goagent.New(opts...)
-			_, err := agent.Run(context.Background(), "test")
+			agent, err := goagent.New(opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = agent.Run(context.Background(), "test")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -416,7 +440,7 @@ func TestHooks_OnResponse_MaxIterations(t *testing.T) {
 	callCount := 0
 	var gotIter int
 
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(provider),
 		goagent.WithTool(calc),
 		goagent.WithMaxIterations(2),
@@ -427,8 +451,11 @@ func TestHooks_OnResponse_MaxIterations(t *testing.T) {
 			},
 		}),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := agent.Run(context.Background(), "test")
+	_, err = agent.Run(context.Background(), "test")
 	if err == nil {
 		t.Fatal("expected MaxIterationsError, got nil")
 	}
@@ -449,10 +476,13 @@ func TestHooks_ZeroValue(t *testing.T) {
 	t.Parallel()
 
 	// A Hooks{} zero value must not cause any panic and must not change behaviour.
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("hi"))),
 		goagent.WithHooks(goagent.Hooks{}),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	got, err := agent.Run(context.Background(), "hello")
 	if err != nil {
@@ -470,7 +500,7 @@ func TestHooks_PartialHooks(t *testing.T) {
 	// from a nil function call) and normal execution must complete.
 	toolCallCount := 0
 
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(testutil.NewMockProvider(
 			toolUseResp("t1", "calc", map[string]any{}),
 			endTurnResp("done"),
@@ -483,8 +513,11 @@ func TestHooks_PartialHooks(t *testing.T) {
 			// All other hooks intentionally nil.
 		}),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := agent.Run(context.Background(), "test")
+	_, err = agent.Run(context.Background(), "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -502,7 +535,7 @@ func TestHooks_Race(t *testing.T) {
 	var toolNames []string
 	var iterStarts []int
 
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(testutil.NewMockProvider(
 			toolUseResp("t1", "calc", map[string]any{}),
 			toolUseResp("t2", "calc", map[string]any{}),
@@ -518,8 +551,11 @@ func TestHooks_Race(t *testing.T) {
 			},
 		}),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := agent.Run(context.Background(), "test")
+	_, err = agent.Run(context.Background(), "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

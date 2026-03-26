@@ -31,7 +31,7 @@ func main() {
 		memory.WithPolicy(policy.NewFixedWindow(20)),
 	)
 
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(ollama.New()),
 		goagent.WithModel("gpt-oss:120b-cloud"),
 		goagent.WithShortTermMemory(mem),
@@ -42,6 +42,9 @@ func main() {
 			},
 		}),
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

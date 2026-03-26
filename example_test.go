@@ -12,7 +12,7 @@ import (
 
 // Example demonstrates creating an Agent with a mock provider and running it.
 func Example() {
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(testutil.NewMockProvider(
 			goagent.CompletionResponse{
 				Message:    goagent.AssistantMessage("4"),
@@ -20,6 +20,9 @@ func Example() {
 			},
 		)),
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	result, err := agent.Run(context.Background(), "what is 2+2?")
 	if err != nil {
@@ -57,10 +60,13 @@ func ExampleAgent_Run_withTools() {
 		},
 	)
 
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(mock),
 		goagent.WithTool(echo),
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	result, err := agent.Run(context.Background(), "echo hello")
 	if err != nil {
@@ -75,7 +81,7 @@ func ExampleAgent_Run_withTools() {
 func ExampleAgent_Run_withMemory() {
 	mem := memory.NewShortTerm()
 
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(testutil.NewMockProvider(
 			goagent.CompletionResponse{
 				Message:    goagent.AssistantMessage("pong"),
@@ -84,6 +90,9 @@ func ExampleAgent_Run_withMemory() {
 		)),
 		goagent.WithShortTermMemory(mem),
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	if _, err := agent.Run(context.Background(), "ping"); err != nil {
 		log.Fatal(err)
@@ -138,7 +147,7 @@ func ExampleMinLength() {
 // Here we send a text block; in practice you would combine text with image or
 // document blocks.
 func ExampleAgent_RunBlocks() {
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(testutil.NewMockProvider(
 			goagent.CompletionResponse{
 				Message:    goagent.AssistantMessage("It's a cat"),
@@ -146,6 +155,9 @@ func ExampleAgent_RunBlocks() {
 			},
 		)),
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	result, err := agent.RunBlocks(context.Background(),
 		goagent.TextBlock("What animal is this?"),

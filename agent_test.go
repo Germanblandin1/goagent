@@ -175,7 +175,10 @@ func TestAgentRun(t *testing.T) {
 			if tt.provider != nil {
 				opts = append(opts, goagent.WithProvider(tt.provider))
 			}
-			a := goagent.New(opts...)
+			a, err := goagent.New(opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
 
 			ctx := context.Background()
 			if tt.name == "context cancellation" {
@@ -225,10 +228,13 @@ func TestAgentRun_WithMemory_HistoryPrepended(t *testing.T) {
 		goagent.AssistantMessage("Hola Lucas!"),
 	)
 	mp := testutil.NewMockProvider(endTurnResp("eres Lucas"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithShortTermMemory(mem),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "¿cómo me llamo?")
 
@@ -261,11 +267,14 @@ func TestAgentRun_WithMemory_AllTurnsStored(t *testing.T) {
 		toolUseResp("c1", "calc", map[string]any{}),
 		endTurnResp("the answer is 42"),
 	)
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithTool(calcTool),
 		goagent.WithShortTermMemory(mem),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "what is 6*7")
 
@@ -297,10 +306,13 @@ func TestAgentRun_WithMemory_AccumulatesAcrossRuns(t *testing.T) {
 		endTurnResp("resp-2"),
 		endTurnResp("resp-3"),
 	)
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithShortTermMemory(mem),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	ctx := context.Background()
 	_, _ = a.Run(ctx, "prompt-1")
@@ -318,10 +330,13 @@ func TestAgentRun_WithMemory_NilMemory_Stateless(t *testing.T) {
 	t.Parallel()
 
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithShortTermMemory(nil),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := a.Run(context.Background(), "hi")
 	if err != nil {
@@ -337,10 +352,13 @@ func TestAgentRun_WithMemory_AppendError_DoesNotFail(t *testing.T) {
 
 	mem := testutil.NewMockMemoryWithErrors(errors.New("storage unavailable"), nil)
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithShortTermMemory(mem),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := a.Run(context.Background(), "hi")
 	if err != nil {
@@ -360,14 +378,17 @@ func TestAgentRun_WithMemory_MaxIterations_StillPersists(t *testing.T) {
 		toolUseResp("c1", "calc", map[string]any{}),
 		toolUseResp("c2", "calc", map[string]any{}),
 	)
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithTool(calcTool),
 		goagent.WithShortTermMemory(mem),
 		goagent.WithMaxIterations(2),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := a.Run(context.Background(), "loop")
+	_, err = a.Run(context.Background(), "loop")
 	if err == nil {
 		t.Fatal("expected MaxIterationsError")
 	}
@@ -392,12 +413,15 @@ func TestAgentRun_WithShortTermTraceTools_False_StoresOnlyUserAndFinalAssistant(
 		toolUseResp("c1", "calc", map[string]any{}),
 		endTurnResp("the answer is 42"),
 	)
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithTool(calcTool),
 		goagent.WithShortTermMemory(mem),
 		goagent.WithShortTermTraceTools(false),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "what is 6*7")
 
@@ -420,10 +444,13 @@ func TestAgentRun_WithLongTermMemory_RetrieveContextPrepended(t *testing.T) {
 	pastMsg := goagent.UserMessage("past context")
 	ltm := testutil.NewMockLongTermMemoryWithRetrieve(pastMsg)
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithLongTermMemory(ltm),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "current question")
 
@@ -449,10 +476,13 @@ func TestAgentRun_WithLongTermMemory_StoreCalledAfterRun(t *testing.T) {
 
 	ltm := testutil.NewMockLongTermMemory()
 	mp := testutil.NewMockProvider(endTurnResp("great answer"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithLongTermMemory(ltm),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "my question")
 
@@ -473,12 +503,15 @@ func TestAgentRun_WithLongTermMemory_WritePolicy_Skips(t *testing.T) {
 
 	ltm := testutil.NewMockLongTermMemory()
 	mp := testutil.NewMockProvider(endTurnResp("short"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithLongTermMemory(ltm),
 		// Only store turns where prompt+response > 100 chars; "short" won't qualify.
 		goagent.WithWritePolicy(goagent.MinLength(100)),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "hi")
 
@@ -492,10 +525,13 @@ func TestAgentRun_WithLongTermMemory_StoreError_DoesNotFail(t *testing.T) {
 
 	ltm := testutil.NewMockLongTermMemoryWithErrors(errors.New("storage down"), nil)
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithLongTermMemory(ltm),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := a.Run(context.Background(), "hi")
 	if err != nil {
@@ -515,11 +551,14 @@ func TestAgentRun_BothMemories_LongTermBeforeShortTerm(t *testing.T) {
 		goagent.UserMessage("recent history"),
 	)
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithLongTermMemory(ltm),
 		goagent.WithShortTermMemory(stm),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "current prompt")
 
@@ -599,10 +638,13 @@ func TestAgentRunBlocks(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			a := goagent.New(
+			a, err := goagent.New(
 				goagent.WithProvider(testutil.NewMockProvider(endTurnResp("ok"))),
 				goagent.WithMaxIterations(3),
 			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
 			result, err := a.RunBlocks(context.Background(), tt.blocks...)
 
@@ -630,10 +672,13 @@ func TestAgentRun_SystemPromptForwarded(t *testing.T) {
 	t.Parallel()
 
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithSystemPrompt("be concise"),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "hi")
 
@@ -652,10 +697,13 @@ func TestAgentRun_WithThinking_PropagatedToProvider(t *testing.T) {
 	t.Parallel()
 
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithThinking(8000),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "hello")
 
@@ -679,10 +727,13 @@ func TestAgentRun_WithAdaptiveThinking_PropagatedToProvider(t *testing.T) {
 	t.Parallel()
 
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithAdaptiveThinking(),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "hello")
 
@@ -706,10 +757,13 @@ func TestAgentRun_WithEffort_PropagatedToProvider(t *testing.T) {
 	t.Parallel()
 
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithEffort("medium"),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "hello")
 
@@ -726,11 +780,14 @@ func TestAgentRun_ThinkingAndEffort_Combined(t *testing.T) {
 	t.Parallel()
 
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithThinking(4096),
 		goagent.WithEffort("low"),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "hello")
 
@@ -751,7 +808,10 @@ func TestAgentRun_NoThinking_ThinkingFieldNil(t *testing.T) {
 	t.Parallel()
 
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(goagent.WithProvider(mp))
+	a, err := goagent.New(goagent.WithProvider(mp))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "hello")
 
@@ -788,11 +848,14 @@ func TestAgentRun_ThinkingPreservedDuringToolUse(t *testing.T) {
 	secondResp := endTurnResp("the answer is 42")
 
 	mp := testutil.NewMockProvider(firstResp, secondResp)
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithTool(calcTool),
 		goagent.WithThinking(4096),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "what is 6*7")
 
@@ -833,11 +896,14 @@ func TestAgentRun_ThinkingStrippedBeforePersist(t *testing.T) {
 
 	mem := testutil.NewMockMemory()
 	mp := testutil.NewMockProvider(respWithThinking)
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithShortTermMemory(mem),
 		goagent.WithThinking(4096),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "a question")
 

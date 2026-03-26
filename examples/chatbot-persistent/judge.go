@@ -54,11 +54,14 @@ type judgeResult struct {
 // ctx should be the application-level context (e.g. from signal.NotifyContext)
 // so the judge respects cancellation and shutdown signals.
 func newJudgePolicy(ctx context.Context) goagent.WritePolicy {
-	judge := goagent.New(
+	judge, err := goagent.New(
 		goagent.WithProvider(ollama.New()),
 		goagent.WithModel("gpt-oss:120b-cloud"),
 		goagent.WithSystemPrompt(judgeSystemPrompt),
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	return func(prompt, response goagent.Message) []goagent.Message {
 		input := fmt.Sprintf("User: %s\nAssistant: %s", prompt.TextContent(), response.TextContent())
