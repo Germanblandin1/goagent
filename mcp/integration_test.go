@@ -1,4 +1,4 @@
-package mcp
+package mcp_test
 
 import (
 	"context"
@@ -6,36 +6,12 @@ import (
 	"log/slog"
 	"testing"
 
-	mcpclient "github.com/mark3labs/mcp-go/client"
-
 	goagent "github.com/Germanblandin1/goagent"
+	"github.com/Germanblandin1/goagent/mcp"
 )
 
-// newTestClient creates a Client backed by an in-process Server, performing
-// the initialize handshake and tool discovery. Used only in tests.
-func newTestClient(t *testing.T, s *Server) *Client {
-	t.Helper()
-	inner, err := mcpclient.NewInProcessClient(s.Inner())
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := &Client{
-		inner:     inner,
-		transport: TransportStdio,
-		addr:      "in-process",
-		logger:    slog.Default(),
-	}
-	if err := c.initializeWithRetry(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.discoverTools(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	return c
-}
-
 func TestClientServer_ToolDiscovery(t *testing.T) {
-	s := NewServer("test-server", "0.0.1")
+	s := mcp.NewServer("test-server", "0.0.1")
 	s.MustAddTool("echo", "Returns the same text", nil,
 		func(_ context.Context, args map[string]any) (string, error) {
 			text, _ := args["text"].(string)
@@ -43,7 +19,7 @@ func TestClientServer_ToolDiscovery(t *testing.T) {
 		},
 	)
 
-	client := newTestClient(t, s)
+	client := mcp.NewTestClient(t, s)
 
 	tools := client.Tools()
 	if len(tools) != 1 {
@@ -55,7 +31,7 @@ func TestClientServer_ToolDiscovery(t *testing.T) {
 }
 
 func TestClientServer_Execute_Success(t *testing.T) {
-	s := NewServer("test-server", "0.0.1")
+	s := mcp.NewServer("test-server", "0.0.1")
 	s.MustAddTool("echo", "Returns the same text", nil,
 		func(_ context.Context, args map[string]any) (string, error) {
 			text, _ := args["text"].(string)
@@ -63,7 +39,7 @@ func TestClientServer_Execute_Success(t *testing.T) {
 		},
 	)
 
-	client := newTestClient(t, s)
+	client := mcp.NewTestClient(t, s)
 	tools := client.Tools()
 
 	result, err := tools[0].Execute(context.Background(), map[string]any{"text": "hola"})
@@ -79,16 +55,16 @@ func TestClientServer_Execute_Success(t *testing.T) {
 }
 
 func TestRouter_ClientFor(t *testing.T) {
-	s1 := NewServer("server1", "0.0.1")
+	s1 := mcp.NewServer("server1", "0.0.1")
 	s1.MustAddTool("tool_a", "Tool A", nil, func(_ context.Context, _ map[string]any) (string, error) { return "a", nil })
 
-	s2 := NewServer("server2", "0.0.1")
+	s2 := mcp.NewServer("server2", "0.0.1")
 	s2.MustAddTool("tool_b", "Tool B", nil, func(_ context.Context, _ map[string]any) (string, error) { return "b", nil })
 
-	c1 := newTestClient(t, s1)
-	c2 := newTestClient(t, s2)
+	c1 := mcp.NewTestClient(t, s1)
+	c2 := mcp.NewTestClient(t, s2)
 
-	router := NewRouter(slog.Default(), c1, c2)
+	router := mcp.NewRouter(slog.Default(), c1, c2)
 
 	if got, ok := router.ClientFor("tool_a"); !ok || got != c1 {
 		t.Errorf("ClientFor(tool_a): got %v, ok=%v; want c1", got, ok)
@@ -102,16 +78,16 @@ func TestRouter_ClientFor(t *testing.T) {
 }
 
 func TestRouter_DuplicateName_LastWins(t *testing.T) {
-	s1 := NewServer("server1", "0.0.1")
+	s1 := mcp.NewServer("server1", "0.0.1")
 	s1.MustAddTool("shared", "From server 1", nil, func(_ context.Context, _ map[string]any) (string, error) { return "s1", nil })
 
-	s2 := NewServer("server2", "0.0.1")
+	s2 := mcp.NewServer("server2", "0.0.1")
 	s2.MustAddTool("shared", "From server 2", nil, func(_ context.Context, _ map[string]any) (string, error) { return "s2", nil })
 
-	c1 := newTestClient(t, s1)
-	c2 := newTestClient(t, s2)
+	c1 := mcp.NewTestClient(t, s1)
+	c2 := mcp.NewTestClient(t, s2)
 
-	router := NewRouter(slog.Default(), c1, c2)
+	router := mcp.NewRouter(slog.Default(), c1, c2)
 
 	got, ok := router.ClientFor("shared")
 	if !ok {
@@ -123,9 +99,9 @@ func TestRouter_DuplicateName_LastWins(t *testing.T) {
 }
 
 func TestClient_Close_Idempotent(t *testing.T) {
-	s := NewServer("test-server", "0.0.1")
+	s := mcp.NewServer("test-server", "0.0.1")
 	s.MustAddTool("noop", "No-op", nil, func(_ context.Context, _ map[string]any) (string, error) { return "", nil })
-	client := newTestClient(t, s)
+	client := mcp.NewTestClient(t, s)
 
 	if err := client.Close(); err != nil {
 		t.Errorf("first Close: %v", err)
@@ -135,18 +111,53 @@ func TestClient_Close_Idempotent(t *testing.T) {
 	}
 }
 
+func TestClient_Transport(t *testing.T) {
+	t.Parallel()
+
+	s := mcp.NewServer("test-server", "0.0.1")
+	s.MustAddTool("noop", "No-op", nil, func(_ context.Context, _ map[string]any) (string, error) { return "", nil })
+	client := mcp.NewTestClient(t, s)
+
+	if client.Transport() != mcp.TransportStdio {
+		t.Errorf("Transport = %q, want %q", client.Transport(), mcp.TransportStdio)
+	}
+}
+
 func TestMCPConnectionError_Unwrap(t *testing.T) {
+	t.Parallel()
+
 	cause := errors.New("dial failed")
-	err := &MCPConnectionError{Transport: TransportStdio, Addr: "cmd", Cause: cause}
+	err := &mcp.MCPConnectionError{Transport: mcp.TransportStdio, Addr: "cmd", Cause: cause}
 	if !errors.Is(err, cause) {
 		t.Error("expected errors.Is to find cause through Unwrap")
+	}
+	msg := err.Error()
+	if msg == "" {
+		t.Error("Error() should return a non-empty string")
 	}
 }
 
 func TestMCPDiscoveryError_Unwrap(t *testing.T) {
+	t.Parallel()
+
 	cause := errors.New("timeout")
-	err := &MCPDiscoveryError{Transport: TransportSSE, Cause: cause}
+	err := &mcp.MCPDiscoveryError{Transport: mcp.TransportSSE, Cause: cause}
 	if !errors.Is(err, cause) {
 		t.Error("expected errors.Is to find cause through Unwrap")
+	}
+	msg := err.Error()
+	if msg == "" {
+		t.Error("Error() should return a non-empty string")
+	}
+}
+
+func TestMCPToolError_Error(t *testing.T) {
+	t.Parallel()
+
+	err := &mcp.MCPToolError{Tool: "read_file", Message: "file not found"}
+	got := err.Error()
+	want := `mcp tool "read_file": file not found`
+	if got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
 	}
 }
