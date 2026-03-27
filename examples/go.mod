@@ -2,7 +2,10 @@ module github.com/Germanblandin1/goagent/examples
 
 go 1.23.2
 
-require github.com/Germanblandin1/goagent v0.0.0
+require (
+	github.com/Germanblandin1/goagent v0.0.0
+	github.com/Germanblandin1/goagent/mcp v0.0.0
+)
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.27.1 // indirect
@@ -20,3 +23,5 @@ require (
 )
 
 replace github.com/Germanblandin1/goagent => ..
+
+replace github.com/Germanblandin1/goagent/mcp => ../mcp
