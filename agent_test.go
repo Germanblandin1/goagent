@@ -3,11 +3,23 @@ package goagent_test
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"testing"
 
 	"github.com/Germanblandin1/goagent"
 	"github.com/Germanblandin1/goagent/internal/testutil"
 )
+
+// recordingCloser counts how many times Close has been called.
+type recordingCloser struct {
+	closed int
+}
+
+func (c *recordingCloser) Close() error {
+	c.closed++
+	return nil
+}
 
 // endTurnResp builds a simple final-answer response.
 func endTurnResp(content string) goagent.CompletionResponse {
@@ -912,5 +924,113 @@ func TestAgentRun_ThinkingStrippedBeforePersist(t *testing.T) {
 		if msg.HasContentType(goagent.ContentThinking) {
 			t.Errorf("thinking block found in stored message (role=%q) — should have been stripped before persist", msg.Role)
 		}
+	}
+}
+
+func TestNew_WithMCPConnector_ToolAvailable(t *testing.T) {
+	t.Parallel()
+
+	closer := &recordingCloser{}
+	fakeTool := goagent.ToolFunc("mcp_tool", "from MCP", nil,
+		func(_ context.Context, _ map[string]any) (string, error) { return "mcp_result", nil },
+	)
+
+	connector := func(_ context.Context, _ *slog.Logger) ([]goagent.Tool, io.Closer, error) {
+		return []goagent.Tool{fakeTool}, closer, nil
+	}
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider(
+			toolUseResp("t1", "mcp_tool", map[string]any{}),
+			endTurnResp("done"),
+		)),
+		goagent.WithMCPConnector(connector),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer agent.Close()
+
+	result, err := agent.Run(context.Background(), "use mcp tool")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result != "done" {
+		t.Errorf("result = %q, want %q", result, "done")
+	}
+}
+
+func TestAgent_Close_CallsCloser(t *testing.T) {
+	t.Parallel()
+
+	closer := &recordingCloser{}
+	connector := func(_ context.Context, _ *slog.Logger) ([]goagent.Tool, io.Closer, error) {
+		return nil, closer, nil
+	}
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider()),
+		goagent.WithMCPConnector(connector),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err := agent.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+	if closer.closed != 1 {
+		t.Errorf("closer.closed = %d, want 1", closer.closed)
+	}
+}
+
+func TestAgent_Close_Idempotent(t *testing.T) {
+	t.Parallel()
+
+	closer := &recordingCloser{}
+	connector := func(_ context.Context, _ *slog.Logger) ([]goagent.Tool, io.Closer, error) {
+		return nil, closer, nil
+	}
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider()),
+		goagent.WithMCPConnector(connector),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_ = agent.Close()
+	_ = agent.Close() // second call must not invoke the closer again
+
+	if closer.closed != 1 {
+		t.Errorf("closer.closed = %d after two Close calls, want 1 (idempotent)", closer.closed)
+	}
+}
+
+func TestNew_MCPConnectorError_ClosesAlreadyOpened(t *testing.T) {
+	t.Parallel()
+
+	closer1 := &recordingCloser{}
+	connErr := errors.New("connection refused")
+
+	_, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider()),
+		goagent.WithMCPConnector(func(_ context.Context, _ *slog.Logger) ([]goagent.Tool, io.Closer, error) {
+			return nil, closer1, nil
+		}),
+		goagent.WithMCPConnector(func(_ context.Context, _ *slog.Logger) ([]goagent.Tool, io.Closer, error) {
+			return nil, nil, connErr
+		}),
+	)
+
+	if err == nil {
+		t.Fatal("expected error from failing connector, got nil")
+	}
+	if !errors.Is(err, connErr) {
+		t.Errorf("want connErr in chain, got: %v", err)
+	}
+	if closer1.closed != 1 {
+		t.Errorf("closer1.closed = %d, want 1 (should be closed on error)", closer1.closed)
 	}
 }
