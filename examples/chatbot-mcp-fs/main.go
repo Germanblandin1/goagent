@@ -83,7 +83,7 @@ func runChatbot(root, exe string) {
 
 	agent, err := goagent.New(
 		goagent.WithProvider(ollama.New()),
-		goagent.WithModel("qwen3:8b"),
+		goagent.WithModel("gpt-oss:120b-cloud"),
 		goagent.WithShortTermMemory(mem),
 		goagent.WithMaxIterations(10),
 		goagent.WithSystemPrompt(fmt.Sprintf(
