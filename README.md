@@ -54,6 +54,29 @@ goagent/              Core — Agent, ReAct loop, interfaces
 
 `Agent.Run` alternates between calling the model and executing tool calls until the model produces a final answer, the context is cancelled, or the iteration budget is exhausted. All tool calls within a single turn are dispatched concurrently.
 
+```
+                    ┌──────────────────────┐
+                    │        prompt        │
+                    └──────────┬───────────┘
+                               │
+                    ┌──────────▼───────────┐
+             ┌─────▶│        model         │◀── OnIterationStart
+             │      └──────────┬───────────┘
+             │                 │
+             │      ┌──────────▼───────────────────────┐
+             │      │    response has tool calls?       │
+             │      └──────────┬────────────┬───────────┘
+             │                yes           no
+             │      ┌──────────▼──────┐  ┌──▼─────────────┐
+             │      │ dispatch tools  │  │     answer      │
+             │      │  (concurrent)   │  │    (return)     │
+             │      │  OnToolCall     │  └────────────────-┘
+             │      │  OnToolResult   │       OnResponse
+             │      └──────────┬──────┘
+             │                 │
+             └─────────────────┘  (next iteration)
+```
+
 ### Tools
 
 Implement the `Tool` interface or use the `ToolFunc` helper:
