@@ -36,13 +36,57 @@ type Agent struct {
 
 // New creates an Agent with the provided options applied over sensible defaults.
 // A Provider must be supplied via WithProvider before calling Run.
-func New(opts ...Option) *Agent {
+//
+// If any WithMCP* options are present, New establishes the MCP connections,
+// discovers their tools, and returns an error if any connection fails.
+// On error, all already-opened connections are closed before returning.
+//
+// Call Close to release MCP connections when the agent is no longer needed:
+//
+//	agent, err := goagent.New(...)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer agent.Close()
+func New(opts ...Option) (*Agent, error) {
 	o := defaults()
 	for _, opt := range opts {
 		opt(o)
 	}
-	return &Agent{opts: o}
+
+	for _, fn := range o.mcpConnectors {
+		tools, closer, err := fn(context.Background(), o.logger)
+		if err != nil {
+			// Close already-opened connections before returning.
+			for _, c := range o.mcpClosers {
+				_ = c.Close()
+			}
+			return nil, err
+		}
+		o.tools = append(o.tools, tools...)
+		if closer != nil {
+			o.mcpClosers = append(o.mcpClosers, closer)
+		}
+	}
+
+	return &Agent{opts: o}, nil
 }
+
+// Close releases all MCP connections opened during New.
+// For stdio transports: terminates the subprocess.
+// For SSE transports: closes the HTTP connection.
+// Idempotent — multiple calls are safe.
+// Errors are logged at Warn level; the method always returns nil.
+func (a *Agent) Close() error {
+	for _, c := range a.opts.mcpClosers {
+		if err := c.Close(); err != nil {
+			a.opts.logger.Warn("mcp client close error", "err", err)
+		}
+	}
+	a.opts.mcpClosers = nil
+	return nil
+}
+
 
 // Run executes the ReAct loop for the given prompt and returns the model's
 // final text response.

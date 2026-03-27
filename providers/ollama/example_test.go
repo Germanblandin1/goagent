@@ -15,10 +15,13 @@ import (
 func Example() {
 	provider := ollama.New()
 
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(provider),
 		goagent.WithModel("qwen3"),
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	resp, err := agent.Run(context.Background(), "What is the capital of France?")
 	if err != nil {
@@ -43,10 +46,13 @@ func ExampleWithBaseURL() {
 		ollama.WithBaseURL("http://ollama.internal:11434/v1"),
 	)
 
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(p),
 		goagent.WithModel("llama3"),
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	_, _ = agent.Run(context.Background(), "ping")
 }
@@ -58,10 +64,13 @@ func ExampleNew_stateless() {
 	p := ollama.New()
 
 	// A single stateless agent shared across goroutines is safe.
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(p),
 		goagent.WithModel("qwen3"),
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	prompts := []string{"hello", "what is Go?", "what is 2+2?"}
 	results := make(chan string, len(prompts))

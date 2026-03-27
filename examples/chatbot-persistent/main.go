@@ -68,7 +68,7 @@ func main() {
 	// that captures ctx so the judge respects application-level cancellation.
 	judgePolicy := newJudgePolicy(ctx)
 
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(ollama.New()),
 		goagent.WithModel("gpt-oss:120b-cloud"),
 		goagent.WithShortTermMemory(shortTerm),
@@ -76,6 +76,9 @@ func main() {
 		goagent.WithWritePolicy(judgePolicy),
 		goagent.WithSystemPrompt("You are a helpful and concise assistant. Your name is GoAgentBot."),
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	scanner := bufio.NewScanner(os.Stdin)
 

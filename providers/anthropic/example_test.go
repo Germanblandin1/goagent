@@ -2,6 +2,7 @@ package anthropic_test
 
 import (
 	"context"
+	"log"
 
 	"github.com/Germanblandin1/goagent"
 	provider "github.com/Germanblandin1/goagent/providers/anthropic"
@@ -13,10 +14,13 @@ import (
 func ExampleNew() {
 	p := provider.New()
 
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(p),
 		goagent.WithModel("claude-sonnet-4-6"),
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	_, _ = agent.Run(context.Background(), "What is 2+2?")
 }
@@ -28,11 +32,14 @@ func ExampleNew_withAPIKey() {
 		provider.WithMaxTokens(1024),
 	)
 
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(p),
 		goagent.WithModel("claude-haiku-4-5"),
 		goagent.WithSystemPrompt("Be concise."),
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	_, _ = agent.Run(context.Background(), "Explain Go interfaces in one sentence.")
 }
@@ -56,11 +63,14 @@ func ExampleNew_withTool() {
 		},
 	)
 
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(p),
 		goagent.WithModel("claude-sonnet-4-6"),
 		goagent.WithTool(add),
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	_, _ = agent.Run(context.Background(), "What is 2 + 3?")
 }

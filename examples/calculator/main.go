@@ -59,12 +59,15 @@ func main() {
 		},
 	)
 
-	agent := goagent.New(
+	agent, err := goagent.New(
 		goagent.WithProvider(ollama.New()),
 		goagent.WithModel("gpt-oss:120b-cloud"),
 		goagent.WithTool(calc),
 		goagent.WithSystemPrompt("You are a helpful assistant. Use the calculator tool when asked to compute numbers."),
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	answer, err := agent.Run(context.Background(), "What is (123 * 456) + 789?")
 	if err != nil {

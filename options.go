@@ -1,6 +1,15 @@
 package goagent
 
-import "log/slog"
+import (
+	"context"
+	"io"
+	"log/slog"
+)
+
+// MCPConnectorFn is a function that establishes an MCP connection, discovers
+// tools, and returns them along with a Closer for lifecycle management.
+// It is called by New for each WithMCP* option applied to the agent.
+type MCPConnectorFn func(ctx context.Context, logger *slog.Logger) ([]Tool, io.Closer, error)
 
 // options holds the resolved configuration for an Agent.
 type options struct {
@@ -18,6 +27,8 @@ type options struct {
 	thinking       *ThinkingConfig
 	effort         string
 	hooks          Hooks
+	mcpConnectors  []MCPConnectorFn
+	mcpClosers     []io.Closer
 }
 
 // Option is a functional option for configuring an Agent.
@@ -165,6 +176,19 @@ func WithEffort(level string) Option {
 //	)
 func WithHooks(h Hooks) Option {
 	return func(o *options) { o.hooks = h }
+}
+
+// WithMCPConnector registers an MCP connector that is called during New to
+// establish a connection, discover tools, and obtain a Closer for lifecycle
+// management. The connection is established once during New; if it fails, New
+// returns an error and closes any already-opened connections.
+//
+// Callers typically use the higher-level helpers in the mcp sub-package
+// (mcp.WithStdio, mcp.WithSSE) rather than calling this directly.
+func WithMCPConnector(fn MCPConnectorFn) Option {
+	return func(o *options) {
+		o.mcpConnectors = append(o.mcpConnectors, fn)
+	}
 }
 
 // defaults returns the baseline options before any Option is applied.

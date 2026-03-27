@@ -3,11 +3,23 @@ package goagent_test
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"testing"
 
 	"github.com/Germanblandin1/goagent"
 	"github.com/Germanblandin1/goagent/internal/testutil"
 )
+
+// recordingCloser counts how many times Close has been called.
+type recordingCloser struct {
+	closed int
+}
+
+func (c *recordingCloser) Close() error {
+	c.closed++
+	return nil
+}
 
 // endTurnResp builds a simple final-answer response.
 func endTurnResp(content string) goagent.CompletionResponse {
@@ -175,7 +187,10 @@ func TestAgentRun(t *testing.T) {
 			if tt.provider != nil {
 				opts = append(opts, goagent.WithProvider(tt.provider))
 			}
-			a := goagent.New(opts...)
+			a, err := goagent.New(opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
 
 			ctx := context.Background()
 			if tt.name == "context cancellation" {
@@ -225,10 +240,13 @@ func TestAgentRun_WithMemory_HistoryPrepended(t *testing.T) {
 		goagent.AssistantMessage("Hola Lucas!"),
 	)
 	mp := testutil.NewMockProvider(endTurnResp("eres Lucas"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithShortTermMemory(mem),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "¿cómo me llamo?")
 
@@ -261,11 +279,14 @@ func TestAgentRun_WithMemory_AllTurnsStored(t *testing.T) {
 		toolUseResp("c1", "calc", map[string]any{}),
 		endTurnResp("the answer is 42"),
 	)
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithTool(calcTool),
 		goagent.WithShortTermMemory(mem),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "what is 6*7")
 
@@ -297,10 +318,13 @@ func TestAgentRun_WithMemory_AccumulatesAcrossRuns(t *testing.T) {
 		endTurnResp("resp-2"),
 		endTurnResp("resp-3"),
 	)
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithShortTermMemory(mem),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	ctx := context.Background()
 	_, _ = a.Run(ctx, "prompt-1")
@@ -318,10 +342,13 @@ func TestAgentRun_WithMemory_NilMemory_Stateless(t *testing.T) {
 	t.Parallel()
 
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithShortTermMemory(nil),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := a.Run(context.Background(), "hi")
 	if err != nil {
@@ -337,10 +364,13 @@ func TestAgentRun_WithMemory_AppendError_DoesNotFail(t *testing.T) {
 
 	mem := testutil.NewMockMemoryWithErrors(errors.New("storage unavailable"), nil)
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithShortTermMemory(mem),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := a.Run(context.Background(), "hi")
 	if err != nil {
@@ -360,14 +390,17 @@ func TestAgentRun_WithMemory_MaxIterations_StillPersists(t *testing.T) {
 		toolUseResp("c1", "calc", map[string]any{}),
 		toolUseResp("c2", "calc", map[string]any{}),
 	)
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithTool(calcTool),
 		goagent.WithShortTermMemory(mem),
 		goagent.WithMaxIterations(2),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := a.Run(context.Background(), "loop")
+	_, err = a.Run(context.Background(), "loop")
 	if err == nil {
 		t.Fatal("expected MaxIterationsError")
 	}
@@ -392,12 +425,15 @@ func TestAgentRun_WithShortTermTraceTools_False_StoresOnlyUserAndFinalAssistant(
 		toolUseResp("c1", "calc", map[string]any{}),
 		endTurnResp("the answer is 42"),
 	)
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithTool(calcTool),
 		goagent.WithShortTermMemory(mem),
 		goagent.WithShortTermTraceTools(false),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "what is 6*7")
 
@@ -420,10 +456,13 @@ func TestAgentRun_WithLongTermMemory_RetrieveContextPrepended(t *testing.T) {
 	pastMsg := goagent.UserMessage("past context")
 	ltm := testutil.NewMockLongTermMemoryWithRetrieve(pastMsg)
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithLongTermMemory(ltm),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "current question")
 
@@ -449,10 +488,13 @@ func TestAgentRun_WithLongTermMemory_StoreCalledAfterRun(t *testing.T) {
 
 	ltm := testutil.NewMockLongTermMemory()
 	mp := testutil.NewMockProvider(endTurnResp("great answer"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithLongTermMemory(ltm),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "my question")
 
@@ -473,12 +515,15 @@ func TestAgentRun_WithLongTermMemory_WritePolicy_Skips(t *testing.T) {
 
 	ltm := testutil.NewMockLongTermMemory()
 	mp := testutil.NewMockProvider(endTurnResp("short"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithLongTermMemory(ltm),
 		// Only store turns where prompt+response > 100 chars; "short" won't qualify.
 		goagent.WithWritePolicy(goagent.MinLength(100)),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "hi")
 
@@ -492,10 +537,13 @@ func TestAgentRun_WithLongTermMemory_StoreError_DoesNotFail(t *testing.T) {
 
 	ltm := testutil.NewMockLongTermMemoryWithErrors(errors.New("storage down"), nil)
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithLongTermMemory(ltm),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := a.Run(context.Background(), "hi")
 	if err != nil {
@@ -515,11 +563,14 @@ func TestAgentRun_BothMemories_LongTermBeforeShortTerm(t *testing.T) {
 		goagent.UserMessage("recent history"),
 	)
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithLongTermMemory(ltm),
 		goagent.WithShortTermMemory(stm),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "current prompt")
 
@@ -599,10 +650,13 @@ func TestAgentRunBlocks(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			a := goagent.New(
+			a, err := goagent.New(
 				goagent.WithProvider(testutil.NewMockProvider(endTurnResp("ok"))),
 				goagent.WithMaxIterations(3),
 			)
+			if err != nil {
+				t.Fatal(err)
+			}
 
 			result, err := a.RunBlocks(context.Background(), tt.blocks...)
 
@@ -630,10 +684,13 @@ func TestAgentRun_SystemPromptForwarded(t *testing.T) {
 	t.Parallel()
 
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithSystemPrompt("be concise"),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "hi")
 
@@ -652,10 +709,13 @@ func TestAgentRun_WithThinking_PropagatedToProvider(t *testing.T) {
 	t.Parallel()
 
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithThinking(8000),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "hello")
 
@@ -679,10 +739,13 @@ func TestAgentRun_WithAdaptiveThinking_PropagatedToProvider(t *testing.T) {
 	t.Parallel()
 
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithAdaptiveThinking(),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "hello")
 
@@ -706,10 +769,13 @@ func TestAgentRun_WithEffort_PropagatedToProvider(t *testing.T) {
 	t.Parallel()
 
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithEffort("medium"),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "hello")
 
@@ -726,11 +792,14 @@ func TestAgentRun_ThinkingAndEffort_Combined(t *testing.T) {
 	t.Parallel()
 
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithThinking(4096),
 		goagent.WithEffort("low"),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "hello")
 
@@ -751,7 +820,10 @@ func TestAgentRun_NoThinking_ThinkingFieldNil(t *testing.T) {
 	t.Parallel()
 
 	mp := testutil.NewMockProvider(endTurnResp("ok"))
-	a := goagent.New(goagent.WithProvider(mp))
+	a, err := goagent.New(goagent.WithProvider(mp))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "hello")
 
@@ -788,11 +860,14 @@ func TestAgentRun_ThinkingPreservedDuringToolUse(t *testing.T) {
 	secondResp := endTurnResp("the answer is 42")
 
 	mp := testutil.NewMockProvider(firstResp, secondResp)
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithTool(calcTool),
 		goagent.WithThinking(4096),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "what is 6*7")
 
@@ -833,11 +908,14 @@ func TestAgentRun_ThinkingStrippedBeforePersist(t *testing.T) {
 
 	mem := testutil.NewMockMemory()
 	mp := testutil.NewMockProvider(respWithThinking)
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithShortTermMemory(mem),
 		goagent.WithThinking(4096),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	_, _ = a.Run(context.Background(), "a question")
 
@@ -846,5 +924,113 @@ func TestAgentRun_ThinkingStrippedBeforePersist(t *testing.T) {
 		if msg.HasContentType(goagent.ContentThinking) {
 			t.Errorf("thinking block found in stored message (role=%q) — should have been stripped before persist", msg.Role)
 		}
+	}
+}
+
+func TestNew_WithMCPConnector_ToolAvailable(t *testing.T) {
+	t.Parallel()
+
+	closer := &recordingCloser{}
+	fakeTool := goagent.ToolFunc("mcp_tool", "from MCP", nil,
+		func(_ context.Context, _ map[string]any) (string, error) { return "mcp_result", nil },
+	)
+
+	connector := func(_ context.Context, _ *slog.Logger) ([]goagent.Tool, io.Closer, error) {
+		return []goagent.Tool{fakeTool}, closer, nil
+	}
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider(
+			toolUseResp("t1", "mcp_tool", map[string]any{}),
+			endTurnResp("done"),
+		)),
+		goagent.WithMCPConnector(connector),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer agent.Close()
+
+	result, err := agent.Run(context.Background(), "use mcp tool")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result != "done" {
+		t.Errorf("result = %q, want %q", result, "done")
+	}
+}
+
+func TestAgent_Close_CallsCloser(t *testing.T) {
+	t.Parallel()
+
+	closer := &recordingCloser{}
+	connector := func(_ context.Context, _ *slog.Logger) ([]goagent.Tool, io.Closer, error) {
+		return nil, closer, nil
+	}
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider()),
+		goagent.WithMCPConnector(connector),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err := agent.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+	if closer.closed != 1 {
+		t.Errorf("closer.closed = %d, want 1", closer.closed)
+	}
+}
+
+func TestAgent_Close_Idempotent(t *testing.T) {
+	t.Parallel()
+
+	closer := &recordingCloser{}
+	connector := func(_ context.Context, _ *slog.Logger) ([]goagent.Tool, io.Closer, error) {
+		return nil, closer, nil
+	}
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider()),
+		goagent.WithMCPConnector(connector),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_ = agent.Close()
+	_ = agent.Close() // second call must not invoke the closer again
+
+	if closer.closed != 1 {
+		t.Errorf("closer.closed = %d after two Close calls, want 1 (idempotent)", closer.closed)
+	}
+}
+
+func TestNew_MCPConnectorError_ClosesAlreadyOpened(t *testing.T) {
+	t.Parallel()
+
+	closer1 := &recordingCloser{}
+	connErr := errors.New("connection refused")
+
+	_, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider()),
+		goagent.WithMCPConnector(func(_ context.Context, _ *slog.Logger) ([]goagent.Tool, io.Closer, error) {
+			return nil, closer1, nil
+		}),
+		goagent.WithMCPConnector(func(_ context.Context, _ *slog.Logger) ([]goagent.Tool, io.Closer, error) {
+			return nil, nil, connErr
+		}),
+	)
+
+	if err == nil {
+		t.Fatal("expected error from failing connector, got nil")
+	}
+	if !errors.Is(err, connErr) {
+		t.Errorf("want connErr in chain, got: %v", err)
+	}
+	if closer1.closed != 1 {
+		t.Errorf("closer1.closed = %d, want 1 (should be closed on error)", closer1.closed)
 	}
 }

@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-03-27
+
+### Added
+
+**MCP integration (`goagent/mcp`)**
+- New sub-module `github.com/Germanblandin1/goagent/mcp` with full MCP (Model Context Protocol) client and server support
+- `NewServer(name, version)` — builds an in-process MCP server; `AddTool` / `MustAddTool` register tools with optional JSON Schema
+- `ServeStdio()` / `ServeSSE(addr)` — starts the server on stdio or HTTP+SSE transport
+- `NewStdioClient(ctx, logger, cmd, args...)` — spawns a subprocess and connects over stdin/stdout
+- `NewSSEClient(ctx, logger, url)` — connects to an already-running HTTP+SSE MCP server
+- Both clients perform the MCP handshake with exponential-backoff retry (up to 3 attempts: 100 ms, 200 ms, 400 ms) and auto-discover all tools via `tools/list`
+- `NewRouter(logger, clients...)` — aggregates tools from multiple clients; last-registered wins on name collision
+- `Transport` type (`TransportStdio`, `TransportSSE`) identifies the connection mechanism of a client
+- Typed errors: `MCPConnectionError` (handshake/dial failure), `MCPDiscoveryError` (tool listing failure), `MCPToolError` (tool execution business error); all implement `errors.Is`/`errors.As` via `Unwrap`
+
+**Core agent (`goagent`)**
+- `goagent.New` now returns `(*Agent, error)` — connection errors from MCP connectors surface at construction time
+- `WithMCPConnector(fn MCPConnectorFn)` — low-level option to attach any `MCPClient` to the agent; used internally by `mcp.WithStdio` and `mcp.WithSSE`
+- `Agent.Close() error` — gracefully shuts down all attached MCP clients; idempotent (safe to call multiple times)
+
+**MCP agent options (`goagent/mcp`)**
+- `WithStdio(cmd, args...)` — convenience option: spawns a stdio MCP server subprocess and connects the agent to it
+- `WithSSE(url)` — convenience option: connects the agent to a running HTTP+SSE MCP server
+
+**Module structure**
+- `go.work` workspace now includes `./mcp`, `./providers/anthropic`, `./providers/ollama`, and `./examples` for unified local development
+
+**Examples**
+- `examples/chatbot-mcp-fs` — self-contained interactive chatbot with read-only filesystem access via MCP stdio; the same binary acts as both the chatbot agent and the MCP server (`--serve` flag); `safePath` sanitization prevents directory traversal and rejects absolute paths; supports `list_dir` and `read_file` tools with a 100 KB file size limit
+
+### Changed
+
+**Core agent (`goagent`)**
+- `goagent.New` signature changed from `*Agent` to `(*Agent, error)` — callers must handle the error (typically with `log.Fatal`)
+
+### Fixed
+
+**MCP (`goagent/mcp`)**
+- `AddTool` now uses `mcp.NewToolWithRawSchema` when a schema is provided, avoiding a conflict between `InputSchema` and `RawInputSchema` that caused silent serialisation errors
+- `schemaToMap` returns `nil` for tools registered without a schema instead of an empty `{"type":"object","properties":{}}` object
+
 ## [0.1.2] - 2026-03-26
 
 ### Added

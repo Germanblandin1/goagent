@@ -27,10 +27,13 @@ func TestDispatcher_SingleTool(t *testing.T) {
 		endTurnResp("done"),
 	)
 
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithTool(tool),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	result, err := a.Run(context.Background(), "ping")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -73,10 +76,13 @@ func TestDispatcher_ParallelTools(t *testing.T) {
 		endTurnResp("sum done"),
 	)
 
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithTool(tool),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	result, err := a.Run(context.Background(), "sum three things")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -108,7 +114,10 @@ func TestDispatcher_ToolNotFound(t *testing.T) {
 	)
 
 	// No tools registered — dispatcher must report ErrToolNotFound as observation.
-	a := goagent.New(goagent.WithProvider(mp))
+	a, err := goagent.New(goagent.WithProvider(mp))
+	if err != nil {
+		t.Fatal(err)
+	}
 	result, err := a.Run(context.Background(), "use nonexistent")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -148,11 +157,14 @@ func TestDispatcher_ToolError_DoesNotAbortOtherCalls(t *testing.T) {
 		endTurnResp("both observed"),
 	)
 
-	a := goagent.New(
+	a, err := goagent.New(
 		goagent.WithProvider(mp),
 		goagent.WithTool(goodTool),
 		goagent.WithTool(badTool),
 	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	result, err := a.Run(context.Background(), "run both")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
