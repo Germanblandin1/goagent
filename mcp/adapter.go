@@ -33,8 +33,13 @@ func adapt(t mcp.Tool, c *Client) goagent.Tool {
 }
 
 // schemaToMap converts a mcp.ToolInputSchema to map[string]any via JSON round-trip.
-// Returns nil if the schema is empty.
+// Returns nil if the schema is empty or default-initialised (no properties, no required).
 func schemaToMap(schema mcp.ToolInputSchema) map[string]any {
+	// mcp.NewTool always initialises InputSchema with Type="object" and an
+	// empty Properties map. Treat that default as "no schema".
+	if len(schema.Properties) == 0 && len(schema.Required) == 0 {
+		return nil
+	}
 	data, err := json.Marshal(schema)
 	if err != nil || string(data) == "null" || string(data) == "{}" {
 		return nil

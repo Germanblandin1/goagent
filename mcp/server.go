@@ -71,17 +71,16 @@ func NewServer(name, version string) *Server {
 //	    return err
 //	}
 func (s *Server) AddTool(name, description string, schema any, fn ToolHandlerFunc) error {
-	var opts []mcp.ToolOption
-	opts = append(opts, mcp.WithDescription(description))
+	var tool mcp.Tool
 	if schema != nil {
 		raw, err := json.Marshal(schema)
 		if err != nil {
 			return fmt.Errorf("AddTool %q: invalid schema: %w", name, err)
 		}
-		opts = append(opts, mcp.WithRawInputSchema(raw))
+		tool = mcp.NewToolWithRawSchema(name, description, raw)
+	} else {
+		tool = mcp.NewTool(name, mcp.WithDescription(description))
 	}
-
-	tool := mcp.NewTool(name, opts...)
 
 	s.inner.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		result, err := fn(ctx, req.GetArguments())
