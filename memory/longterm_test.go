@@ -3,10 +3,13 @@ package memory_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/Germanblandin1/goagent"
+	"github.com/Germanblandin1/goagent/internal/session"
 	"github.com/Germanblandin1/goagent/memory"
+	"github.com/Germanblandin1/goagent/memory/vector"
 )
 
 // recordingVectorStore tracks the IDs passed to Upsert.
@@ -296,4 +299,132 @@ func TestLongTermStoreEmbedError(t *testing.T) {
 	if !errors.Is(err, errEmbed) {
 		t.Errorf("want errEmbed in chain, got: %v", err)
 	}
+}
+
+// ── Chunker integration tests ─────────────────────────────────────────────────
+
+// TestLongTerm_WithChunker_NoOp verifies that the default NoOpChunker produces
+// the same behaviour as the previous chunk-free implementation: exactly one
+// Upsert per message.
+func TestLongTerm_WithChunker_NoOp(t *testing.T) {
+	store := &recordingVectorStore{}
+	m, err := memory.NewLongTerm(
+		memory.WithVectorStore(store),
+		memory.WithEmbedder(stubEmbedder{}),
+		memory.WithChunker(vector.NewNoOpChunker()),
+	)
+	if err != nil {
+		t.Fatalf("NewLongTerm: %v", err)
+	}
+
+	if err := m.Store(context.Background(), goagent.UserMessage("hello")); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	if len(store.ids) != 1 {
+		t.Errorf("expected 1 upsert with NoOpChunker, got %d", len(store.ids))
+	}
+}
+
+// TestLongTerm_WithChunker_TextChunker verifies that a long message produces
+// multiple Upserts when using TextChunker.
+func TestLongTerm_WithChunker_TextChunker(t *testing.T) {
+	store := &recordingVectorStore{}
+	// Build a message long enough to be split.
+	words := make([]string, 30)
+	for i := range words {
+		words[i] = "word"
+	}
+	longText := strings.Join(words, " ")
+
+	m, err := memory.NewLongTerm(
+		memory.WithVectorStore(store),
+		memory.WithEmbedder(stubEmbedder{}),
+		memory.WithChunker(vector.NewTextChunker(
+			vector.WithMaxSize(12),
+			vector.WithOverlap(0),
+		)),
+	)
+	if err != nil {
+		t.Fatalf("NewLongTerm: %v", err)
+	}
+
+	if err := m.Store(context.Background(), goagent.UserMessage(longText)); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	if len(store.ids) < 2 {
+		t.Errorf("expected multiple upserts with TextChunker, got %d", len(store.ids))
+	}
+}
+
+// TestLongTerm_ChunkerError verifies that a Chunker error is propagated by Store.
+func TestLongTerm_ChunkerError(t *testing.T) {
+	errChunk := errors.New("chunker failed")
+	m, err := memory.NewLongTerm(
+		memory.WithVectorStore(&recordingVectorStore{}),
+		memory.WithEmbedder(stubEmbedder{}),
+		memory.WithChunker(&errChunker{err: errChunk}),
+	)
+	if err != nil {
+		t.Fatalf("NewLongTerm: %v", err)
+	}
+
+	err = m.Store(context.Background(), goagent.UserMessage("hi"))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, errChunk) {
+		t.Errorf("want errChunk in chain, got: %v", err)
+	}
+}
+
+// TestLongTerm_ErrNoEmbeddeableContent_Skipped verifies that chunks for which
+// the embedder returns ErrNoEmbeddeableContent are silently skipped.
+func TestLongTerm_ErrNoEmbeddeableContent_Skipped(t *testing.T) {
+	store := &recordingVectorStore{}
+	m, err := memory.NewLongTerm(
+		memory.WithVectorStore(store),
+		memory.WithEmbedder(&errEmbedder{err: vector.ErrNoEmbeddeableContent}),
+	)
+	if err != nil {
+		t.Fatalf("NewLongTerm: %v", err)
+	}
+
+	// Store should succeed even though the embedder returns ErrNoEmbeddeableContent.
+	if err := m.Store(context.Background(), goagent.UserMessage("hello")); err != nil {
+		t.Fatalf("Store must not fail on ErrNoEmbeddeableContent: %v", err)
+	}
+	if len(store.ids) != 0 {
+		t.Errorf("expected 0 upserts (all skipped), got %d", len(store.ids))
+	}
+}
+
+// TestLongTerm_SessionIDPrefixedIDs verifies that when a session ID is in the
+// context, Upsert IDs are prefixed with "sessionID:".
+func TestLongTerm_SessionIDPrefixedIDs(t *testing.T) {
+	store := &recordingVectorStore{}
+	m, err := memory.NewLongTerm(
+		memory.WithVectorStore(store),
+		memory.WithEmbedder(stubEmbedder{}),
+	)
+	if err != nil {
+		t.Fatalf("NewLongTerm: %v", err)
+	}
+
+	ctx := session.WithID(context.Background(), "sess-42")
+	if err := m.Store(ctx, goagent.UserMessage("hello")); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	if len(store.ids) != 1 {
+		t.Fatalf("expected 1 upsert, got %d", len(store.ids))
+	}
+	if !strings.HasPrefix(store.ids[0], "sess-42:") {
+		t.Errorf("ID %q does not start with 'sess-42:'", store.ids[0])
+	}
+}
+
+// errChunker is a Chunker stub that always returns an error.
+type errChunker struct{ err error }
+
+func (c *errChunker) Chunk(_ context.Context, _ vector.ChunkContent) ([]vector.ChunkResult, error) {
+	return nil, c.err
 }
