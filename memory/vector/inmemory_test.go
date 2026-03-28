@@ -102,7 +102,10 @@ func TestInMemoryStore_SessionFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx := session.WithID(context.Background(), "sess-A")
+	ctx, err := session.NewContext(context.Background(), "sess-A")
+	if err != nil {
+		t.Fatal(err)
+	}
 	results, err := s.Search(ctx, vec, 10)
 	if err != nil {
 		t.Fatal(err)

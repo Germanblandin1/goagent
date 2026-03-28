@@ -67,7 +67,10 @@ func TestWithName_LongTermMemoryNamespaceIsolation(t *testing.T) {
 	}
 
 	// Alice's view: should only see her own entries.
-	ctxAlice := session.WithID(context.Background(), "alice")
+	ctxAlice, err := session.NewContext(context.Background(), "alice")
+	if err != nil {
+		t.Fatalf("NewContext alice: %v", err)
+	}
 	aliceMsgs, err := store.Search(ctxAlice, queryVec, 10)
 	if err != nil {
 		t.Fatalf("Search alice: %v", err)
@@ -80,7 +83,10 @@ func TestWithName_LongTermMemoryNamespaceIsolation(t *testing.T) {
 	}
 
 	// Bob's view: should only see his own entries.
-	ctxBob := session.WithID(context.Background(), "bob")
+	ctxBob, err := session.NewContext(context.Background(), "bob")
+	if err != nil {
+		t.Fatalf("NewContext bob: %v", err)
+	}
 	bobMsgs, err := store.Search(ctxBob, queryVec, 10)
 	if err != nil {
 		t.Fatalf("Search bob: %v", err)

@@ -410,7 +410,10 @@ func TestLongTerm_SessionIDPrefixedIDs(t *testing.T) {
 		t.Fatalf("NewLongTerm: %v", err)
 	}
 
-	ctx := session.WithID(context.Background(), "sess-42")
+	ctx, err := session.NewContext(context.Background(), "sess-42")
+	if err != nil {
+		t.Fatalf("NewContext: %v", err)
+	}
 	if err := m.Store(ctx, goagent.UserMessage("hello")); err != nil {
 		t.Fatalf("Store: %v", err)
 	}

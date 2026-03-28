@@ -114,6 +114,9 @@ type longTermMemory struct {
 // When a chunk contains no embeddeable content (e.g. an image chunk with a
 // text-only embedder), the chunk is silently skipped — this is not an error.
 func (m *longTermMemory) Store(ctx context.Context, msgs ...goagent.Message) error {
+	// session.IDFromContext guarantees that sessionID never contains ":".
+	// See session.NewContext — IDs with ":" are rejected at injection time,
+	// so the first ":" in "sessionID:baseID:chunkIndex" is always the boundary.
 	sessionID, hasSession := session.IDFromContext(ctx)
 
 	for _, msg := range msgs {

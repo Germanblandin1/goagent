@@ -182,7 +182,15 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 	}
 
 	if a.opts.name != "" {
-		ctx = session.WithID(ctx, a.opts.name)
+		// Inject the agent name as the session ID so that LongTermMemory and
+		// InMemoryStore can scope vector entries to this agent. The name is
+		// validated here: ":" is forbidden because it is the separator used in
+		// the "sessionID:baseID:chunkIndex" entry ID format.
+		var err error
+		ctx, err = session.NewContext(ctx, a.opts.name)
+		if err != nil {
+			return "", fmt.Errorf("goagent: invalid agent name %q: %w", a.opts.name, err)
+		}
 	}
 
 	messages, historyLen, err := a.buildMessages(ctx, content)

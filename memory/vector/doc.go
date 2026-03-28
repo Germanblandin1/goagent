@@ -60,11 +60,13 @@
 // # Session filtering
 //
 // InMemoryStore.Search can filter results to a single session when the context
-// carries a session ID (injected via internal/session.WithID). Agent.Run sets
-// this automatically when WithName is configured. IDs must follow the
-// "sessionID:baseID:chunkIndex" convention used by memory.LongTermMemory:
+// carries a session ID (injected via internal/session.NewContext). Agent.Run
+// sets this automatically when WithName is configured. IDs must follow the
+// "sessionID:baseID:chunkIndex" convention used by memory.LongTermMemory.
+// session.NewContext rejects IDs containing ":" so the first ":" always marks
+// the boundary between the session prefix and the base ID:
 //
-//	ctx := session.WithID(ctx, "user-42")
+//	ctx, err := session.NewContext(ctx, "user-42")
 //	msgs, err := store.Search(ctx, queryVec, 3)
 //
 // # Similarity
