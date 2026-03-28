@@ -9,9 +9,8 @@ import (
 	"github.com/Germanblandin1/goagent/providers/ollama"
 )
 
-// Example shows how to wire an Ollama provider with an Agent.
-// It requires a locally running Ollama instance on the default address
-// (http://localhost:11434) and a pulled model — no Output: is verified.
+// Example shows how to wire an Ollama provider with an Agent using the
+// default client (localhost:11434).
 func Example() {
 	provider := ollama.New()
 
@@ -38,13 +37,14 @@ func ExampleNew() {
 	_ = p // pass to goagent.WithProvider
 }
 
-// ExampleWithBaseURL shows how to target a non-default Ollama endpoint,
-// for example when Ollama runs on a different host or port.
-// No Output: is verified because the example requires a live Ollama instance.
-func ExampleWithBaseURL() {
-	p := ollama.New(
-		ollama.WithBaseURL("http://ollama.internal:11434/v1"),
+// ExampleNewWithClient shows how to target a non-default Ollama endpoint by
+// supplying a custom OllamaClient — useful when Ollama runs on a different
+// host or when a shared client is needed for both Provider and OllamaEmbedder.
+func ExampleNewWithClient() {
+	client := ollama.NewClient(
+		ollama.WithBaseURL("http://ollama.internal:11434"),
 	)
+	p := ollama.NewWithClient(client)
 
 	agent, err := goagent.New(
 		goagent.WithProvider(p),

@@ -8,6 +8,8 @@ import (
 	"fmt"
 
 	"github.com/Germanblandin1/goagent"
+	"github.com/Germanblandin1/goagent/internal/session"
+	"github.com/Germanblandin1/goagent/memory/vector"
 )
 
 var (
@@ -23,6 +25,7 @@ var (
 type longTermConfig struct {
 	store       goagent.VectorStore
 	embedder    goagent.Embedder
+	chunker     vector.Chunker
 	topK        int
 	writePolicy goagent.WritePolicy
 }
@@ -38,6 +41,14 @@ func WithVectorStore(s goagent.VectorStore) LongTermOption {
 // WithEmbedder sets the embedding model used to vectorize messages. Required.
 func WithEmbedder(e goagent.Embedder) LongTermOption {
 	return func(c *longTermConfig) { c.embedder = e }
+}
+
+// WithChunker sets the chunking strategy used by Store before embedding.
+// Default: NoOpChunker — one message produces exactly one chunk.
+// For long documents or text that may exceed the embedding model's context
+// window, use TextChunker or BlockChunker.
+func WithChunker(c vector.Chunker) LongTermOption {
+	return func(cfg *longTermConfig) { cfg.chunker = c }
 }
 
 // WithTopK sets the default number of messages returned by Retrieve.
@@ -72,9 +83,13 @@ func NewLongTerm(opts ...LongTermOption) (goagent.LongTermMemory, error) {
 	if cfg.writePolicy == nil {
 		cfg.writePolicy = goagent.StoreAlways
 	}
+	if cfg.chunker == nil {
+		cfg.chunker = vector.NewNoOpChunker()
+	}
 	return &longTermMemory{
 		store:       cfg.store,
 		embedder:    cfg.embedder,
+		chunker:     cfg.chunker,
 		topK:        cfg.topK,
 		writePolicy: cfg.writePolicy,
 	}, nil
@@ -83,34 +98,58 @@ func NewLongTerm(opts ...LongTermOption) (goagent.LongTermMemory, error) {
 type longTermMemory struct {
 	store       goagent.VectorStore
 	embedder    goagent.Embedder
+	chunker     vector.Chunker
 	topK        int
 	writePolicy goagent.WritePolicy
 }
 
+// Store persists msgs via the configured chunking and embedding pipeline.
+// Each message is first split into chunks by the Chunker, then each chunk is
+// embedded and upserted into the VectorStore with a stable ID.
+//
+// ID format: "sessionID:sha256(msg):chunkIndex" when a session ID is present
+// in the context (via vector.WithSessionID), or "sha256(msg):chunkIndex" otherwise.
+// This convention allows InMemoryStore.Search to filter by session.
+//
+// When a chunk contains no embeddeable content (e.g. an image chunk with a
+// text-only embedder), the chunk is silently skipped — this is not an error.
 func (m *longTermMemory) Store(ctx context.Context, msgs ...goagent.Message) error {
-	// Fase 1: embeddear todo — si algo falla, no se persistió nada
-	type prepared struct {
-		id  string
-		vec []float32
-		msg goagent.Message
-	}
-	batch := make([]prepared, 0, len(msgs))
-	for _, msg := range msgs {
-		vec, err := m.embedder.Embed(ctx, msg.Content)
-		if err != nil {
-			return fmt.Errorf("embedding message (role=%s): %w", msg.Role, err)
-		}
-		batch = append(batch, prepared{
-			id:  messageID(msg),
-			vec: vec,
-			msg: msg,
-		})
-	}
+	// session.IDFromContext guarantees that sessionID never contains ":".
+	// See session.NewContext — IDs with ":" are rejected at injection time,
+	// so the first ":" in "sessionID:baseID:chunkIndex" is always the boundary.
+	sessionID, hasSession := session.IDFromContext(ctx)
 
-	// Fase 2: persistir — todo el embedding ya pasó sin errores
-	for _, p := range batch {
-		if err := m.store.Upsert(ctx, p.id, p.vec, p.msg); err != nil {
-			return fmt.Errorf("upserting message (role=%s): %w", p.msg.Role, err)
+	for _, msg := range msgs {
+		content := vector.ChunkContent{
+			Blocks:   msg.Content,
+			Metadata: map[string]any{"role": string(msg.Role)},
+		}
+		chunks, err := m.chunker.Chunk(ctx, content)
+		if err != nil {
+			return fmt.Errorf("chunking message (role=%s): %w", msg.Role, err)
+		}
+
+		baseID := messageID(msg)
+
+		for i, chunk := range chunks {
+			vec, err := m.embedder.Embed(ctx, chunk.Blocks)
+			if err != nil {
+				if errors.Is(err, vector.ErrNoEmbeddeableContent) {
+					continue // image/doc chunk with text-only embedder — skip silently
+				}
+				return fmt.Errorf("embedding chunk %d (role=%s): %w", i, msg.Role, err)
+			}
+
+			var id string
+			if hasSession {
+				id = fmt.Sprintf("%s:%s:%d", sessionID, baseID, i)
+			} else {
+				id = fmt.Sprintf("%s:%d", baseID, i)
+			}
+
+			if err := m.store.Upsert(ctx, id, vec, vector.ChunkToMessage(msg, chunk)); err != nil {
+				return fmt.Errorf("upserting chunk %d (role=%s): %w", i, msg.Role, err)
+			}
 		}
 	}
 	return nil

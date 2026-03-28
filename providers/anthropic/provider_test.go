@@ -57,10 +57,11 @@ const textResponse = `{
 
 func newTestProvider(t *testing.T, srv *httptest.Server) *provider.Provider {
 	t.Helper()
-	return provider.New(
+	client := provider.NewClient(
 		provider.WithBaseURL(srv.URL),
 		provider.WithAPIKey("test-key"),
 	)
+	return provider.NewWithClient(client)
 }
 
 func TestProvider_SimpleResponse(t *testing.T) {

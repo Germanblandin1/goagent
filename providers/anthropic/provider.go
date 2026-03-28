@@ -7,7 +7,6 @@ import (
 	"fmt"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 
 	"github.com/Germanblandin1/goagent"
 )
@@ -16,65 +15,66 @@ const defaultMaxTokens = 4096
 
 // Provider implements goagent.Provider using the Anthropic Messages API.
 type Provider struct {
-	client    sdk.Client
+	client    *AnthropicClient
 	maxTokens int64
+	model     string
 }
 
-// Option is a functional option for configuring a Provider.
-type Option func(*providerConfig)
-
-type providerConfig struct {
-	opts      []option.RequestOption
-	maxTokens int64
-}
-
-// WithAPIKey sets the Anthropic API key explicitly.
-// If not set, the SDK reads ANTHROPIC_API_KEY from the environment.
-func WithAPIKey(key string) Option {
-	return func(c *providerConfig) {
-		c.opts = append(c.opts, option.WithAPIKey(key))
-	}
-}
-
-// WithBaseURL overrides the Anthropic API base URL.
-// Useful for proxies or API-compatible services.
-func WithBaseURL(url string) Option {
-	return func(c *providerConfig) {
-		c.opts = append(c.opts, option.WithBaseURL(url))
-	}
-}
+// ProviderOption is a functional option for configuring a Provider.
+type ProviderOption func(*Provider)
 
 // WithMaxTokens sets the maximum number of tokens the model may generate per
 // completion. Default: 4096.
-func WithMaxTokens(n int64) Option {
-	return func(c *providerConfig) { c.maxTokens = n }
+func WithMaxTokens(n int64) ProviderOption {
+	return func(p *Provider) { p.maxTokens = n }
 }
 
-// New creates a Provider that connects to the Anthropic Messages API.
-// The model is set at the agent level via goagent.WithModel.
-func New(opts ...Option) *Provider {
-	cfg := &providerConfig{maxTokens: defaultMaxTokens}
+// WithModel sets a default model on the Provider. It is used when the
+// CompletionRequest does not specify a model. The per-request model always
+// takes precedence.
+func WithModel(model string) ProviderOption {
+	return func(p *Provider) { p.model = model }
+}
+
+// New creates a Provider with a default AnthropicClient.
+// The API key is read from the ANTHROPIC_API_KEY environment variable by
+// default. For explicit credentials or custom HTTP settings, create a client
+// with NewClient and pass it to NewWithClient instead.
+func New(opts ...ProviderOption) *Provider {
+	return NewWithClient(NewClient(), opts...)
+}
+
+// NewWithClient creates a Provider that delegates all API calls to client.
+// Use this when you need to share a client across multiple providers, supply
+// a custom base URL, or inject a test server.
+func NewWithClient(client *AnthropicClient, opts ...ProviderOption) *Provider {
+	p := &Provider{
+		client:    client,
+		maxTokens: defaultMaxTokens,
+	}
 	for _, o := range opts {
-		o(cfg)
+		o(p)
 	}
-	return &Provider{
-		client:    sdk.NewClient(cfg.opts...),
-		maxTokens: cfg.maxTokens,
-	}
+	return p
 }
 
 // Complete sends a chat completion request to the Anthropic Messages API and
 // returns the model's response.
 //
-// The model must be set in the request (via goagent.WithModel); if it is
-// empty, Complete returns an error immediately.
+// The model is resolved from the request first, then from the Provider's
+// WithModel option; if both are empty, Complete returns an error without
+// making a network call.
 //
 // Possible errors:
 //   - error if model is empty
 //   - error wrapping the SDK error on API failures
 //   - error on message/tool conversion failures
 func (p *Provider) Complete(ctx context.Context, req goagent.CompletionRequest) (goagent.CompletionResponse, error) {
-	if req.Model == "" {
+	model := req.Model
+	if model == "" {
+		model = p.model
+	}
+	if model == "" {
 		return goagent.CompletionResponse{}, fmt.Errorf("anthropic: model not set; use goagent.WithModel")
 	}
 
@@ -84,7 +84,7 @@ func (p *Provider) Complete(ctx context.Context, req goagent.CompletionRequest) 
 	}
 
 	params := sdk.MessageNewParams{
-		Model:     sdk.Model(req.Model),
+		Model:     sdk.Model(model),
 		Messages:  messages,
 		MaxTokens: p.maxTokens,
 	}
@@ -103,7 +103,7 @@ func (p *Provider) Complete(ctx context.Context, req goagent.CompletionRequest) 
 	params.Thinking = buildThinkingParam(req.Thinking)
 	params.OutputConfig = buildOutputConfig(req.Effort)
 
-	resp, err := p.client.Messages.New(ctx, params)
+	resp, err := p.client.cl.Messages.New(ctx, params)
 	if err != nil {
 		return goagent.CompletionResponse{}, fmt.Errorf("anthropic completion: %w", err)
 	}
