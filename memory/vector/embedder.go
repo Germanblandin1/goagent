@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"net/http"
 	"time"
 
@@ -128,70 +127,61 @@ func (e *OllamaEmbedder) Embed(ctx context.Context, blocks []goagent.ContentBloc
 // Compile-time check: FallbackEmbedder implements goagent.Embedder.
 var _ goagent.Embedder = (*FallbackEmbedder)(nil)
 
+// FallbackEmbedderOption configures a FallbackEmbedder.
+type FallbackEmbedderOption func(*FallbackEmbedder)
+
+// WithSupportedType sets the content type that the primary Embedder can handle.
+// Blocks of other types are filtered out before calling Embed.
+// Default: ContentText.
+func WithSupportedType(t goagent.ContentType) FallbackEmbedderOption {
+	return func(e *FallbackEmbedder) { e.supportedType = t }
+}
+
+// WithOnSkipped registers a callback invoked for each block filtered out
+// because its type is not the supported type. May be nil (default).
+func WithOnSkipped(fn func(goagent.ContentBlock)) FallbackEmbedderOption {
+	return func(e *FallbackEmbedder) { e.onSkipped = fn }
+}
+
 // FallbackEmbedder wraps a primary Embedder and filters out blocks whose type
-// is not SupportedType. If at least one block survives the filter, it delegates
-// to Primary. If none survive, it returns ErrNoEmbeddeableContent.
+// is not the configured supported type. If at least one block survives the
+// filter, it delegates to the primary Embedder. If none survive, it returns
+// ErrNoEmbeddeableContent.
 // Facilitates the transition from text-only to multimodal embedders without
 // changing the calling API.
 type FallbackEmbedder struct {
-	Primary       goagent.Embedder
-	SupportedType goagent.ContentType
-	// OnSkipped is called for each skipped block. May be nil.
-	OnSkipped func(goagent.ContentBlock)
+	primary       goagent.Embedder
+	supportedType goagent.ContentType
+	onSkipped     func(goagent.ContentBlock)
 }
 
-// Embed filters blocks by SupportedType and delegates to Primary.
+// NewFallbackEmbedder creates a FallbackEmbedder wrapping primary.
+// Default supported type: ContentText.
+func NewFallbackEmbedder(primary goagent.Embedder, opts ...FallbackEmbedderOption) *FallbackEmbedder {
+	e := &FallbackEmbedder{
+		primary:       primary,
+		supportedType: goagent.ContentText,
+	}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
+}
+
+// Embed filters blocks by the configured supported type and delegates to the
+// primary Embedder. Returns ErrNoEmbeddeableContent when no blocks survive the filter.
 func (e *FallbackEmbedder) Embed(ctx context.Context, blocks []goagent.ContentBlock) ([]float32, error) {
 	var supported []goagent.ContentBlock
 	for _, b := range blocks {
-		if b.Type == e.SupportedType {
+		if b.Type == e.supportedType {
 			supported = append(supported, b)
-		} else if e.OnSkipped != nil {
-			e.OnSkipped(b)
+		} else if e.onSkipped != nil {
+			e.onSkipped(b)
 		}
 	}
 	if len(supported) == 0 {
 		return nil, ErrNoEmbeddeableContent
 	}
-	return e.Primary.Embed(ctx, supported)
+	return e.primary.Embed(ctx, supported)
 }
 
-// ── MockEmbedder ─────────────────────────────────────────────────────────────
-
-// Compile-time check: MockEmbedder implements goagent.Embedder.
-var _ goagent.Embedder = (*MockEmbedder)(nil)
-
-// MockEmbedder generates deterministic embeddings via an LCG seeded with the
-// FNV-32a hash of the text content. Makes no API calls.
-// The same text always produces the same normalized vector.
-// Use in unit tests that need similarity search without external services.
-type MockEmbedder struct {
-	Dim int // vector dimension; defaults to 16 when zero
-}
-
-// Embed returns a deterministic unit-length vector for the text content of blocks.
-// Returns ErrNoEmbeddeableContent when blocks contain no text.
-func (m *MockEmbedder) Embed(_ context.Context, blocks []goagent.ContentBlock) ([]float32, error) {
-	text := extractText(blocks)
-	if text == "" {
-		return nil, ErrNoEmbeddeableContent
-	}
-
-	dim := m.Dim
-	if dim == 0 {
-		dim = 16
-	}
-
-	h := fnv.New32a()
-	h.Write([]byte(text))
-	seed := h.Sum32()
-
-	vec := make([]float32, dim)
-	for i := range vec {
-		// Classic LCG — deterministic, no external state.
-		seed = seed*1664525 + 1013904223
-		vec[i] = float32(seed>>16)/float32(1<<16)*2 - 1 // range [-1, 1]
-	}
-
-	return Normalize(vec), nil
-}

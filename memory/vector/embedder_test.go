@@ -7,13 +7,14 @@ import (
 	"testing"
 
 	"github.com/Germanblandin1/goagent"
+	"github.com/Germanblandin1/goagent/internal/testutil"
 	"github.com/Germanblandin1/goagent/memory/vector"
 )
 
 // ── MockEmbedder ─────────────────────────────────────────────────────────────
 
 func TestMockEmbedder_Deterministic(t *testing.T) {
-	e := &vector.MockEmbedder{Dim: 8}
+	e := &testutil.MockEmbedder{Dim: 8}
 	blocks := []goagent.ContentBlock{goagent.TextBlock("hello world")}
 
 	v1, err := e.Embed(context.Background(), blocks)
@@ -41,7 +42,7 @@ func TestMockEmbedder_Dimension(t *testing.T) {
 		{32, 32},
 	}
 	for _, tc := range tests {
-		e := &vector.MockEmbedder{Dim: tc.dim}
+		e := &testutil.MockEmbedder{Dim: tc.dim}
 		v, err := e.Embed(context.Background(), []goagent.ContentBlock{goagent.TextBlock("test")})
 		if err != nil {
 			t.Fatal(err)
@@ -53,7 +54,7 @@ func TestMockEmbedder_Dimension(t *testing.T) {
 }
 
 func TestMockEmbedder_UnitLength(t *testing.T) {
-	e := &vector.MockEmbedder{Dim: 16}
+	e := &testutil.MockEmbedder{Dim: 16}
 	texts := []string{"hello", "world", "test embedding normalization"}
 	for _, text := range texts {
 		v, err := e.Embed(context.Background(), []goagent.ContentBlock{goagent.TextBlock(text)})
@@ -71,7 +72,7 @@ func TestMockEmbedder_UnitLength(t *testing.T) {
 }
 
 func TestMockEmbedder_DifferentTexts(t *testing.T) {
-	e := &vector.MockEmbedder{Dim: 16}
+	e := &testutil.MockEmbedder{Dim: 16}
 	v1, _ := e.Embed(context.Background(), []goagent.ContentBlock{goagent.TextBlock("apple")})
 	v2, _ := e.Embed(context.Background(), []goagent.ContentBlock{goagent.TextBlock("orange")})
 
@@ -88,7 +89,7 @@ func TestMockEmbedder_DifferentTexts(t *testing.T) {
 }
 
 func TestMockEmbedder_EmptyBlocks(t *testing.T) {
-	e := &vector.MockEmbedder{}
+	e := &testutil.MockEmbedder{}
 	_, err := e.Embed(context.Background(), []goagent.ContentBlock{})
 	if !errors.Is(err, vector.ErrNoEmbeddeableContent) {
 		t.Errorf("expected ErrNoEmbeddeableContent, got %v", err)
@@ -96,7 +97,7 @@ func TestMockEmbedder_EmptyBlocks(t *testing.T) {
 }
 
 func TestMockEmbedder_ImageOnlyBlocks(t *testing.T) {
-	e := &vector.MockEmbedder{}
+	e := &testutil.MockEmbedder{}
 	_, err := e.Embed(context.Background(), []goagent.ContentBlock{
 		goagent.ImageBlock([]byte{0xFF}, "image/png"),
 	})
@@ -108,11 +109,8 @@ func TestMockEmbedder_ImageOnlyBlocks(t *testing.T) {
 // ── FallbackEmbedder ─────────────────────────────────────────────────────────
 
 func TestFallbackEmbedder_PassesSupportedBlocks(t *testing.T) {
-	primary := &vector.MockEmbedder{Dim: 4}
-	fe := &vector.FallbackEmbedder{
-		Primary:       primary,
-		SupportedType: goagent.ContentText,
-	}
+	primary := &testutil.MockEmbedder{Dim: 4}
+	fe := vector.NewFallbackEmbedder(primary)
 
 	blocks := []goagent.ContentBlock{
 		goagent.TextBlock("hello"),
@@ -128,15 +126,13 @@ func TestFallbackEmbedder_PassesSupportedBlocks(t *testing.T) {
 }
 
 func TestFallbackEmbedder_CallsOnSkipped(t *testing.T) {
-	primary := &vector.MockEmbedder{Dim: 4}
+	primary := &testutil.MockEmbedder{Dim: 4}
 	skipped := 0
-	fe := &vector.FallbackEmbedder{
-		Primary:       primary,
-		SupportedType: goagent.ContentText,
-		OnSkipped: func(_ goagent.ContentBlock) {
+	fe := vector.NewFallbackEmbedder(primary,
+		vector.WithOnSkipped(func(_ goagent.ContentBlock) {
 			skipped++
-		},
-	}
+		}),
+	)
 
 	blocks := []goagent.ContentBlock{
 		goagent.TextBlock("text"),
@@ -153,11 +149,8 @@ func TestFallbackEmbedder_CallsOnSkipped(t *testing.T) {
 }
 
 func TestFallbackEmbedder_AllUnsupported(t *testing.T) {
-	primary := &vector.MockEmbedder{Dim: 4}
-	fe := &vector.FallbackEmbedder{
-		Primary:       primary,
-		SupportedType: goagent.ContentText,
-	}
+	primary := &testutil.MockEmbedder{Dim: 4}
+	fe := vector.NewFallbackEmbedder(primary)
 
 	blocks := []goagent.ContentBlock{
 		goagent.ImageBlock([]byte{0xFF}, "image/png"),

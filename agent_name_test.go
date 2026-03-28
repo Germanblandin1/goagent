@@ -18,7 +18,7 @@ func TestWithName_LongTermMemoryNamespaceIsolation(t *testing.T) {
 	t.Parallel()
 
 	store := vector.NewInMemoryStore()
-	embedder := &vector.MockEmbedder{Dim: 4}
+	embedder := &testutil.MockEmbedder{Dim: 4}
 
 	ltmAlice, err := memory.NewLongTerm(
 		memory.WithVectorStore(store),

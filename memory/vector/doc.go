@@ -17,18 +17,13 @@
 //
 //	e := vector.NewOllamaEmbedder("nomic-embed-text")
 //
-// MockEmbedder generates deterministic unit-length vectors without any API
-// call. Use it in tests:
-//
-//	e := &vector.MockEmbedder{Dim: 16}
-//
 // FallbackEmbedder filters blocks by type before delegating to a primary
 // embedder, enabling text-only embedders to gracefully handle multimodal input:
 //
-//	fe := &vector.FallbackEmbedder{
-//	    Primary:       vector.NewOllamaEmbedder("nomic-embed-text"),
-//	    SupportedType: goagent.ContentText,
-//	}
+//	fe := vector.NewFallbackEmbedder(
+//	    vector.NewOllamaEmbedder("nomic-embed-text"),
+//	    vector.WithSupportedType(goagent.ContentText),
+//	)
 //
 // # Chunkers
 //
