@@ -4,16 +4,30 @@
 // # Authentication
 //
 // By default the provider reads the API key from the ANTHROPIC_API_KEY
-// environment variable. Use [WithAPIKey] to supply it explicitly:
+// environment variable. To supply it explicitly, create a client with
+// [NewClient] and pass it to [NewWithClient]:
 //
-//	provider := anthropic.New(anthropic.WithAPIKey("sk-..."))
+//	client := anthropic.NewClient(anthropic.WithAPIKey("sk-..."))
+//	provider := anthropic.NewWithClient(client)
+//
+// # Shared client
+//
+// [AnthropicClient] holds the underlying Anthropic SDK client. Create one
+// with [NewClient] to share transport settings across multiple providers or
+// to target a custom base URL (e.g. a proxy or a test server):
+//
+//	client := anthropic.NewClient(
+//	    anthropic.WithAPIKey("sk-..."),
+//	    anthropic.WithBaseURL("https://proxy.internal"),
+//	)
+//	provider := anthropic.NewWithClient(client)
 //
 // # Supported models
 //
 // Any model available through the Anthropic Messages API can be used
 // (claude-sonnet-4-6, claude-haiku-4-5-20251001, claude-opus-4-6, etc.).
-// The model is selected at the agent level via [goagent.WithModel], not at
-// the provider level.
+// The model is selected at the agent level via [goagent.WithModel] or via
+// [WithModel] on the Provider.
 //
 // # Multimodal support
 //
@@ -29,8 +43,7 @@
 // # Configuration
 //
 // Use [WithMaxTokens] to control the maximum output length per completion
-// (default: 4096). Use [WithBaseURL] to point to a proxy or API-compatible
-// service.
+// (default: 4096).
 //
 // # Usage
 //

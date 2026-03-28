@@ -25,10 +25,13 @@ func ExampleNew() {
 	_, _ = agent.Run(context.Background(), "What is 2+2?")
 }
 
-// ExampleNew_withAPIKey shows how to supply the API key explicitly.
+// ExampleNew_withAPIKey shows how to supply the API key explicitly using a
+// custom client, and pair it with a Provider that limits output tokens.
 func ExampleNew_withAPIKey() {
-	p := provider.New(
+	client := provider.NewClient(
 		provider.WithAPIKey("sk-ant-..."),
+	)
+	p := provider.NewWithClient(client,
 		provider.WithMaxTokens(1024),
 	)
 
