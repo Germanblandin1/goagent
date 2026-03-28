@@ -1,13 +1,9 @@
 package vector
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"time"
 
 	"github.com/Germanblandin1/goagent"
 )
@@ -30,96 +26,6 @@ func EmbedAll(ctx context.Context, e goagent.Embedder, chunks []ChunkResult) ([]
 		vecs[i] = vec
 	}
 	return vecs, nil
-}
-
-// ── OllamaEmbedder ───────────────────────────────────────────────────────────
-
-// Compile-time check: OllamaEmbedder implements goagent.Embedder.
-var _ goagent.Embedder = (*OllamaEmbedder)(nil)
-
-// OllamaOption configures an OllamaEmbedder.
-type OllamaOption func(*OllamaEmbedder)
-
-// WithOllamaBaseURL overrides the default Ollama server URL (http://localhost:11434).
-func WithOllamaBaseURL(url string) OllamaOption {
-	return func(e *OllamaEmbedder) { e.baseURL = url }
-}
-
-// WithOllamaMaxChars sets the maximum number of runes sent to Ollama per call.
-// Text exceeding this limit is truncated at the last word boundary.
-// Default: 30000 (~7500 tokens with the heuristic — safe margin for nomic-embed-text).
-func WithOllamaMaxChars(n int) OllamaOption {
-	return func(e *OllamaEmbedder) { e.maxChars = n }
-}
-
-// OllamaEmbedder implements goagent.Embedder using a local model served by Ollama.
-// It extracts only ContentText blocks — images and documents are ignored.
-// For long texts use a Chunker before calling Embed.
-type OllamaEmbedder struct {
-	baseURL  string
-	model    string
-	maxChars int
-	client   *http.Client
-}
-
-// NewOllamaEmbedder creates an OllamaEmbedder for the given model name
-// (e.g. "nomic-embed-text").
-func NewOllamaEmbedder(model string, opts ...OllamaOption) *OllamaEmbedder {
-	e := &OllamaEmbedder{
-		baseURL:  "http://localhost:11434",
-		model:    model,
-		maxChars: 30000,
-		client:   &http.Client{Timeout: 30 * time.Second},
-	}
-	for _, opt := range opts {
-		opt(e)
-	}
-	return e
-}
-
-// Embed returns the embedding vector for the text content of blocks.
-// Returns ErrNoEmbeddeableContent when blocks contain no text.
-func (e *OllamaEmbedder) Embed(ctx context.Context, blocks []goagent.ContentBlock) ([]float32, error) {
-	text := extractText(blocks)
-	if text == "" {
-		return nil, ErrNoEmbeddeableContent
-	}
-	if e.maxChars > 0 && len([]rune(text)) > e.maxChars {
-		text = truncateAtWord(text, e.maxChars)
-	}
-
-	body, err := json.Marshal(map[string]string{
-		"model":  e.model,
-		"prompt": text,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("ollama embedder marshal: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		e.baseURL+"/api/embeddings", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("ollama embedder request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := e.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("ollama embedder do: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ollama embedder: unexpected status %d", resp.StatusCode)
-	}
-
-	var result struct {
-		Embedding []float32 `json:"embedding"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("ollama embedder decode: %w", err)
-	}
-	return result.Embedding, nil
 }
 
 // ── FallbackEmbedder ─────────────────────────────────────────────────────────
@@ -184,4 +90,3 @@ func (e *FallbackEmbedder) Embed(ctx context.Context, blocks []goagent.ContentBl
 	}
 	return e.primary.Embed(ctx, supported)
 }
-

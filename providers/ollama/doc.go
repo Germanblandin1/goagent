@@ -1,9 +1,9 @@
-// Package ollama provides a [goagent.Provider] that targets a locally running
-// Ollama instance via its OpenAI-compatible API.
+// Package ollama provides a [goagent.Provider] and a [goagent.Embedder] that
+// target a locally running Ollama instance.
 //
 // # Requirements
 //
-// Ollama must be installed and running before using this provider.
+// Ollama must be installed and running before using this package.
 // Start the server with:
 //
 //	ollama serve
@@ -12,15 +12,27 @@
 //
 //	ollama pull qwen3
 //
+// # Shared client
+//
+// All communication with Ollama goes through [OllamaClient]. Create one with
+// [NewClient] and pass it to [New] (Provider) and/or [NewEmbedder]:
+//
+//	client := ollama.NewClient()                             // http://localhost:11434
+//	provider := ollama.New(client)
+//	embedder := ollama.NewEmbedder(client,
+//	    ollama.WithEmbedModel("nomic-embed-text"),
+//	)
+//
 // # Supported models
 //
 // Any model available in Ollama can be used (qwen3, llama3, mistral, gemma2,
-// phi3, deepseek-r1, etc.). The model is selected at the agent level via
-// [goagent.WithModel], not at the provider level.
+// phi3, deepseek-r1, etc.). The chat model is selected at the agent level via
+// [goagent.WithModel] or via [WithModel] on the Provider. The embedding model
+// is set via [WithEmbedModel].
 //
 // # Default URL
 //
-// The provider connects to http://localhost:11434/v1 by default. Use
+// The client connects to http://localhost:11434 by default. Use
 // [WithBaseURL] to override when Ollama runs on a different host or port.
 //
 // # Limitations
@@ -33,7 +45,8 @@
 //
 // # Usage
 //
-//	provider := ollama.New()
+//	client := ollama.NewClient()
+//	provider := ollama.New(client)
 //
 //	agent := goagent.New(
 //	    goagent.WithProvider(provider),

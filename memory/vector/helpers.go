@@ -20,24 +20,6 @@ func extractText(blocks []goagent.ContentBlock) string {
 	return strings.Join(parts, " ")
 }
 
-// truncateAtWord truncates text at the last word boundary before maxChars runes.
-// If no space is found before maxChars, the string is cut hard at maxChars.
-// Never returns more than maxChars runes.
-func truncateAtWord(text string, maxChars int) string {
-	runes := []rune(text)
-	if len(runes) <= maxChars {
-		return text
-	}
-	cut := maxChars
-	for cut > 0 && runes[cut] != ' ' {
-		cut--
-	}
-	if cut == 0 {
-		return string(runes[:maxChars])
-	}
-	return string(runes[:cut])
-}
-
 // splitWithOverlap divides text into sub-strings where each chunk is at most
 // maxSize units (as measured by est) with overlap units of shared context
 // between adjacent chunks. Chunks never split in the middle of a word.

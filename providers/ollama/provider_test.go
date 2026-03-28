@@ -55,7 +55,7 @@ func TestProvider_SimpleResponse(t *testing.T) {
 	t.Parallel()
 
 	srv := fakeServer(t, stopResponse)
-	p := ollama.New(ollama.WithBaseURL(srv.URL + "/v1"))
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
 
 	resp, err := p.Complete(context.Background(), goagent.CompletionRequest{
 		Model:    "llama3",
@@ -88,7 +88,7 @@ func TestProvider_ToolCallResponse(t *testing.T) {
 	  }]
 	}`
 	srv := fakeServer(t, body)
-	p := ollama.New(ollama.WithBaseURL(srv.URL + "/v1"))
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
 
 	resp, err := p.Complete(context.Background(), goagent.CompletionRequest{
 		Model:    "llama3",
@@ -118,7 +118,7 @@ func TestProvider_SystemPromptPrepended(t *testing.T) {
 
 	var captured map[string]any
 	srv := capturingServer(t, stopResponse, &captured)
-	p := ollama.New(ollama.WithBaseURL(srv.URL + "/v1"))
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
 
 	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
 		Model:        "llama3",
@@ -158,7 +158,7 @@ func TestProvider_StopReasonMapping(t *testing.T) {
 
 			body := `{"choices":[{"message":{"role":"assistant"},"finish_reason":"` + tc.finishReason + `"}]}`
 			srv := fakeServer(t, body)
-			p := ollama.New(ollama.WithBaseURL(srv.URL + "/v1"))
+			p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
 
 			resp, err := p.Complete(context.Background(), goagent.CompletionRequest{
 				Model:    "llama3",
@@ -179,7 +179,7 @@ func TestProvider_ImageContent(t *testing.T) {
 
 	var captured map[string]any
 	srv := capturingServer(t, stopResponse, &captured)
-	p := ollama.New(ollama.WithBaseURL(srv.URL + "/v1"))
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
 
 	imgData := []byte("fake-png")
 	_, err := p.Complete(context.Background(), goagent.CompletionRequest{
@@ -229,7 +229,7 @@ func TestProvider_EmptyModel(t *testing.T) {
 	t.Parallel()
 
 	srv := fakeServer(t, stopResponse)
-	p := ollama.New(ollama.WithBaseURL(srv.URL + "/v1"))
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
 
 	_, err := p.Complete(context.Background(), goagent.CompletionRequest{
 		Model:    "",
@@ -243,11 +243,30 @@ func TestProvider_EmptyModel(t *testing.T) {
 	}
 }
 
+func TestProvider_ModelFromProvider(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, stopResponse, &captured)
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)), ollama.WithModel("llama3"))
+
+	_, err := p.Complete(context.Background(), goagent.CompletionRequest{
+		// Model not set in the request — should fall back to provider model.
+		Messages: []goagent.Message{goagent.UserMessage("hi")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if captured["model"] != "llama3" {
+		t.Errorf("model = %v, want llama3", captured["model"])
+	}
+}
+
 func TestProvider_DocumentContent_ReturnsUnsupportedError(t *testing.T) {
 	t.Parallel()
 
 	srv := fakeServer(t, stopResponse)
-	p := ollama.New(ollama.WithBaseURL(srv.URL + "/v1"))
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
 
 	_, err := p.Complete(context.Background(), goagent.CompletionRequest{
 		Model: "llama3",
@@ -333,7 +352,7 @@ func TestProvider_ParseThinkingFromText(t *testing.T) {
 				`},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`
 
 			srv := fakeServer(t, body)
-			p := ollama.New(ollama.WithBaseURL(srv.URL + "/v1"))
+			p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
 
 			resp, err := p.Complete(context.Background(), goagent.CompletionRequest{
 				Model:    "qwq",
@@ -376,7 +395,7 @@ func TestProvider_ThinkingBlocksDiscardedInRequest(t *testing.T) {
 
 	var captured map[string]any
 	srv := capturingServer(t, stopResponse, &captured)
-	p := ollama.New(ollama.WithBaseURL(srv.URL + "/v1"))
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
 
 	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
 		Model: "qwq",
@@ -412,7 +431,7 @@ func TestProvider_ThinkingAndEffortIgnored(t *testing.T) {
 
 	var captured map[string]any
 	srv := capturingServer(t, stopResponse, &captured)
-	p := ollama.New(ollama.WithBaseURL(srv.URL + "/v1"))
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
 
 	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
 		Model:    "qwq",

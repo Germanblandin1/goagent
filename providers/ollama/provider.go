@@ -3,12 +3,10 @@
 package ollama
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -16,32 +14,34 @@ import (
 	"github.com/Germanblandin1/goagent"
 )
 
-const defaultBaseURL = "http://localhost:11434/v1"
-
 // Provider implements goagent.Provider using Ollama's OpenAI-compatible endpoint.
 type Provider struct {
-	baseURL    string
-	httpClient *http.Client
+	client *OllamaClient
+	model  string
 }
 
-// Option is a functional option for configuring a Provider.
-type Option func(*Provider)
+// ProviderOption is a functional option for configuring a Provider.
+type ProviderOption func(*Provider)
 
-// WithBaseURL overrides the Ollama base URL. The default is
-// "http://localhost:11434/v1" (the standard local Ollama endpoint).
-// Use this option when Ollama runs on a different host or port, or when
-// targeting a remote Ollama instance.
-func WithBaseURL(url string) Option {
-	return func(p *Provider) { p.baseURL = url }
+// WithModel sets a default model on the Provider. It is used when the
+// CompletionRequest does not specify a model. The per-request model always
+// takes precedence.
+func WithModel(model string) ProviderOption {
+	return func(p *Provider) { p.model = model }
 }
 
-// New creates a Provider connecting to Ollama at the default base URL.
-// The model is set at the agent level via goagent.WithModel.
-func New(opts ...Option) *Provider {
-	p := &Provider{
-		baseURL:    defaultBaseURL,
-		httpClient: &http.Client{},
-	}
+// New creates a Provider with a default OllamaClient targeting localhost:11434.
+// For custom HTTP settings (timeout, base URL, transport), create a client
+// with NewClient and pass it to NewWithClient instead.
+func New(opts ...ProviderOption) *Provider {
+	return NewWithClient(NewClient(), opts...)
+}
+
+// NewWithClient creates a Provider that delegates all HTTP to client.
+// Use this when you need to share a client between Provider and OllamaEmbedder,
+// or when the default OllamaClient settings are not sufficient.
+func NewWithClient(client *OllamaClient, opts ...ProviderOption) *Provider {
+	p := &Provider{client: client}
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -51,11 +51,11 @@ func New(opts ...Option) *Provider {
 // ollamaMessage is a raw Ollama API message that captures the reasoning field
 // which the go-openai SDK silently drops.
 type ollamaMessage struct {
-	Role       string          `json:"role"`
-	Content    string          `json:"content"`
-	Reasoning  string          `json:"reasoning,omitempty"` // Ollama-specific thinking field
+	Role       string            `json:"role"`
+	Content    string            `json:"content"`
+	Reasoning  string            `json:"reasoning,omitempty"` // Ollama-specific thinking field
 	ToolCalls  []openai.ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string          `json:"tool_call_id,omitempty"`
+	ToolCallID string            `json:"tool_call_id,omitempty"`
 }
 
 type ollamaChoice struct {
@@ -74,21 +74,23 @@ type ollamaResponse struct {
 // Complete sends a chat completion request to the Ollama API and returns the
 // model's response.
 //
-// The model must be set in the request (via goagent.WithModel); if it is empty,
-// Complete returns an error immediately without making a network call.
+// The model is resolved from the request first, then from the Provider's
+// WithModel option; if both are empty, Complete returns an error without
+// making a network call.
 //
 // If any message contains ContentDocument blocks, Complete returns an
 // *UnsupportedContentError because the OpenAI-compatible API does not support
 // document content.
 //
-// Cancellation and timeout are controlled entirely by ctx — pass a
-// context.WithTimeout or context.WithDeadline to bound the request duration.
-// There is no built-in retry: if the request fails (e.g., Ollama is not
-// running, the model is not pulled, or the network times out), the underlying
-// error is returned wrapped as "ollama completion: <cause>". A connection
-// refused error typically means Ollama is not running on the configured URL.
+// Cancellation and timeout are controlled entirely by ctx. There is no
+// built-in retry: network or Ollama errors are returned wrapped in a
+// descriptive message.
 func (p *Provider) Complete(ctx context.Context, req goagent.CompletionRequest) (goagent.CompletionResponse, error) {
-	if req.Model == "" {
+	model := req.Model
+	if model == "" {
+		model = p.model
+	}
+	if model == "" {
 		return goagent.CompletionResponse{}, fmt.Errorf("ollama: model not set; use goagent.WithModel")
 	}
 
@@ -98,7 +100,7 @@ func (p *Provider) Complete(ctx context.Context, req goagent.CompletionRequest) 
 	}
 
 	chatReq := openai.ChatCompletionRequest{
-		Model:    req.Model,
+		Model:    model,
 		Messages: messages,
 	}
 
@@ -107,37 +109,9 @@ func (p *Provider) Complete(ctx context.Context, req goagent.CompletionRequest) 
 		chatReq.ToolChoice = "auto"
 	}
 
-	body, err := json.Marshal(chatReq)
-	if err != nil {
-		return goagent.CompletionResponse{}, fmt.Errorf("ollama: marshaling request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return goagent.CompletionResponse{}, fmt.Errorf("ollama: creating request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := p.httpClient.Do(httpReq)
-	if err != nil {
-		return goagent.CompletionResponse{}, fmt.Errorf("ollama completion: %w", err)
-	}
-	defer httpResp.Body.Close()
-
-	if httpResp.StatusCode != http.StatusOK {
-		var errBody struct {
-			Error string `json:"error"`
-		}
-		_ = json.NewDecoder(httpResp.Body).Decode(&errBody)
-		if errBody.Error != "" {
-			return goagent.CompletionResponse{}, fmt.Errorf("ollama completion: status %d: %s", httpResp.StatusCode, errBody.Error)
-		}
-		return goagent.CompletionResponse{}, fmt.Errorf("ollama completion: status %d", httpResp.StatusCode)
-	}
-
 	var resp ollamaResponse
-	if err := json.NewDecoder(httpResp.Body).Decode(&resp); err != nil {
-		return goagent.CompletionResponse{}, fmt.Errorf("ollama: decoding response: %w", err)
+	if err := p.client.do(ctx, "/v1/chat/completions", chatReq, &resp); err != nil {
+		return goagent.CompletionResponse{}, err
 	}
 
 	return toGoAgentResponse(resp)
