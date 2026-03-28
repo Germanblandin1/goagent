@@ -9,10 +9,12 @@ goagent/                      Root package — Agent, ReAct loop, core interface
 ├── mcp/                      MCP client (stdio + SSE), MCP server, adapter and router
 ├── memory/                   Memory implementations
 │   ├── storage/              Message persistence (InMemory, etc.)
-│   └── policy/               Read-time message filtering (FixedWindow, etc.)
+│   ├── policy/               Read-time message filtering (FixedWindow, TokenWindow, NoOp)
+│   └── vector/               VectorStore, chunkers, similarity functions, size estimators
 ├── providers/
 │   ├── anthropic/            Provider for Claude (Anthropic API)
-│   └── ollama/               Provider for local models (OpenAI-compatible API)
+│   ├── ollama/               Provider for local models (OpenAI-compatible API) + embedder
+│   └── voyage/               Voyage AI embedder
 ├── examples/
 │   ├── calculator/           Example: agent with a calculator tool
 │   ├── chatbot/              Example: multi-turn conversation with memory
@@ -48,6 +50,17 @@ type ShortTermMemory interface {
 type LongTermMemory interface {
     Store(ctx context.Context, msgs ...Message) error
     Retrieve(ctx context.Context, query []ContentBlock, topK int) ([]Message, error)
+}
+
+// VectorStore — vector index backing LongTermMemory
+type VectorStore interface {
+    Upsert(ctx context.Context, id string, vector []float32, msg Message) error
+    Search(ctx context.Context, vector []float32, topK int) ([]Message, error)
+}
+
+// Embedder — converts content blocks to a float vector
+type Embedder interface {
+    Embed(ctx context.Context, content []ContentBlock) ([]float32, error)
 }
 ```
 
@@ -257,6 +270,95 @@ Memory errors are logged as warnings but are **never** propagated to the caller 
 
 ---
 
+---
+
+## Long-term memory — `memory/vector`
+
+The `memory/vector` sub-package provides the building blocks for semantic retrieval. These concerns are kept orthogonal so callers can mix and match:
+
+### VectorStore — `InMemoryStore`
+
+`NewInMemoryStore()` is an in-process `VectorStore` backed by a `sync.RWMutex`-protected map.
+
+- **Upsert**: stores or replaces `(id, vector, message)`. IDs include a session prefix when `WithName` is set on the agent (`"sessionID:sha256:chunkIdx"`), preventing cross-agent contamination.
+- **Search**: O(n) cosine similarity scan; returns the top-k most similar messages. When the context carries a session ID, results are filtered to that session only.
+
+Suitable for up to ~10 000 entries. For larger corpora, implement `goagent.VectorStore` with a dedicated backend (pgvector, Qdrant, etc.).
+
+### Embedders
+
+Two production embedders ship in the providers sub-packages:
+
+| Package | Constructor | Notes |
+|---------|-------------|-------|
+| `providers/ollama` | `ollama.NewEmbedder(...)` | Calls `/api/embeddings`; requires `WithEmbedModel` (e.g. `"nomic-embed-text"`) |
+| `providers/voyage` | `voyage.NewEmbedder(...)` | Calls Voyage AI API; reads `VOYAGE_API_KEY`; requires `WithEmbedModel` (e.g. `"voyage-3"`) |
+
+Both truncate input at a word boundary when it exceeds `WithMaxChars` (default 30 000 chars). Both return `vector.ErrNoEmbeddeableContent` when given no text blocks.
+
+`FallbackEmbedder` (in `memory/vector`) wraps any `Embedder` to silently skip content blocks of unsupported types, enabling text-only embedders to handle multimodal messages without erroring.
+
+### Chunkers
+
+Chunkers split a message into smaller pieces before embedding, improving retrieval precision for long content:
+
+| Chunker | When to use |
+|---------|-------------|
+| `NewNoOpChunker()` | Conversational messages (default) |
+| `NewTextChunker(...)` | Long text blocks; splits at word boundaries with configurable max size and overlap |
+| `NewBlockChunker(...)` | Mixed multimodal content; text is chunked, images pass through, PDFs split by page when a `PDFExtractor` is provided |
+| `NewPageChunker(...)` | PDF-only per-page chunking |
+
+All chunkers respect the `Chunker` interface:
+
+```go
+type Chunker interface {
+    Chunk(ctx context.Context, content ChunkContent) ([]ChunkResult, error)
+}
+```
+
+### Similarity
+
+- `CosineSimilarity(a, b []float32) float64` — dot product for unit vectors (fast path).
+- `CosineSimilarityRaw(a, b []float32) float64` — full cosine for unnormalised vectors.
+- `Normalize(v []float32) []float32` — scales to unit length. Most modern embedders (nomic-embed-text, voyage-3) already return normalised vectors.
+
+### Size estimators
+
+Used by `TextChunker` / `BlockChunker` to measure chunk sizes:
+
+| Estimator | Accuracy | Cost |
+|-----------|----------|------|
+| `HeuristicTokenEstimator` | ±15 % | zero (default) |
+| `CharEstimator` | exact Unicode code points | zero |
+| `OllamaTokenEstimator` | exact tokens via `/api/tokenize` | one HTTP call per chunk (not for hot paths) |
+
+### `NewLongTerm` — wiring it together
+
+```go
+ltm, err := memory.NewLongTerm(
+    memory.WithVectorStore(vector.NewInMemoryStore()),
+    memory.WithEmbedder(ollama.NewEmbedder(ollama.WithEmbedModel("nomic-embed-text"))),
+    memory.WithChunker(vector.NewTextChunker()),   // optional
+    memory.WithTopK(5),                            // default: 3
+    memory.WithWritePolicy(goagent.MinLength(100)),// default: StoreAlways
+)
+```
+
+`NewLongTerm` returns `ErrMissingVectorStore` or `ErrMissingEmbedder` when required options are absent.
+
+### Agent integration
+
+`WithName(name string)` gives the agent a stable identity. The name becomes the session namespace stored in context via `session.NewContext`. `LongTermMemory.Store` prefixes all entry IDs with this name; `InMemoryStore.Search` filters by it automatically, so multiple agents can share one store without interference.
+
+The write side is controlled by `WithWritePolicy`:
+
+- **`StoreAlways`** (default): persists every `[user, assistant]` pair.
+- **`MinLength(n)`**: skips exchanges whose combined text is shorter than `n` characters (filters out trivial greetings, confirmations, etc.).
+- A custom `WritePolicy` function can transform, condense, or selectively persist turns.
+
+---
+
 ## Message types
 
 ```go
@@ -301,10 +403,11 @@ All errors are typed and support `errors.Is` / `errors.As`:
 
 ## Providers
 
-Both implement the `Provider` interface and are configured with their own functional options:
+Both `Provider` implementations are configured with their own functional options:
 
 - **`providers/anthropic`**: Uses the official Anthropic SDK. Supports text, images and documents.
-- **`providers/ollama`**: Uses the OpenAI-compatible API. Supports text and images (model-dependent). Does not support documents.
+- **`providers/ollama`**: Uses the OpenAI-compatible API. Supports text and images (model-dependent). Does not support documents. Also exposes `NewEmbedder` (calls `/api/embeddings`) for long-term memory.
+- **`providers/voyage`**: Embedder-only package. Calls the Voyage AI `/embeddings` API. Reads `VOYAGE_API_KEY` from the environment. Options: `WithEmbedModel` (required), `WithInputType`, `WithMaxChars`.
 
 ---
 

@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-03-28
+
+### Added
+
+**Vector utilities (`goagent/memory/vector`)**
+- New sub-package `memory/vector` providing four orthogonal building blocks for semantic memory: embedding, chunking, similarity, and storage
+- `NewInMemoryStore()` — thread-safe `VectorStore` backed by an in-process map; `Upsert` / `Search` (cosine similarity, O(n)); filters results by session ID when the context carries one
+- `FallbackEmbedder` — wraps any `goagent.Embedder` and skips blocks whose `ContentType` the underlying embedder does not support; fires an optional `OnSkipped` callback; returns `ErrNoEmbeddeableContent` when no blocks survive filtering
+- Chunkers: `NewNoOpChunker()` (identity, default for conversational messages), `NewTextChunker(...)` (word-boundary splits with configurable max size and overlap), `NewBlockChunker(...)` (per-block type chunking; images pass through unchanged; PDFs split by page when a `PDFExtractor` is provided), `NewPageChunker(...)` (PDF-only per-page chunking; other blocks pass through)
+- Similarity functions: `CosineSimilarity` (for unit vectors), `CosineSimilarityRaw` (for unnormalised vectors), `Normalize`
+- `SizeEstimator` interface + three implementations: `CharEstimator` (Unicode code points), `HeuristicTokenEstimator` (`len/4+4`, no dependencies, default for chunkers), `OllamaTokenEstimator` (exact count via `/api/tokenize`, falls back to heuristic on error)
+- Helpers: `ExtractText(blocks)` concatenates all `ContentText` blocks; `ChunkToMessage` builds a `Message` from an original message and a `ChunkResult`
+
+**Long-term memory implementation (`goagent/memory`)**
+- `NewLongTerm(opts ...LongTermOption) (goagent.LongTermMemory, error)` — concrete implementation of `goagent.LongTermMemory`; requires a `VectorStore` and an `Embedder`; chunking is optional (defaults to `NoOpChunker`)
+- `WithVectorStore(s goagent.VectorStore)` — required; the backing store for vectors and messages
+- `WithEmbedder(e goagent.Embedder)` — required; converts content to float vectors
+- `WithChunker(c vector.Chunker)` — optional; splits messages before embedding (default: `NoOpChunker`)
+- `WithTopK(k int)` — default number of messages retrieved per query (default: 3)
+- `WithWritePolicy(p goagent.WritePolicy)` — controls what gets stored; same `WritePolicy` type as the root package option (default: `StoreAlways`)
+- Storage IDs include session namespace when the context carries a session ID (`"sessionID:sha256:chunkIdx"`), enabling multiple agents to share a single store without cross-contamination
+- `ErrMissingVectorStore` and `ErrMissingEmbedder` — returned by `NewLongTerm` when required options are absent
+
+**Voyage AI embedder (`goagent/providers/voyage`)**
+- New sub-module `github.com/Germanblandin1/goagent/providers/voyage` with a production-ready `Embedder` for the Voyage AI API
+- `NewEmbedder(opts ...EmbedderOption)` — reads `VOYAGE_API_KEY` from the environment; `NewEmbedderWithClient` allows sharing a client across instances
+- `WithEmbedModel(model string)` — required (e.g. `"voyage-3"`)
+- `WithInputType(t string)` — optional (`"document"` or `"query"`)
+- `WithMaxChars(n int)` — optional, default 30 000 (~7 500 tokens); truncates at word boundary
+
+**Ollama embedder (`goagent/providers/ollama`)**
+- `NewEmbedder(opts ...EmbedderOption)` — new constructor inside the existing `providers/ollama` package; uses the Ollama `/api/embeddings` endpoint
+- `NewEmbedderWithClient(client *OllamaClient, opts ...EmbedderOption)` — shared-client variant
+- `WithEmbedModel(model string)` — required (e.g. `"nomic-embed-text"`)
+- `WithMaxChars(n int)` — optional, default 30 000
+
+**Agent session identity (`goagent`)**
+- `WithName(name string) Option` — assigns a stable name to the agent; when `LongTermMemory` is configured the name is used as a session namespace so that multiple agents sharing the same `VectorStore` do not see each other's entries; names must not contain `":"`
+
 ## [0.2.0] - 2026-03-27
 
 ### Added

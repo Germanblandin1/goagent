@@ -36,10 +36,12 @@ goagent/              Core — Agent, ReAct loop, interfaces
 ├── mcp/              MCP client + server (stdio and SSE transports)
 ├── memory/           Short-term and long-term memory
 │   ├── storage/      InMemory storage
-│   └── policy/       FixedWindow, TokenWindow, NoOp
+│   ├── policy/       FixedWindow, TokenWindow, NoOp
+│   └── vector/       VectorStore, chunkers, similarity, size estimators
 ├── providers/
 │   ├── anthropic/    Anthropic Messages API (Claude)
-│   └── ollama/       Local Ollama via OpenAI-compatible API
+│   ├── ollama/       Local Ollama via OpenAI-compatible API (+ embedder)
+│   └── voyage/       Voyage AI embedder
 ├── examples/
 │   ├── calculator/           Tool use with arithmetic
 │   ├── chatbot/              Multi-turn conversation
@@ -151,7 +153,41 @@ agent, _ := goagent.New(
 
 Available policies: `NewNoOp()`, `NewFixedWindow(n)`, `NewTokenWindow(maxTokens)`.
 
-Long-term memory (semantic retrieval across sessions) is also available via `WithLongTermMemory` — requires a caller-supplied `VectorStore` and `Embedder`.
+Long-term memory enables semantic retrieval across sessions. It requires a `VectorStore` and an `Embedder`; both are provided by the framework:
+
+```go
+store := vector.NewInMemoryStore()
+
+embedder := ollama.NewEmbedder(
+    ollama.WithEmbedModel("nomic-embed-text"),
+)
+// or: voyage.NewEmbedder(voyage.WithEmbedModel("voyage-3"))
+
+ltm, err := memory.NewLongTerm(
+    memory.WithVectorStore(store),
+    memory.WithEmbedder(embedder),
+)
+
+agent, _ := goagent.New(
+    goagent.WithName("my-agent"),         // session namespace
+    goagent.WithProvider(ollama.New()),
+    goagent.WithShortTermMemory(mem),
+    goagent.WithLongTermMemory(ltm),
+)
+```
+
+For long documents, plug in a chunker before embedding:
+
+```go
+ltm, err := memory.NewLongTerm(
+    memory.WithVectorStore(store),
+    memory.WithEmbedder(embedder),
+    memory.WithChunker(vector.NewTextChunker(
+        vector.WithMaxSize(500),
+        vector.WithOverlap(50),
+    )),
+)
+```
 
 ### Extended thinking & effort
 
@@ -202,6 +238,7 @@ answer, err := agent.RunBlocks(ctx,
 | `WithAdaptiveThinking()` | — | Extended thinking, model-chosen budget |
 | `WithEffort(level)` | `""` | `"high"`, `"medium"`, `"low"`, or `""` |
 | `WithHooks(h)` | — | Observability callbacks |
+| `WithName(name)` | — | Agent identity / session namespace for long-term memory |
 | `WithShortTermMemory(m)` | — | Conversation history within a session |
 | `WithLongTermMemory(m)` | — | Semantic retrieval across sessions |
 | `WithWritePolicy(p)` | `StoreAlways` | What to persist to long-term memory |
@@ -237,7 +274,8 @@ case errors.As(err, &provErr):
 | Provider | Package | Notes |
 |---|---|---|
 | Anthropic | `providers/anthropic` | Reads `ANTHROPIC_API_KEY`; supports text, images (5 MB), PDFs (32 MB) |
-| Ollama | `providers/ollama` | Default `http://localhost:11434/v1`; supports text and images |
+| Ollama | `providers/ollama` | Default `http://localhost:11434/v1`; supports text and images; includes `NewEmbedder` |
+| Voyage AI | `providers/voyage` | Reads `VOYAGE_API_KEY`; embedder only (e.g. `"voyage-3"`) |
 
 ## License
 
