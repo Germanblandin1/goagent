@@ -13,6 +13,7 @@ type MCPConnectorFn func(ctx context.Context, logger *slog.Logger) ([]Tool, io.C
 
 // options holds the resolved configuration for an Agent.
 type options struct {
+	name           string
 	model          string
 	maxIterations  int
 	tools          []Tool
@@ -33,6 +34,15 @@ type options struct {
 
 // Option is a functional option for configuring an Agent.
 type Option func(*options)
+
+// WithName assigns a name to the agent. When a LongTermMemory is configured,
+// the name is used as the session namespace: all vectors stored and retrieved
+// during Run are scoped to this name, so two agents sharing the same
+// LongTermMemory backend but different names cannot see each other's entries.
+// If not set, no session filtering is applied.
+func WithName(name string) Option {
+	return func(o *options) { o.name = name }
+}
 
 // WithModel sets the model identifier forwarded to the provider. Required.
 // The value is provider-specific (e.g. "qwen3" for Ollama, "claude-sonnet-4-6"

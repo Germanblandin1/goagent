@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/Germanblandin1/goagent/internal/session"
 )
 
 // Agent runs a ReAct loop: it alternates between calling the LLM provider and
@@ -14,6 +16,10 @@ import (
 // no memory of previous calls. To persist conversation history across calls,
 // configure a ShortTermMemory via WithShortTermMemory. For semantic retrieval
 // across sessions, configure a LongTermMemory via WithLongTermMemory.
+//
+// Use WithName to assign a stable identity to the agent. When a LongTermMemory
+// is configured, the name is used as the session namespace so that multiple
+// agents sharing the same memory backend can only see their own entries.
 //
 // # Concurrency
 //
@@ -173,6 +179,10 @@ func validateBlocks(blocks []ContentBlock) error {
 func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error) {
 	if a.opts.provider == nil {
 		return "", errors.New("goagent: no provider configured; use WithProvider")
+	}
+
+	if a.opts.name != "" {
+		ctx = session.WithID(ctx, a.opts.name)
 	}
 
 	messages, historyLen, err := a.buildMessages(ctx, content)
