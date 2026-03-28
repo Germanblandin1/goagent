@@ -171,10 +171,10 @@ func WithEffort(level string) Option {
 	return func(o *options) { o.effort = level }
 }
 
-// WithHooks registra callbacks de observabilidad para el loop ReAct.
-// Todos los campos de Hooks son opcionales — solo los hooks no-nil se invocan.
+// WithHooks registers observability callbacks for the ReAct loop.
+// All fields of Hooks are optional — only non-nil hooks are invoked.
 //
-// Ejemplo:
+// Example:
 //
 //	agent := goagent.New(
 //	    goagent.WithProvider(provider),
