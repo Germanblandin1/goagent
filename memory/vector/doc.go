@@ -47,11 +47,6 @@
 //
 //	c := vector.NewBlockChunker(vector.WithPDFExtractor(myExtractor))
 //
-// AgentChunker uses a Provider to split text into semantically independent
-// units (more expensive — use for contracts, articles):
-//
-//	c := &vector.AgentChunker{Provider: p, Model: "claude-haiku-4-5-20251001"}
-//
 // # Estimators
 //
 // Estimators measure text size in model-specific units for the Chunker:

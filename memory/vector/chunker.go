@@ -2,9 +2,7 @@ package vector
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/Germanblandin1/goagent"
@@ -320,74 +318,3 @@ func (c *PageChunker) Chunk(ctx context.Context, content ChunkContent) ([]ChunkR
 	return results, nil
 }
 
-// ── AgentChunker ─────────────────────────────────────────────────────────────
-
-// AgentChunker uses a Provider to split text into semantically independent
-// units. More expensive than size-based chunkers — use for documents where
-// semantic coherence justifies the cost (contracts, technical articles).
-// Not recommended for conversational messages.
-type AgentChunker struct {
-	Provider goagent.Provider
-	Model    string
-}
-
-// Chunk uses the Provider to segment content semantically.
-// Non-text blocks are returned as a single chunk without calling the provider.
-func (c *AgentChunker) Chunk(ctx context.Context, content ChunkContent) ([]ChunkResult, error) {
-	text := extractText(content.Blocks)
-	if text == "" {
-		return []ChunkResult{{
-			Blocks:   content.Blocks,
-			Metadata: content.Metadata,
-		}}, nil
-	}
-
-	prompt := fmt.Sprintf(
-		"Divide el siguiente texto en secciones semánticamente independientes.\n"+
-			"Cada sección debe tener sentido completo por sí sola.\n"+
-			"Responde SOLO con un JSON array sin texto adicional ni backticks:\n"+
-			`[{"text": "..."}]`+"\n\nTexto:\n%s", text)
-
-	resp, err := c.Provider.Complete(ctx, goagent.CompletionRequest{
-		Model: c.Model,
-		Messages: []goagent.Message{
-			goagent.UserMessage(prompt),
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("agent chunker complete: %w", err)
-	}
-
-	raw := resp.Message.TextContent()
-	raw = strings.TrimSpace(raw)
-	raw = strings.TrimPrefix(raw, "```json")
-	raw = strings.TrimPrefix(raw, "```")
-	raw = strings.TrimSuffix(raw, "```")
-	raw = strings.TrimSpace(raw)
-
-	var parsed []struct {
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		// The model returned something we could not parse. Degrade gracefully:
-		// return the full text as a single chunk rather than failing the Store.
-		slog.Warn("agent chunker: JSON parse failed, falling back to single chunk",
-			"error", err)
-		return []ChunkResult{{
-			Blocks:   []goagent.ContentBlock{{Type: goagent.ContentText, Text: text}},
-			Metadata: content.Metadata,
-		}}, nil
-	}
-
-	results := make([]ChunkResult, len(parsed))
-	for i, p := range parsed {
-		meta := copyMeta(content.Metadata)
-		meta["chunk_index"] = i
-		meta["chunk_total"] = len(parsed)
-		results[i] = ChunkResult{
-			Blocks:   []goagent.ContentBlock{{Type: goagent.ContentText, Text: p.Text}},
-			Metadata: meta,
-		}
-	}
-	return results, nil
-}
