@@ -1,6 +1,6 @@
 module github.com/Germanblandin1/goagent/examples
 
-go 1.23.2
+go 1.24.1
 
 require (
 	github.com/Germanblandin1/goagent v0.0.0
@@ -11,6 +11,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.27.1 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728 // indirect
 	github.com/mark3labs/mcp-go v0.46.0 // indirect
 	github.com/sashabaranov/go-openai v1.41.2 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
