@@ -82,6 +82,7 @@ agent, err := goagent.New(
     goagent.WithThinking(8000),                    // optional: extended thinking
     goagent.WithEffort("medium"),                  // optional: effort level
     goagent.WithHooks(goagent.Hooks{...}),         // optional: observability
+    goagent.WithRunResult(&result),                // optional: synchronous metrics capture
     mcp.WithStdio("npx", "-y", "@mcp/server-fs"),  // optional: MCP tools
 )
 if err != nil {
@@ -90,7 +91,7 @@ if err != nil {
 defer agent.Close()
 ```
 
-The Agent holds no mutable state — all fields are written once by `New` and never modified again. This makes `Run` safe for concurrent use as long as the injected implementations (Provider, Memory) are also safe.
+The Agent holds no mutable state in its own fields — all are written once by `New` and never modified again. The `*dispatcher` stored on the Agent carries its middleware chain, including the circuit breaker whose internal counters are protected by `sync.Mutex`. This makes concurrent `Run` calls safe as long as the injected implementations (Provider, Memory) are also safe.
 
 ---
 
@@ -111,8 +112,9 @@ The ReAct loop (Reason + Act) is implemented in `agent.go:129-209` inside the pr
                         │
                         ▼
 ┌──────────────────────────────────────────────────────┐
-│  2. CREATE DISPATCHER                                │
+│  2. USE DISPATCHER  (built once in New())            │
 │     Maps name → Tool for O(1) lookup                 │
+│     Carries pre-built middleware chain               │
 └──────────────────────────────────────────────────────┘
                         │
                         ▼
@@ -203,7 +205,7 @@ if resp.StopReason != StopReasonToolUse || len(resp.Message.ToolCalls) == 0 {
 
 The loop exits when the model decides it has enough information to answer (emits `StopReasonEndTurn`) or when `StopReasonMaxTokens` is reached.
 
-**4. Parallel tool dispatch** (`dispatcher.go:30-44`)
+**4. Parallel tool dispatch** (`dispatcher.go`)
 
 ```go
 func (d *dispatcher) dispatch(ctx context.Context, calls []ToolCall) []ToolResult {
@@ -222,6 +224,34 @@ func (d *dispatcher) dispatch(ctx context.Context, calls []ToolCall) []ToolResul
 ```
 
 Each tool runs in its own goroutine. Since each goroutine writes to its own index in the `results` slice, no mutex is needed. If a tool fails or does not exist, the error is captured in the `ToolResult` and reported to the model as text — it does not abort the other tools or the loop.
+
+Each `execute` call builds a per-call `DispatchFunc` base (which calls `Tool.Execute`) and applies the pre-built middleware chain via `chain(base, d.middlewares...)`. The `dispatcher` and its middleware chain are created once in `New()` and reused on every `Run()` call, which allows stateful middlewares (e.g. the circuit breaker) to persist state across runs.
+
+**Dispatch middleware chain**
+
+The chain is built in `buildDispatchChain` and stored on the `Agent`:
+
+```
+[outermost]
+  loggingMiddleware      — always present; logs "tool dispatch" with duration and error
+  timeoutMiddleware      — present when WithToolTimeout > 0; wraps ctx with deadline
+  circuitBreakerMiddleware — present when WithCircuitBreaker is set; per-tool state machine
+  caller middlewares     — zero or more, registered via WithDispatchMiddleware
+[innermost → Execute]
+```
+
+`DispatchFunc` (`func(ctx, name, args) ([]ContentBlock, error)`) and `DispatchMiddleware` are exported so callers can write custom cross-cutting middleware (metrics, rate-limiting, retry, etc.) without forking the framework.
+
+The circuit breaker maintains a `map[string]*circuitBreaker` keyed by tool name. The map is protected by one `sync.Mutex`; each `circuitBreaker` has its own `sync.Mutex` for its state fields. This two-level locking avoids contention: concurrent calls to different tools only contend for map reads after the first call.
+
+Circuit breaker state transitions:
+
+```
+Closed ──(failures >= maxFailures)──▶ Open ──(resetTimeout elapsed)──▶ HalfOpen
+  ▲                                                                         │
+  └──────────────(probe succeeds)──────────────────────────────────────────┘
+                                          (probe fails → back to Open)
+```
 
 **5. Tool results → messages** (`agent.go:188-200`)
 
@@ -372,6 +402,35 @@ type Message struct {
 
 Multimodal support is first-class: `ContentBlock` can be text (`ContentText`), image (`ContentImage` — JPEG, PNG, GIF, WebP) or document (`ContentDocument` — PDF, text/plain).
 
+## Run metrics types
+
+`RunResult` and `ProviderEvent` carry structured metrics from the ReAct loop.
+
+```go
+// RunResult aggregates metrics for an entire Run/RunBlocks call.
+// Written to Hooks.OnRunEnd and optionally to a caller-supplied pointer via WithRunResult.
+type RunResult struct {
+    Duration   time.Duration // wall-clock time of the entire Run
+    Iterations int           // ReAct iterations executed (1-indexed)
+    TotalUsage Usage         // sum of token counts across all provider calls
+    ToolCalls  int           // total tool invocations across all iterations
+    ToolTime   time.Duration // total wall-clock time spent in tool Execute calls
+    Err        error         // nil on success; same error Run returns
+}
+
+// ProviderEvent captures metrics from a single Provider.Complete call.
+// Passed to Hooks.OnProviderResponse after each iteration.
+type ProviderEvent struct {
+    Duration   time.Duration // wall-clock time of the Provider.Complete call
+    Usage      Usage         // token counts; zero if the call failed
+    StopReason StopReason    // why the model stopped; only meaningful when Err == nil
+    ToolCalls  int           // number of tool calls the model requested; zero on error
+    Err        error         // nil on success; underlying error before *ProviderError wrapping
+}
+```
+
+`WithRunResult(dst *RunResult)` is a synchronous alternative to `Hooks.OnRunEnd` for callers that prefer reading metrics after `Run` returns rather than inside a callback. The pointer is written once per call; sharing the same pointer across concurrent `Run` calls is a data race.
+
 ## Tools
 
 Two helpers for creating tools without defining a struct:
@@ -396,7 +455,8 @@ All errors are typed and support `errors.Is` / `errors.As`:
 |-------|------|
 | `*ProviderError` | The provider returned an error |
 | `*MaxIterationsError` | The iteration budget was exhausted |
-| `*ToolExecutionError` | A tool failed (does not abort the loop) |
+| `*ToolExecutionError` | A tool failed (does not abort the loop); wraps `*CircuitOpenError` when the circuit is open |
+| `*CircuitOpenError` | A tool call was rejected because the circuit breaker is open; carries `Tool` name and `OpenUntil` time |
 | `*UnsupportedContentError` | The provider does not support a content type |
 | `ErrToolNotFound` | A tool was requested that does not exist |
 | `ErrInvalidMediaType` | Invalid MIME type in a ContentBlock |
@@ -460,6 +520,20 @@ Thinking and effort are **orthogonal** and can be combined freely. On models tha
 agent, _ := goagent.New(
     goagent.WithProvider(provider),
     goagent.WithHooks(goagent.Hooks{
+        OnRunStart: func() {
+            fmt.Println("run started")
+        },
+        OnRunEnd: func(result goagent.RunResult) {
+            fmt.Printf("run ended in %s (%d iterations, %d tool calls)\n",
+                result.Duration, result.Iterations, result.ToolCalls)
+        },
+        OnProviderRequest: func(iteration int, model string, messageCount int) {
+            fmt.Printf("provider request: iter=%d model=%s messages=%d\n", iteration, model, messageCount)
+        },
+        OnProviderResponse: func(iteration int, event goagent.ProviderEvent) {
+            fmt.Printf("provider response: iter=%d duration=%s stop=%s\n",
+                iteration, event.Duration, event.StopReason)
+        },
         OnIterationStart: func(iteration int) {
             fmt.Printf("iteration %d\n", iteration)
         },
@@ -481,11 +555,20 @@ agent, _ := goagent.New(
 
 | Hook | When it fires |
 |------|--------------|
+| `OnRunStart()` | At the start of each `Run`/`RunBlocks` call, before loading memory |
+| `OnRunEnd(result RunResult)` | At the end of each `Run`/`RunBlocks` call, always (success or error) |
+| `OnProviderRequest(iteration, model, messageCount)` | Before each `Provider.Complete` call |
+| `OnProviderResponse(iteration, event)` | After each `Provider.Complete` call, on success or error |
 | `OnIterationStart(iteration int)` | At the start of each iteration, before calling the provider |
 | `OnThinking(text string)` | Once per thinking block in the model's response |
 | `OnToolCall(name, args)` | When the model requests a tool, before dispatch |
 | `OnToolResult(name, content, duration, err)` | After each tool execution (even on failure) |
+| `OnCircuitOpen(toolName, openUntil)` | When a tool call is rejected because the circuit breaker is open |
 | `OnResponse(text, iterations)` | Just before `Run` returns, including on MaxIterationsError |
+| `OnShortTermLoad(results, duration, err)` | After loading history from `ShortTermMemory` at run start |
+| `OnShortTermAppend(msgs, duration, err)` | After persisting the turn to `ShortTermMemory` at run end |
+| `OnLongTermRetrieve(results, duration, err)` | After retrieving context from `LongTermMemory` at run start |
+| `OnLongTermStore(msgs, duration, err)` | After storing the turn in `LongTermMemory` at run end (when policy permits) |
 
 Hooks are invoked **synchronously** inside the loop. For heavy work (sending to external services, distributed logging), the hook should spawn a goroutine internally to avoid blocking the loop.
 

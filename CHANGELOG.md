@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-03-29
+
+### Added
+
+**Dispatch middleware chain (`goagent`)**
+- `DispatchFunc` — function signature for the base of the dispatch chain: `func(ctx context.Context, name string, args map[string]any) ([]ContentBlock, error)`
+- `DispatchMiddleware` — wrapper type for cross-cutting tool dispatch behaviour: `func(next DispatchFunc) DispatchFunc`
+- `WithToolTimeout(d time.Duration)` — per-tool deadline independent of the parent context; cancels the tool's context after `d` and records the failure (including toward the circuit breaker if configured); zero disables the timeout
+- `WithCircuitBreaker(maxFailures int, resetTimeout time.Duration)` — per-tool circuit breaking; after `maxFailures` consecutive failures the tool is disabled for `resetTimeout`; disabled tools return `*CircuitOpenError` immediately without calling `Execute`; the circuit transitions through `Closed → Open → HalfOpen → Closed` states; `maxFailures` and `resetTimeout` must both be > 0
+- `WithDispatchMiddleware(mw DispatchMiddleware)` — appends a custom middleware to the chain; custom middlewares run after the built-ins (`logging → timeout → circuit breaker → custom → Execute`); multiple calls append in order (first call = outermost custom middleware)
+- `CircuitOpenError` — new error type returned when a tool call is rejected because the circuit breaker is open; fields: `Tool string`, `OpenUntil time.Time`; error string formatted as RFC3339; supports `errors.As` via `*ToolExecutionError.Unwrap`
+- `Hooks.OnCircuitOpen func(toolName string, openUntil time.Time)` — new hook fired each time a tool call is rejected because the circuit breaker is open; `openUntil` is the earliest time the circuit may close again
+
+**Run and provider observability hooks (`goagent`)**
+- `Hooks.OnRunStart func()` — fired at the beginning of each `Run`/`RunBlocks` call, before loading memory or building messages; useful for initialising external metrics or starting a tracing span
+- `Hooks.OnRunEnd func(result RunResult)` — fired at the end of each `Run`/`RunBlocks` call, always (success, provider error, `MaxIterationsError`, context cancellation); `result.Err` is nil on success
+- `Hooks.OnProviderRequest func(iteration int, model string, messageCount int)` — fired before each `Provider.Complete` call; `iteration` is 0-indexed
+- `Hooks.OnProviderResponse func(iteration int, event ProviderEvent)` — fired after each `Provider.Complete` call on both success and error; `event.Err` carries the underlying error before wrapping as `*ProviderError`
+
+**New types (`goagent`)**
+- `RunResult` — aggregates metrics for an entire `Run`/`RunBlocks` call: `Duration`, `Iterations`, `TotalUsage Usage`, `ToolCalls int`, `ToolTime time.Duration`, `Err error`
+- `ProviderEvent` — captures metrics from a single `Provider.Complete` invocation: `Duration`, `Usage`, `StopReason`, `ToolCalls int`, `Err error`
+
+**New option (`goagent`)**
+- `WithRunResult(dst *RunResult)` — synchronous alternative to `Hooks.OnRunEnd`; after each `Run`/`RunBlocks` call the agent writes the accumulated `RunResult` to `*dst`; the caller must read it before starting the next `Run` on the same pointer; sharing the pointer across concurrent `Run` calls is a data race
+
+### Changed
+
+**Core agent (`goagent`)**
+- `Agent` now holds a `*dispatcher` built once in `New()` (previously rebuilt on every `Run()` call); stateful middlewares such as `circuitBreakerMiddleware` now preserve their state across multiple `Run()` calls on the same agent
+- Built-in dispatch chain order (outermost first): `loggingMiddleware` → `timeoutMiddleware` → `circuitBreakerMiddleware` (only when `WithCircuitBreaker` is set) → caller middlewares → `Execute`; logging measures the total end-to-end duration including all middleware overhead
+- `DispatchFunc` return type changed from `(string, error)` to `([]ContentBlock, error)` — callers implementing custom `DispatchMiddleware` must update their function signatures accordingly
+
 ## [0.3.1] - 2026-03-29
 
 ### Added

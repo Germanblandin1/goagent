@@ -204,15 +204,72 @@ goagent.WithEffort("medium")  // "high" | "medium" | "low" | "" (model default)
 
 Ollama captures reasoning from the `reasoning` field or `<think>…</think>` tags automatically.
 
+### Dispatch resilience
+
+Per-tool timeouts and circuit breaking are configured at agent construction time and apply to every tool call in every `Run`.
+
+```go
+agent, _ := goagent.New(
+    goagent.WithProvider(provider),
+    goagent.WithTool(myTool),
+
+    // Cancel a tool's context if it takes longer than 5 s.
+    goagent.WithToolTimeout(5*time.Second),
+
+    // Open the circuit after 3 consecutive failures; reset after 30 s.
+    goagent.WithCircuitBreaker(3, 30*time.Second),
+)
+```
+
+Circuit-breaker state persists across `Run` calls on the same agent. Use `OnCircuitOpen` to observe rejections:
+
+```go
+goagent.WithHooks(goagent.Hooks{
+    OnCircuitOpen: func(toolName string, openUntil time.Time) {
+        log.Printf("tool %s disabled until %s", toolName, openUntil.Format(time.RFC3339))
+    },
+})
+```
+
+For custom cross-cutting logic (metrics, retry, rate-limiting), implement `DispatchMiddleware`:
+
+```go
+func metricsMiddleware(next goagent.DispatchFunc) goagent.DispatchFunc {
+    return func(ctx context.Context, name string, args map[string]any) ([]goagent.ContentBlock, error) {
+        start := time.Now()
+        result, err := next(ctx, name, args)
+        recordMetric(name, time.Since(start), err)
+        return result, err
+    }
+}
+
+agent, _ := goagent.New(
+    goagent.WithProvider(provider),
+    goagent.WithTool(myTool),
+    goagent.WithDispatchMiddleware(metricsMiddleware),
+)
+```
+
+The full chain order (outermost first): `logging → timeout → circuit breaker → custom → Execute`.
+
 ### Observability hooks
 
 ```go
 goagent.WithHooks(goagent.Hooks{
-    OnIterationStart: func(i int)                                               { /* ... */ },
-    OnThinking:       func(text string)                                         { /* ... */ },
-    OnToolCall:       func(name string, args map[string]any)                    { /* ... */ },
-    OnToolResult:     func(name string, _ []goagent.ContentBlock, d time.Duration, err error) { /* ... */ },
-    OnResponse:       func(text string, iterations int)                         { /* ... */ },
+    OnRunStart:          func()                                                               { /* ... */ },
+    OnRunEnd:            func(result goagent.RunResult)                                       { /* ... */ },
+    OnProviderRequest:   func(iteration int, model string, messageCount int)                  { /* ... */ },
+    OnProviderResponse:  func(iteration int, event goagent.ProviderEvent)                     { /* ... */ },
+    OnIterationStart:    func(i int)                                                          { /* ... */ },
+    OnThinking:          func(text string)                                                    { /* ... */ },
+    OnToolCall:          func(name string, args map[string]any)                               { /* ... */ },
+    OnToolResult:        func(name string, _ []goagent.ContentBlock, d time.Duration, err error) { /* ... */ },
+    OnCircuitOpen:       func(toolName string, openUntil time.Time)                           { /* ... */ },
+    OnResponse:          func(text string, iterations int)                                    { /* ... */ },
+    OnShortTermLoad:     func(results int, d time.Duration, err error)                        { /* ... */ },
+    OnShortTermAppend:   func(msgs int, d time.Duration, err error)                           { /* ... */ },
+    OnLongTermRetrieve:  func(results int, d time.Duration, err error)                        { /* ... */ },
+    OnLongTermStore:     func(msgs int, d time.Duration, err error)                           { /* ... */ },
 })
 ```
 
@@ -237,7 +294,11 @@ answer, err := agent.RunBlocks(ctx,
 | `WithThinking(budget)` | — | Extended thinking, fixed token budget |
 | `WithAdaptiveThinking()` | — | Extended thinking, model-chosen budget |
 | `WithEffort(level)` | `""` | `"high"`, `"medium"`, `"low"`, or `""` |
+| `WithToolTimeout(d)` | `0` (off) | Per-tool deadline; cancels the tool's context after `d` |
+| `WithCircuitBreaker(n, d)` | — | Open circuit after `n` consecutive failures; reset after `d` |
+| `WithDispatchMiddleware(mw)` | — | Append a custom `DispatchMiddleware` to the chain (repeatable) |
 | `WithHooks(h)` | — | Observability callbacks |
+| `WithRunResult(dst)` | — | Write `RunResult` metrics to `*dst` after each `Run` (synchronous alternative to `OnRunEnd`) |
 | `WithName(name)` | — | Agent identity / session namespace for long-term memory |
 | `WithShortTermMemory(m)` | — | Conversation history within a session |
 | `WithLongTermMemory(m)` | — | Semantic retrieval across sessions |
@@ -264,7 +325,8 @@ case errors.As(err, &provErr):
 |---|---|
 | `*ProviderError` | Provider returned an error |
 | `*MaxIterationsError` | Iteration budget exhausted |
-| `*ToolExecutionError` | A tool failed |
+| `*ToolExecutionError` | A tool failed (wraps `*CircuitOpenError` when circuit is open) |
+| `*CircuitOpenError` | Tool call rejected because the circuit breaker is open |
 | `*mcp.MCPConnectionError` | MCP server unreachable at startup |
 | `*mcp.MCPDiscoveryError` | MCP tool listing failed |
 | `ErrToolNotFound` | Requested tool does not exist |
