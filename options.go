@@ -28,6 +28,7 @@ type options struct {
 	thinking       *ThinkingConfig
 	effort         string
 	hooks          Hooks
+	runResult      *RunResult
 	mcpConnectors  []MCPConnectorFn
 	mcpClosers     []io.Closer
 }
@@ -169,6 +170,20 @@ func WithAdaptiveThinking() Option {
 // Models that do not support effort silently ignore this setting.
 func WithEffort(level string) Option {
 	return func(o *options) { o.effort = level }
+}
+
+// WithRunResult configures a destination pointer that the agent writes after
+// each Run/RunBlocks call completes. The pointed-to RunResult is overwritten
+// on every call, so the caller should read it before starting the next Run.
+//
+// This is a synchronous, non-hook alternative to Hooks.OnRunEnd for callers
+// that prefer inspecting metrics after Run returns rather than inside a
+// callback.
+//
+// Note: sharing the same pointer across concurrent Run calls is a data race.
+// Use one pointer per goroutine or use Hooks.OnRunEnd with a mutex instead.
+func WithRunResult(dst *RunResult) Option {
+	return func(o *options) { o.runResult = dst }
 }
 
 // WithHooks registers observability callbacks for the ReAct loop.

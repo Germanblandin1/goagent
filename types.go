@@ -1,6 +1,9 @@
 package goagent
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Role identifies who authored a message in a conversation.
 type Role string
@@ -164,6 +167,76 @@ type Usage struct {
 
 	// OutputTokens is the number of tokens in the model's response.
 	OutputTokens int
+
+	// CacheCreationInputTokens is the number of tokens written to the prompt
+	// cache during this request. Only populated by providers that support
+	// prompt caching (e.g. Anthropic); zero otherwise.
+	CacheCreationInputTokens int
+
+	// CacheReadInputTokens is the number of tokens read from the prompt
+	// cache during this request. Only populated by providers that support
+	// prompt caching (e.g. Anthropic); zero otherwise.
+	CacheReadInputTokens int
+}
+
+// add accumulates the token counts from other into u.
+func (u *Usage) add(other Usage) {
+	u.InputTokens += other.InputTokens
+	u.OutputTokens += other.OutputTokens
+	u.CacheCreationInputTokens += other.CacheCreationInputTokens
+	u.CacheReadInputTokens += other.CacheReadInputTokens
+}
+
+// ProviderEvent captures metrics from a single provider call within the
+// ReAct loop. It is passed to Hooks.OnProviderResponse after each
+// Provider.Complete invocation, whether it succeeds or fails.
+type ProviderEvent struct {
+	// Duration is the wall-clock time of the Provider.Complete call.
+	Duration time.Duration
+
+	// Usage reports token consumption for this completion.
+	// Zero value if the call failed or the provider does not report usage.
+	Usage Usage
+
+	// StopReason indicates why the model stopped generating.
+	// Only meaningful when Err is nil.
+	StopReason StopReason
+
+	// ToolCalls is the number of tool calls the model requested in this
+	// completion. Zero when the model produced a final answer or an error.
+	ToolCalls int
+
+	// Err is nil on success. On provider failure it carries the underlying
+	// error (before wrapping as *ProviderError).
+	Err error
+}
+
+// RunResult aggregates metrics for an entire Run/RunBlocks call.
+// It is passed to Hooks.OnRunEnd and optionally written to a caller-supplied
+// pointer via WithRunResult.
+type RunResult struct {
+	// Duration is the wall-clock time of the entire Run, from entry to return.
+	Duration time.Duration
+
+	// Iterations is the number of ReAct iterations executed (1-indexed).
+	// On success this is the iteration that produced the final answer.
+	// On MaxIterationsError this equals the configured maximum.
+	Iterations int
+
+	// TotalUsage is the sum of token counts across all provider calls.
+	TotalUsage Usage
+
+	// ToolCalls is the total number of tool invocations across all iterations.
+	ToolCalls int
+
+	// ToolTime is the total wall-clock time spent executing tools.
+	// Parallel tool calls within the same iteration overlap, so this may
+	// exceed the actual elapsed time.
+	ToolTime time.Duration
+
+	// Err is nil when Run succeeds. Otherwise it carries the same error
+	// that Run returns (*ProviderError, *MaxIterationsError, context error, etc.).
+	Err error
 }
 
 // Provider is the interface that wraps a language model backend.

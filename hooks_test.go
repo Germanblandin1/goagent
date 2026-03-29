@@ -881,6 +881,463 @@ func TestHooks_OnLongTermStore_PolicySkip(t *testing.T) {
 	}
 }
 
+// endTurnRespWithUsage builds a final-answer response with token usage.
+func endTurnRespWithUsage(content string, input, output int) goagent.CompletionResponse {
+	resp := endTurnResp(content)
+	resp.Usage = goagent.Usage{InputTokens: input, OutputTokens: output}
+	return resp
+}
+
+// toolUseRespWithUsage builds a tool-use response with token usage.
+func toolUseRespWithUsage(toolID, toolName string, args map[string]any, input, output int) goagent.CompletionResponse {
+	resp := toolUseResp(toolID, toolName, args)
+	resp.Usage = goagent.Usage{InputTokens: input, OutputTokens: output}
+	return resp
+}
+
+// errorProvider is a Provider that always returns an error.
+type errorProvider struct{ err error }
+
+func (p *errorProvider) Complete(context.Context, goagent.CompletionRequest) (goagent.CompletionResponse, error) {
+	return goagent.CompletionResponse{}, p.err
+}
+
+func TestHooks_OnRunStart(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("hi"))),
+		goagent.WithHooks(goagent.Hooks{
+			OnRunStart: func() { called = true },
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.Run(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !called {
+		t.Error("OnRunStart was not called")
+	}
+}
+
+func TestHooks_OnRunEnd_Success(t *testing.T) {
+	t.Parallel()
+
+	var got goagent.RunResult
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider(
+			endTurnRespWithUsage("done", 100, 50),
+		)),
+		goagent.WithHooks(goagent.Hooks{
+			OnRunEnd: func(r goagent.RunResult) { got = r },
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.Run(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got.Iterations != 1 {
+		t.Errorf("iterations = %d, want 1", got.Iterations)
+	}
+	if got.TotalUsage.InputTokens != 100 {
+		t.Errorf("input tokens = %d, want 100", got.TotalUsage.InputTokens)
+	}
+	if got.TotalUsage.OutputTokens != 50 {
+		t.Errorf("output tokens = %d, want 50", got.TotalUsage.OutputTokens)
+	}
+	if got.ToolCalls != 0 {
+		t.Errorf("tool calls = %d, want 0", got.ToolCalls)
+	}
+	if got.Duration < 0 {
+		t.Errorf("duration = %v, want >= 0", got.Duration)
+	}
+	if got.Err != nil {
+		t.Errorf("err = %v, want nil", got.Err)
+	}
+}
+
+func TestHooks_OnRunEnd_AccumulatesAcrossIterations(t *testing.T) {
+	t.Parallel()
+
+	var got goagent.RunResult
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider(
+			toolUseRespWithUsage("t1", "calc", map[string]any{}, 100, 30),
+			toolUseRespWithUsage("t2", "calc", map[string]any{}, 150, 40),
+			endTurnRespWithUsage("done", 200, 50),
+		)),
+		goagent.WithTool(testutil.NewMockTool("calc", "arithmetic", "42")),
+		goagent.WithHooks(goagent.Hooks{
+			OnRunEnd: func(r goagent.RunResult) { got = r },
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.Run(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got.Iterations != 3 {
+		t.Errorf("iterations = %d, want 3", got.Iterations)
+	}
+	wantInput := 100 + 150 + 200
+	if got.TotalUsage.InputTokens != wantInput {
+		t.Errorf("input tokens = %d, want %d", got.TotalUsage.InputTokens, wantInput)
+	}
+	wantOutput := 30 + 40 + 50
+	if got.TotalUsage.OutputTokens != wantOutput {
+		t.Errorf("output tokens = %d, want %d", got.TotalUsage.OutputTokens, wantOutput)
+	}
+	if got.ToolCalls != 2 {
+		t.Errorf("tool calls = %d, want 2", got.ToolCalls)
+	}
+	if got.ToolTime < 0 {
+		t.Errorf("tool time = %v, want >= 0", got.ToolTime)
+	}
+	if got.Err != nil {
+		t.Errorf("err = %v, want nil", got.Err)
+	}
+}
+
+func TestHooks_OnRunEnd_ProviderError(t *testing.T) {
+	t.Parallel()
+
+	provErr := errors.New("api down")
+	var got goagent.RunResult
+
+	agent, err := goagent.New(
+		goagent.WithProvider(&errorProvider{err: provErr}),
+		goagent.WithHooks(goagent.Hooks{
+			OnRunEnd: func(r goagent.RunResult) { got = r },
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, runErr := agent.Run(context.Background(), "hello")
+	if runErr == nil {
+		t.Fatal("expected error from Run, got nil")
+	}
+
+	if got.Err == nil {
+		t.Fatal("OnRunEnd: err is nil, want non-nil")
+	}
+	var pe *goagent.ProviderError
+	if !errors.As(got.Err, &pe) {
+		t.Errorf("err type = %T, want *ProviderError", got.Err)
+	}
+	if got.Iterations != 1 {
+		t.Errorf("iterations = %d, want 1", got.Iterations)
+	}
+}
+
+func TestHooks_OnRunEnd_MaxIterations(t *testing.T) {
+	t.Parallel()
+
+	var got goagent.RunResult
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider(
+			toolUseRespWithUsage("t1", "calc", map[string]any{}, 100, 30),
+			toolUseRespWithUsage("t2", "calc", map[string]any{}, 150, 40),
+		)),
+		goagent.WithTool(testutil.NewMockTool("calc", "arithmetic", "42")),
+		goagent.WithMaxIterations(2),
+		goagent.WithHooks(goagent.Hooks{
+			OnRunEnd: func(r goagent.RunResult) { got = r },
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _ = agent.Run(context.Background(), "test")
+
+	if got.Iterations != 2 {
+		t.Errorf("iterations = %d, want 2", got.Iterations)
+	}
+	if got.TotalUsage.InputTokens != 250 {
+		t.Errorf("input tokens = %d, want 250", got.TotalUsage.InputTokens)
+	}
+	var maxErr *goagent.MaxIterationsError
+	if !errors.As(got.Err, &maxErr) {
+		t.Errorf("err type = %T, want *MaxIterationsError", got.Err)
+	}
+}
+
+func TestHooks_OnProviderRequest(t *testing.T) {
+	t.Parallel()
+
+	type call struct {
+		iteration    int
+		model        string
+		messageCount int
+	}
+	var got []call
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider(
+			toolUseResp("t1", "calc", map[string]any{}),
+			endTurnResp("done"),
+		)),
+		goagent.WithModel("test-model"),
+		goagent.WithTool(testutil.NewMockTool("calc", "arithmetic", "42")),
+		goagent.WithHooks(goagent.Hooks{
+			OnProviderRequest: func(iter int, model string, msgCount int) {
+				got = append(got, call{iter, model, msgCount})
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.Run(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("OnProviderRequest called %d times, want 2", len(got))
+	}
+	// First call: iteration 0, model "test-model", 1 message (user prompt).
+	if got[0].iteration != 0 {
+		t.Errorf("call[0].iteration = %d, want 0", got[0].iteration)
+	}
+	if got[0].model != "test-model" {
+		t.Errorf("call[0].model = %q, want %q", got[0].model, "test-model")
+	}
+	if got[0].messageCount != 1 {
+		t.Errorf("call[0].messageCount = %d, want 1", got[0].messageCount)
+	}
+	// Second call: iteration 1, more messages (user + assistant + tool result).
+	if got[1].iteration != 1 {
+		t.Errorf("call[1].iteration = %d, want 1", got[1].iteration)
+	}
+	if got[1].messageCount <= 1 {
+		t.Errorf("call[1].messageCount = %d, want > 1", got[1].messageCount)
+	}
+}
+
+func TestHooks_OnProviderResponse_Success(t *testing.T) {
+	t.Parallel()
+
+	type call struct {
+		iteration int
+		event     goagent.ProviderEvent
+	}
+	var got []call
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider(
+			endTurnRespWithUsage("done", 100, 50),
+		)),
+		goagent.WithHooks(goagent.Hooks{
+			OnProviderResponse: func(iter int, ev goagent.ProviderEvent) {
+				got = append(got, call{iter, ev})
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.Run(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("OnProviderResponse called %d times, want 1", len(got))
+	}
+	if got[0].iteration != 0 {
+		t.Errorf("iteration = %d, want 0", got[0].iteration)
+	}
+	if got[0].event.Usage.InputTokens != 100 {
+		t.Errorf("input tokens = %d, want 100", got[0].event.Usage.InputTokens)
+	}
+	if got[0].event.Usage.OutputTokens != 50 {
+		t.Errorf("output tokens = %d, want 50", got[0].event.Usage.OutputTokens)
+	}
+	if got[0].event.StopReason != goagent.StopReasonEndTurn {
+		t.Errorf("stop reason = %v, want EndTurn", got[0].event.StopReason)
+	}
+	if got[0].event.ToolCalls != 0 {
+		t.Errorf("tool calls = %d, want 0", got[0].event.ToolCalls)
+	}
+	if got[0].event.Err != nil {
+		t.Errorf("err = %v, want nil", got[0].event.Err)
+	}
+	if got[0].event.Duration < 0 {
+		t.Errorf("duration = %v, want >= 0", got[0].event.Duration)
+	}
+}
+
+func TestHooks_OnProviderResponse_Error(t *testing.T) {
+	t.Parallel()
+
+	provErr := errors.New("rate limited")
+	var got goagent.ProviderEvent
+
+	agent, err := goagent.New(
+		goagent.WithProvider(&errorProvider{err: provErr}),
+		goagent.WithHooks(goagent.Hooks{
+			OnProviderResponse: func(_ int, ev goagent.ProviderEvent) {
+				got = ev
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _ = agent.Run(context.Background(), "hello")
+
+	if got.Err == nil {
+		t.Fatal("OnProviderResponse: err is nil, want non-nil")
+	}
+	if !errors.Is(got.Err, provErr) {
+		t.Errorf("err = %v, want to wrap %v", got.Err, provErr)
+	}
+	if got.Duration < 0 {
+		t.Errorf("duration = %v, want >= 0", got.Duration)
+	}
+}
+
+func TestHooks_OnProviderResponse_ToolCalls(t *testing.T) {
+	t.Parallel()
+
+	var got []goagent.ProviderEvent
+
+	resp := goagent.CompletionResponse{
+		Message: goagent.Message{
+			Role: goagent.RoleAssistant,
+			ToolCalls: []goagent.ToolCall{
+				{ID: "t1", Name: "calc", Arguments: map[string]any{}},
+				{ID: "t2", Name: "search", Arguments: map[string]any{}},
+			},
+		},
+		StopReason: goagent.StopReasonToolUse,
+		Usage:      goagent.Usage{InputTokens: 100, OutputTokens: 20},
+	}
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider(resp, endTurnResp("done"))),
+		goagent.WithTool(testutil.NewMockTool("calc", "arithmetic", "42")),
+		goagent.WithTool(testutil.NewMockTool("search", "web search", "result")),
+		goagent.WithHooks(goagent.Hooks{
+			OnProviderResponse: func(_ int, ev goagent.ProviderEvent) {
+				got = append(got, ev)
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.Run(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(got) < 1 {
+		t.Fatal("OnProviderResponse not called")
+	}
+	if got[0].ToolCalls != 2 {
+		t.Errorf("tool calls = %d, want 2", got[0].ToolCalls)
+	}
+}
+
+func TestWithRunResult(t *testing.T) {
+	t.Parallel()
+
+	var result goagent.RunResult
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider(
+			toolUseRespWithUsage("t1", "calc", map[string]any{}, 100, 30),
+			endTurnRespWithUsage("done", 150, 40),
+		)),
+		goagent.WithTool(testutil.NewMockTool("calc", "arithmetic", "42")),
+		goagent.WithRunResult(&result),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := agent.Run(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "done" {
+		t.Errorf("result text = %q, want %q", got, "done")
+	}
+
+	if result.Iterations != 2 {
+		t.Errorf("iterations = %d, want 2", result.Iterations)
+	}
+	if result.TotalUsage.InputTokens != 250 {
+		t.Errorf("input tokens = %d, want 250", result.TotalUsage.InputTokens)
+	}
+	if result.TotalUsage.OutputTokens != 70 {
+		t.Errorf("output tokens = %d, want 70", result.TotalUsage.OutputTokens)
+	}
+	if result.ToolCalls != 1 {
+		t.Errorf("tool calls = %d, want 1", result.ToolCalls)
+	}
+	if result.Duration < 0 {
+		t.Errorf("duration = %v, want >= 0", result.Duration)
+	}
+	if result.Err != nil {
+		t.Errorf("err = %v, want nil", result.Err)
+	}
+}
+
+func TestWithRunResult_ProviderError(t *testing.T) {
+	t.Parallel()
+
+	provErr := errors.New("api error")
+	var result goagent.RunResult
+
+	agent, err := goagent.New(
+		goagent.WithProvider(&errorProvider{err: provErr}),
+		goagent.WithRunResult(&result),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, runErr := agent.Run(context.Background(), "hello")
+	if runErr == nil {
+		t.Fatal("expected error from Run, got nil")
+	}
+
+	if result.Err == nil {
+		t.Fatal("RunResult.Err is nil, want non-nil")
+	}
+	var pe *goagent.ProviderError
+	if !errors.As(result.Err, &pe) {
+		t.Errorf("RunResult.Err type = %T, want *ProviderError", result.Err)
+	}
+}
+
 func TestHooks_Race(t *testing.T) {
 	t.Parallel()
 

@@ -182,6 +182,44 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 		return "", errors.New("goagent: no provider configured; use WithProvider")
 	}
 
+	runStart := time.Now()
+
+	if fn := a.opts.hooks.OnRunStart; fn != nil {
+		fn()
+	}
+
+	// Accumulators for RunResult — populated throughout the loop and
+	// written to OnRunEnd / WithRunResult at every exit point.
+	var (
+		totalUsage     Usage
+		totalToolCalls int
+		totalToolTime  time.Duration
+		iterations     int
+		runErr         error
+		lastContent    string
+	)
+
+	// finishRun fires OnRunEnd and writes WithRunResult at every exit path.
+	// It is called explicitly (not via defer) so that it runs before
+	// persistTurn, giving hook consumers a RunResult that reflects only the
+	// loop — not the asynchronous memory write.
+	finishRun := func() {
+		result := RunResult{
+			Duration:   time.Since(runStart),
+			Iterations: iterations,
+			TotalUsage: totalUsage,
+			ToolCalls:  totalToolCalls,
+			ToolTime:   totalToolTime,
+			Err:        runErr,
+		}
+		if fn := a.opts.hooks.OnRunEnd; fn != nil {
+			fn(result)
+		}
+		if a.opts.runResult != nil {
+			*a.opts.runResult = result
+		}
+	}
+
 	if a.opts.name != "" {
 		// Inject the agent name as the session ID so that LongTermMemory and
 		// InMemoryStore can scope vector entries to this agent. The name is
@@ -190,12 +228,16 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 		var err error
 		ctx, err = session.NewContext(ctx, a.opts.name)
 		if err != nil {
-			return "", fmt.Errorf("goagent: invalid agent name %q: %w", a.opts.name, err)
+			runErr = fmt.Errorf("goagent: invalid agent name %q: %w", a.opts.name, err)
+			finishRun()
+			return "", runErr
 		}
 	}
 
 	messages, historyLen, err := a.buildMessages(ctx, content)
 	if err != nil {
+		runErr = err
+		finishRun()
 		return "", err
 	}
 
@@ -207,13 +249,15 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 
 	d := newDispatcher(a.opts.tools, a.opts.logger)
 
-	var lastContent string
-
 	for i := 0; i < a.opts.maxIterations; i++ {
+		iterations = i + 1
+
 		// Respect context cancellation at each loop boundary.
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			runErr = ctx.Err()
+			finishRun()
+			return "", runErr
 		default:
 		}
 
@@ -230,9 +274,35 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 			Effort:       a.opts.effort,
 		}
 
+		if fn := a.opts.hooks.OnProviderRequest; fn != nil {
+			fn(i, req.Model, len(req.Messages))
+		}
+
+		provStart := time.Now()
 		resp, err := a.opts.provider.Complete(ctx, req)
+		provDuration := time.Since(provStart)
+
 		if err != nil {
-			return "", &ProviderError{Cause: err}
+			if fn := a.opts.hooks.OnProviderResponse; fn != nil {
+				fn(i, ProviderEvent{
+					Duration: provDuration,
+					Err:      err,
+				})
+			}
+			runErr = &ProviderError{Cause: err}
+			finishRun()
+			return "", runErr
+		}
+
+		totalUsage.add(resp.Usage)
+
+		if fn := a.opts.hooks.OnProviderResponse; fn != nil {
+			fn(i, ProviderEvent{
+				Duration:   provDuration,
+				Usage:      resp.Usage,
+				StopReason: resp.StopReason,
+				ToolCalls:  len(resp.Message.ToolCalls),
+			})
 		}
 
 		messages = append(messages, resp.Message)
@@ -258,6 +328,7 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 			if fn := a.opts.hooks.OnResponse; fn != nil {
 				fn(lastContent, i+1)
 			}
+			finishRun()
 			a.persistTurn(ctx, messages, historyLen, lastContent)
 			return lastContent, nil
 		}
@@ -275,6 +346,12 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 			for _, r := range results {
 				fn(r.Name, r.Content, r.Duration, r.Err)
 			}
+		}
+
+		// Accumulate tool metrics.
+		totalToolCalls += len(results)
+		for _, r := range results {
+			totalToolTime += r.Duration
 		}
 
 		for _, r := range results {
@@ -296,11 +373,13 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 	if fn := a.opts.hooks.OnResponse; fn != nil {
 		fn(lastContent, a.opts.maxIterations)
 	}
-	a.persistTurn(ctx, messages, historyLen, lastContent)
-	return "", &MaxIterationsError{
+	runErr = &MaxIterationsError{
 		Iterations:  a.opts.maxIterations,
 		LastThought: lastContent,
 	}
+	finishRun()
+	a.persistTurn(ctx, messages, historyLen, lastContent)
+	return "", runErr
 }
 
 // buildMessages constructs the full message slice to send to the provider for

@@ -324,8 +324,10 @@ func toGoAgentResponse(resp *sdk.Message) goagent.CompletionResponse {
 		Message:    msg,
 		StopReason: toStopReason(resp.StopReason),
 		Usage: goagent.Usage{
-			InputTokens:  int(resp.Usage.InputTokens),
-			OutputTokens: int(resp.Usage.OutputTokens),
+			InputTokens:              int(resp.Usage.InputTokens),
+			OutputTokens:             int(resp.Usage.OutputTokens),
+			CacheCreationInputTokens: int(resp.Usage.CacheCreationInputTokens),
+			CacheReadInputTokens:     int(resp.Usage.CacheReadInputTokens),
 		},
 	}
 }
