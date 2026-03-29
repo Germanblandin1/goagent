@@ -7,37 +7,39 @@ import (
 )
 
 type fixedWindowPolicy struct {
-	n int
+	maxGroups int
 }
 
-// NewFixedWindow returns a Policy that keeps the most recent n messages.
-// If the history has fewer than n messages, all messages are returned.
+// NewFixedWindow returns a Policy that limits history to the most recent n groups.
+// A "group" is an atomic exchange: a simple message (user or assistant without
+// tools) or a linked set of assistant+tool_use + all its tool results.
 //
-// The policy preserves the tool call invariant: if truncation would leave a
-// leading RoleTool message without its preceding assistant tool_use, those
-// orphaned tool results are also discarded.
+// Using groups instead of individual messages guarantees that the tool call
+// invariant is never violated: a tool_result is never sent without its
+// corresponding tool_use.
 //
-// Panics if n is zero or negative — this is a programming error.
+// For a history without tool calls, NewFixedWindow(n) is equivalent to the
+// last n messages — behavior is identical.
+//
+// If n is zero or negative, Apply returns nil.
 func NewFixedWindow(n int) Policy {
-	if n <= 0 {
-		panic("policy: FixedWindow size must be positive")
-	}
-	return &fixedWindowPolicy{n: n}
+	return &fixedWindowPolicy{maxGroups: n}
 }
 
 func (f *fixedWindowPolicy) Apply(_ context.Context, msgs []goagent.Message) ([]goagent.Message, error) {
-	if len(msgs) == 0 {
+	if len(msgs) == 0 || f.maxGroups <= 0 {
 		return nil, nil
 	}
+
+	groups := buildGroups(msgs)
+
 	start := 0
-	if len(msgs) > f.n {
-		start = len(msgs) - f.n
+	if len(groups) > f.maxGroups {
+		start = len(groups) - f.maxGroups
 	}
-	start = adjustStart(msgs, start)
-	if start >= len(msgs) {
-		return nil, nil
-	}
-	out := make([]goagent.Message, len(msgs)-start)
-	copy(out, msgs[start:])
+
+	from := groups[start].start
+	out := make([]goagent.Message, len(msgs)-from)
+	copy(out, msgs[from:])
 	return out, nil
 }

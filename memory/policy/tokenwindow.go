@@ -45,17 +45,18 @@ type tokenWindowPolicy struct {
 	tokenizer TokenizerFunc
 }
 
-// NewTokenWindow returns a Policy that keeps the most recent messages that fit
-// within maxTokens tokens. It walks the history from newest to oldest,
-// accumulating token counts until the budget is exhausted.
+// NewTokenWindow returns a Policy that keeps the most recent groups that fit
+// within maxTokens estimated tokens.
+//
+// Like FixedWindow, it operates on atomic groups, guaranteeing that the tool
+// call invariant is never violated.
+//
+// If the most recent group alone exceeds the budget, it is included anyway —
+// better to send some context than none.
 //
 // By default, token cost is estimated with the heuristic len(content)/4 + 4
 // per message. To use an exact count, pass WithTokenizer with the tokenizer
 // of your chosen provider.
-//
-// The policy preserves the tool call invariant: if truncation would leave a
-// leading RoleTool message without its preceding assistant tool_use, those
-// orphaned tool results are also discarded.
 //
 // NewTokenWindow panics if maxTokens is zero or negative — this is a
 // programming error that cannot be corrected at runtime.
@@ -77,22 +78,25 @@ func (t *tokenWindowPolicy) Apply(_ context.Context, msgs []goagent.Message) ([]
 	if len(msgs) == 0 {
 		return nil, nil
 	}
-	budget := t.maxTokens
-	start := len(msgs)
-	for i := len(msgs) - 1; i >= 0; i-- {
-		cost := t.tokenizer(msgs[i])
-		if budget < cost {
+
+	groups := buildGroups(msgs)
+
+	// Always include the most recent group even if it exceeds the budget.
+	lastIncluded := len(groups) - 1
+	budget := t.maxTokens - groupTokens(groups[lastIncluded], msgs, t.tokenizer)
+
+	for i := lastIncluded - 1; i >= 0; i-- {
+		cost := groupTokens(groups[i], msgs, t.tokenizer)
+		if budget-cost < 0 {
 			break
 		}
 		budget -= cost
-		start = i
+		lastIncluded = i
 	}
-	start = adjustStart(msgs, start)
-	if start >= len(msgs) {
-		return nil, nil
-	}
-	out := make([]goagent.Message, len(msgs)-start)
-	copy(out, msgs[start:])
+
+	from := groups[lastIncluded].start
+	out := make([]goagent.Message, len(msgs)-from)
+	copy(out, msgs[from:])
 	return out, nil
 }
 
