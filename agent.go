@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Germanblandin1/goagent/internal/session"
 )
@@ -312,18 +313,26 @@ func (a *Agent) buildMessages(ctx context.Context, content []ContentBlock) ([]Me
 	var longTermMsgs, shortTermMsgs []Message
 
 	if a.opts.longTerm != nil {
-		var err error
-		longTermMsgs, err = a.opts.longTerm.Retrieve(ctx, content, a.opts.longTermTopK)
-		if err != nil {
-			return nil, 0, fmt.Errorf("goagent: retrieving long-term context: %w", err)
+		start := time.Now()
+		var rerr error
+		longTermMsgs, rerr = a.opts.longTerm.Retrieve(ctx, content, a.opts.longTermTopK)
+		if fn := a.opts.hooks.OnLongTermRetrieve; fn != nil {
+			fn(len(longTermMsgs), time.Since(start), rerr)
+		}
+		if rerr != nil {
+			return nil, 0, fmt.Errorf("goagent: retrieving long-term context: %w", rerr)
 		}
 	}
 
 	if a.opts.shortTerm != nil {
-		var err error
-		shortTermMsgs, err = a.opts.shortTerm.Messages(ctx)
-		if err != nil {
-			return nil, 0, fmt.Errorf("goagent: loading short-term history: %w", err)
+		start := time.Now()
+		var rerr error
+		shortTermMsgs, rerr = a.opts.shortTerm.Messages(ctx)
+		if fn := a.opts.hooks.OnShortTermLoad; fn != nil {
+			fn(len(shortTermMsgs), time.Since(start), rerr)
+		}
+		if rerr != nil {
+			return nil, 0, fmt.Errorf("goagent: loading short-term history: %w", rerr)
 		}
 	}
 
@@ -357,8 +366,13 @@ func (a *Agent) persistTurn(ctx context.Context, messages []Message, historyLen 
 				AssistantMessage(finalContent),
 			}
 		}
-		if err := a.opts.shortTerm.Append(ctx, toStore...); err != nil {
-			a.opts.logger.Warn("short-term memory append failed", "error", err)
+		start := time.Now()
+		serr := a.opts.shortTerm.Append(ctx, toStore...)
+		if fn := a.opts.hooks.OnShortTermAppend; fn != nil {
+			fn(len(toStore), time.Since(start), serr)
+		}
+		if serr != nil {
+			a.opts.logger.Warn("short-term memory append failed", "error", serr)
 		}
 	}
 
@@ -371,8 +385,13 @@ func (a *Agent) persistTurn(ctx context.Context, messages []Message, historyLen 
 		// to store. The slice may differ from the raw prompt+response pair when
 		// the policy transforms or condenses the turn (e.g. an LLM judge).
 		if msgs := policy(messages[historyLen], AssistantMessage(finalContent)); msgs != nil {
-			if err := a.opts.longTerm.Store(ctx, msgs...); err != nil {
-				a.opts.logger.Warn("long-term memory store failed", "error", err)
+			start := time.Now()
+			serr := a.opts.longTerm.Store(ctx, msgs...)
+			if fn := a.opts.hooks.OnLongTermStore; fn != nil {
+				fn(len(msgs), time.Since(start), serr)
+			}
+			if serr != nil {
+				a.opts.logger.Warn("long-term memory store failed", "error", serr)
 			}
 		}
 	}

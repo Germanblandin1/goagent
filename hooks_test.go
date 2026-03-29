@@ -526,6 +526,361 @@ func TestHooks_PartialHooks(t *testing.T) {
 	}
 }
 
+func TestHooks_OnShortTermLoad(t *testing.T) {
+	t.Parallel()
+
+	history := []goagent.Message{
+		goagent.UserMessage("previous question"),
+		goagent.AssistantMessage("previous answer"),
+	}
+	stm := testutil.NewMockMemoryWithHistory(history...)
+
+	type call struct {
+		results  int
+		duration time.Duration
+		err      error
+	}
+	var got []call
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("hi"))),
+		goagent.WithShortTermMemory(stm),
+		goagent.WithHooks(goagent.Hooks{
+			OnShortTermLoad: func(results int, d time.Duration, err error) {
+				got = append(got, call{results, d, err})
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.Run(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("OnShortTermLoad called %d times, want 1", len(got))
+	}
+	if got[0].results != len(history) {
+		t.Errorf("results = %d, want %d", got[0].results, len(history))
+	}
+	if got[0].err != nil {
+		t.Errorf("err = %v, want nil", got[0].err)
+	}
+	if got[0].duration < 0 {
+		t.Errorf("duration = %v, want >= 0", got[0].duration)
+	}
+}
+
+func TestHooks_OnShortTermLoad_Error(t *testing.T) {
+	t.Parallel()
+
+	loadErr := errors.New("storage unavailable")
+	stm := testutil.NewMockMemoryWithErrors(nil, loadErr)
+
+	var gotErr error
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("hi"))),
+		goagent.WithShortTermMemory(stm),
+		goagent.WithHooks(goagent.Hooks{
+			OnShortTermLoad: func(_ int, _ time.Duration, err error) {
+				gotErr = err
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, runErr := agent.Run(context.Background(), "hello")
+	if runErr == nil {
+		t.Fatal("expected error from Run, got nil")
+	}
+
+	if gotErr == nil {
+		t.Fatal("OnShortTermLoad: err is nil, want non-nil")
+	}
+	if !errors.Is(gotErr, loadErr) {
+		t.Errorf("err = %v, want to wrap %v", gotErr, loadErr)
+	}
+}
+
+func TestHooks_OnShortTermAppend(t *testing.T) {
+	t.Parallel()
+
+	stm := testutil.NewMockMemory()
+
+	type call struct {
+		msgs     int
+		duration time.Duration
+		err      error
+	}
+	var got []call
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("reply"))),
+		goagent.WithShortTermMemory(stm),
+		goagent.WithHooks(goagent.Hooks{
+			OnShortTermAppend: func(msgs int, d time.Duration, err error) {
+				got = append(got, call{msgs, d, err})
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.Run(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("OnShortTermAppend called %d times, want 1", len(got))
+	}
+	// traceTools=true by default: stores the full trace (at least user+assistant).
+	if got[0].msgs < 2 {
+		t.Errorf("msgs = %d, want >= 2", got[0].msgs)
+	}
+	if got[0].err != nil {
+		t.Errorf("err = %v, want nil", got[0].err)
+	}
+	if got[0].duration < 0 {
+		t.Errorf("duration = %v, want >= 0", got[0].duration)
+	}
+}
+
+func TestHooks_OnShortTermAppend_Error(t *testing.T) {
+	t.Parallel()
+
+	appendErr := errors.New("append failed")
+	stm := testutil.NewMockMemoryWithErrors(appendErr, nil)
+
+	var gotErr error
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("reply"))),
+		goagent.WithShortTermMemory(stm),
+		goagent.WithHooks(goagent.Hooks{
+			OnShortTermAppend: func(_ int, _ time.Duration, err error) {
+				gotErr = err
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Append errors are non-fatal — Run should still succeed.
+	_, err = agent.Run(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotErr == nil {
+		t.Fatal("OnShortTermAppend: err is nil, want non-nil")
+	}
+	if !errors.Is(gotErr, appendErr) {
+		t.Errorf("err = %v, want to wrap %v", gotErr, appendErr)
+	}
+}
+
+func TestHooks_OnLongTermRetrieve(t *testing.T) {
+	t.Parallel()
+
+	retrieved := []goagent.Message{
+		goagent.UserMessage("past question"),
+		goagent.AssistantMessage("past answer"),
+	}
+	ltm := testutil.NewMockLongTermMemoryWithRetrieve(retrieved...)
+
+	type call struct {
+		results  int
+		duration time.Duration
+		err      error
+	}
+	var got []call
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("hi"))),
+		goagent.WithLongTermMemory(ltm),
+		goagent.WithHooks(goagent.Hooks{
+			OnLongTermRetrieve: func(results int, d time.Duration, err error) {
+				got = append(got, call{results, d, err})
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.Run(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("OnLongTermRetrieve called %d times, want 1", len(got))
+	}
+	if got[0].results != len(retrieved) {
+		t.Errorf("results = %d, want %d", got[0].results, len(retrieved))
+	}
+	if got[0].err != nil {
+		t.Errorf("err = %v, want nil", got[0].err)
+	}
+	if got[0].duration < 0 {
+		t.Errorf("duration = %v, want >= 0", got[0].duration)
+	}
+}
+
+func TestHooks_OnLongTermRetrieve_Error(t *testing.T) {
+	t.Parallel()
+
+	retrieveErr := errors.New("vector store unavailable")
+	ltm := testutil.NewMockLongTermMemoryWithErrors(nil, retrieveErr)
+
+	var gotErr error
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("hi"))),
+		goagent.WithLongTermMemory(ltm),
+		goagent.WithHooks(goagent.Hooks{
+			OnLongTermRetrieve: func(_ int, _ time.Duration, err error) {
+				gotErr = err
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, runErr := agent.Run(context.Background(), "hello")
+	if runErr == nil {
+		t.Fatal("expected error from Run, got nil")
+	}
+
+	if gotErr == nil {
+		t.Fatal("OnLongTermRetrieve: err is nil, want non-nil")
+	}
+	if !errors.Is(gotErr, retrieveErr) {
+		t.Errorf("err = %v, want to wrap %v", gotErr, retrieveErr)
+	}
+}
+
+func TestHooks_OnLongTermStore(t *testing.T) {
+	t.Parallel()
+
+	ltm := testutil.NewMockLongTermMemory()
+
+	type call struct {
+		msgs     int
+		duration time.Duration
+		err      error
+	}
+	var got []call
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("reply"))),
+		goagent.WithLongTermMemory(ltm),
+		goagent.WithHooks(goagent.Hooks{
+			OnLongTermStore: func(msgs int, d time.Duration, err error) {
+				got = append(got, call{msgs, d, err})
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.Run(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("OnLongTermStore called %d times, want 1", len(got))
+	}
+	// StoreAlways stores [userMsg, assistantMsg] — 2 messages.
+	if got[0].msgs != 2 {
+		t.Errorf("msgs = %d, want 2", got[0].msgs)
+	}
+	if got[0].err != nil {
+		t.Errorf("err = %v, want nil", got[0].err)
+	}
+	if got[0].duration < 0 {
+		t.Errorf("duration = %v, want >= 0", got[0].duration)
+	}
+}
+
+func TestHooks_OnLongTermStore_Error(t *testing.T) {
+	t.Parallel()
+
+	storeErr := errors.New("write failed")
+	ltm := testutil.NewMockLongTermMemoryWithErrors(storeErr, nil)
+
+	var gotErr error
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("reply"))),
+		goagent.WithLongTermMemory(ltm),
+		goagent.WithHooks(goagent.Hooks{
+			OnLongTermStore: func(_ int, _ time.Duration, err error) {
+				gotErr = err
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Store errors are non-fatal — Run should still succeed.
+	_, err = agent.Run(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotErr == nil {
+		t.Fatal("OnLongTermStore: err is nil, want non-nil")
+	}
+	if !errors.Is(gotErr, storeErr) {
+		t.Errorf("err = %v, want to wrap %v", gotErr, storeErr)
+	}
+}
+
+func TestHooks_OnLongTermStore_PolicySkip(t *testing.T) {
+	t.Parallel()
+
+	ltm := testutil.NewMockLongTermMemory()
+	called := false
+
+	// MinLength(1000) will reject the short "reply" response.
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("hi"))),
+		goagent.WithLongTermMemory(ltm),
+		goagent.WithWritePolicy(goagent.MinLength(1000)),
+		goagent.WithHooks(goagent.Hooks{
+			OnLongTermStore: func(_ int, _ time.Duration, _ error) {
+				called = true
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.Run(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if called {
+		t.Error("OnLongTermStore was called, but policy should have skipped the turn")
+	}
+}
+
 func TestHooks_Race(t *testing.T) {
 	t.Parallel()
 

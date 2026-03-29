@@ -62,4 +62,43 @@ type Hooks struct {
 	// También se invoca cuando el loop se agota (MaxIterationsError) —
 	// text puede ser "" si la última iteración terminó en tool use.
 	OnResponse func(text string, iterations int)
+
+	// OnShortTermLoad se invoca después de que el agente carga el historial de la
+	// memoria de corto plazo al inicio de cada Run, tanto en éxito como en error.
+	// results es la cantidad de mensajes cargados (0 si err != nil).
+	// duration es el tiempo que tardó la operación.
+	// err es nil si la carga fue exitosa.
+	//
+	// Solo se invoca si el agente tiene una ShortTermMemory configurada.
+	OnShortTermLoad func(results int, duration time.Duration, err error)
+
+	// OnShortTermAppend se invoca después de que el agente persiste el turno en
+	// la memoria de corto plazo al finalizar cada Run, tanto en éxito como en error.
+	// msgs es la cantidad de mensajes que se intentó almacenar.
+	// duration es el tiempo que tardó la operación.
+	// err es nil si el almacenamiento fue exitoso.
+	//
+	// Solo se invoca si el agente tiene una ShortTermMemory configurada.
+	OnShortTermAppend func(msgs int, duration time.Duration, err error)
+
+	// OnLongTermRetrieve se invoca después de que el agente consulta la memoria
+	// de largo plazo al inicio de cada Run, tanto en caso de éxito como de error.
+	// results es la cantidad de mensajes recuperados (0 si err != nil).
+	// duration es el tiempo que tardó la operación de recuperación.
+	// err es nil si la recuperación fue exitosa.
+	//
+	// Solo se invoca si el agente tiene una LongTermMemory configurada.
+	OnLongTermRetrieve func(results int, duration time.Duration, err error)
+
+	// OnLongTermStore se invoca después de que el agente persiste un turno en la
+	// memoria de largo plazo al finalizar cada Run, tanto en caso de éxito como
+	// de error.
+	// msgs es la cantidad de mensajes que se intentó almacenar.
+	// duration es el tiempo que tardó la operación de almacenamiento.
+	// err es nil si el almacenamiento fue exitoso.
+	//
+	// Solo se invoca si el agente tiene una LongTermMemory configurada y la
+	// WritePolicy decidió persistir el turno. No se invoca si la política
+	// descarta el turno.
+	OnLongTermStore func(msgs int, duration time.Duration, err error)
 }
