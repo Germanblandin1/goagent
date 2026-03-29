@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-03-29
+
+### Added
+
+**Memory observability hooks (`goagent`)**
+- `OnShortTermLoad(results int, duration time.Duration, err error)` — fired after `ShortTermMemory.Messages` at the start of each `Run`; reports the number of messages loaded, the operation duration, and any error
+- `OnShortTermAppend(msgs int, duration time.Duration, err error)` — fired after `ShortTermMemory.Append` at the end of each `Run`; reports the number of messages persisted, the operation duration, and any error
+- `OnLongTermRetrieve(results int, duration time.Duration, err error)` — fired after `LongTermMemory.Retrieve` at the start of each `Run`; reports the number of messages retrieved, the operation duration, and any error
+- `OnLongTermStore(msgs int, duration time.Duration, err error)` — fired after `LongTermMemory.Store` at the end of each `Run`; not fired when the `WritePolicy` discards the turn
+- All four hooks follow the same nil-safe contract as existing hooks: a nil field is silently skipped
+- Store and Append errors remain non-fatal; hooks receive the error and `Run` continues normally
+
+**Example: `multimodal-chatbot`**
+- New interactive chatbot example in `examples/multimodal-chatbot` targeting Ollama (`qwen3.5:cloud`)
+- `scan_dir` tool: lists supported images and documents in a directory; optional `recursive` flag to walk sub-directories
+- `load_file` tool: loads images (`jpg`, `png`, `gif`, `webp`) as `ImageBlock`; extracts plain text from `pdf` and `txt` files via `ledongthuc/pdf` and returns a `TextBlock` (works around Ollama's lack of native document support)
+- Short-term memory: `InMemory` storage + `FixedWindow(20)` policy
+- Long-term memory: `InMemoryStore` vector store + `nomic-embed-text:latest` embedder, `topK=3`, `MinLength(10)` write policy
+- All nine hooks wired with timestamped, color-coded stderr logging (`STM←`, `STM→`, `LTM←`, `LTM→`, `LOOP`, `TOOL→`, `TOOL←`, `THINKING`, `DONE`)
+
 ## [0.3.0] - 2026-03-28
 
 ### Added
