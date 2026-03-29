@@ -151,7 +151,7 @@ agent, _ := goagent.New(
 )
 ```
 
-Available policies: `NewNoOp()`, `NewFixedWindow(n)`, `NewTokenWindow(maxTokens)`.
+Available policies: `NewNoOp()`, `NewFixedWindow(n)` (last *n* groups), `NewTokenWindow(maxTokens)` (most recent groups within a token budget). Both window policies treat an `assistant+tool_use` message and all its `tool_result` replies as a single atomic group, so the tool-call invariant is preserved at every window boundary regardless of where the cut falls.
 
 Long-term memory enables semantic retrieval across sessions. It requires a `VectorStore` and an `Embedder`; both are provided by the framework:
 

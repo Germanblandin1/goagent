@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-03-29
+
+### Changed
+
+**Memory policies (`goagent/memory/policy`)**
+- `NewFixedWindow(n)` and `NewTokenWindow(maxTokens)` now operate on **atomic groups** instead of individual messages. A group is an indivisible exchange: a plain message (user or assistant without tool calls), or an `assistant+tool_use` message together with all its subsequent `tool_result` messages. The tool-call invariant is now guaranteed structurally — a `tool_result` can never appear as the first message in the window, regardless of where the window boundary falls.
+- For histories without tool calls the behaviour is identical to the previous release — each message forms its own group.
+- `NewFixedWindow(n)` no longer panics for `n ≤ 0`; `Apply` returns `nil` instead. `NewTokenWindow` continues to panic on `maxTokens ≤ 0` because a zero-token budget is always a programming error.
+- `NewTokenWindow` adds a defensive rule: if the most recent group alone exceeds the token budget, it is included anyway — sending some context is better than sending none.
+
 ## [0.4.0] - 2026-03-29
 
 ### Added
