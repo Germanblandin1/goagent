@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"time"
 )
 
 // MCPConnectorFn is a function that establishes an MCP connection, discovers
@@ -31,6 +32,10 @@ type options struct {
 	runResult      *RunResult
 	mcpConnectors  []MCPConnectorFn
 	mcpClosers     []io.Closer
+	toolTimeout    time.Duration
+	cbMaxFailures  int
+	cbResetTimeout time.Duration
+	dispatchMWs    []DispatchMiddleware
 }
 
 // Option is a functional option for configuring an Agent.
@@ -201,6 +206,34 @@ func WithRunResult(dst *RunResult) Option {
 //	)
 func WithHooks(h Hooks) Option {
 	return func(o *options) { o.hooks = h }
+}
+
+// WithToolTimeout sets an independent deadline for each individual tool call,
+// separate from the parent context. If a tool does not complete within d,
+// its context is cancelled and the failure is recorded (including by the
+// circuit breaker if configured). Zero disables per-tool timeouts.
+func WithToolTimeout(d time.Duration) Option {
+	return func(o *options) { o.toolTimeout = d }
+}
+
+// WithCircuitBreaker enables per-tool circuit breaking. After maxFailures
+// consecutive failures, the tool is disabled for resetTimeout. Disabled tools
+// return CircuitOpenError immediately without calling Execute.
+// The OnCircuitOpen hook (if set) is called each time a call is rejected.
+// maxFailures must be > 0; resetTimeout must be > 0.
+func WithCircuitBreaker(maxFailures int, resetTimeout time.Duration) Option {
+	return func(o *options) {
+		o.cbMaxFailures = maxFailures
+		o.cbResetTimeout = resetTimeout
+	}
+}
+
+// WithDispatchMiddleware appends a custom DispatchMiddleware to the chain.
+// Custom middlewares run after the built-in ones (logging → timeout →
+// circuit breaker → custom → Execute).
+// Multiple calls append in order: first call = outermost custom middleware.
+func WithDispatchMiddleware(mw DispatchMiddleware) Option {
+	return func(o *options) { o.dispatchMWs = append(o.dispatchMWs, mw) }
 }
 
 // WithMCPConnector registers an MCP connector that is called during New to

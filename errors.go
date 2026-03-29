@@ -3,6 +3,7 @@ package goagent
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // ErrToolNotFound is returned when the model requests a tool that was not
@@ -83,3 +84,14 @@ func (e *ProviderError) Error() string {
 
 // Unwrap enables errors.Is and errors.As to inspect the underlying cause.
 func (e *ProviderError) Unwrap() error { return e.Cause }
+
+// CircuitOpenError is returned by the dispatcher when a tool's circuit
+// breaker is in the open state and the call is rejected immediately.
+type CircuitOpenError struct {
+	Tool      string
+	OpenUntil time.Time
+}
+
+func (e *CircuitOpenError) Error() string {
+	return fmt.Sprintf("tool %q circuit breaker open until %s", e.Tool, e.OpenUntil.Format(time.RFC3339))
+}

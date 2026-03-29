@@ -83,6 +83,11 @@ type Hooks struct {
 	// Called once per tool call, after all parallel calls complete.
 	OnToolResult func(name string, content []ContentBlock, duration time.Duration, err error)
 
+	// OnCircuitOpen is called when a tool's circuit breaker transitions to the
+	// open state and rejects a call. toolName is the name of the disabled tool
+	// and openUntil is the earliest time the circuit may close again.
+	OnCircuitOpen func(toolName string, openUntil time.Time)
+
 	// OnResponse is called when the model produces the final response,
 	// just before Run/RunBlocks returns to the caller.
 	// text is the extracted text response (without thinking blocks).

@@ -34,11 +34,14 @@ import (
 //   - LongTermMemory: concurrent Retrieve and Store calls produce undefined
 //     ordering. See WithLongTermMemory.
 //   - Logger: slog.Logger is documented as safe for concurrent use.
+//   - Circuit breaker state is protected by mutexes and is safe for concurrent
+//     use across simultaneous Run calls.
 //
 // If no memory backend is configured (the default), Run is safe to call from
 // multiple goroutines simultaneously.
 type Agent struct {
-	opts *options
+	opts       *options
+	dispatcher *dispatcher
 }
 
 // New creates an Agent with the provided options applied over sensible defaults.
@@ -76,7 +79,21 @@ func New(opts ...Option) (*Agent, error) {
 		}
 	}
 
-	return &Agent{opts: o}, nil
+	d := newDispatcher(o.tools, o.logger, buildDispatchChain(o))
+	return &Agent{opts: o, dispatcher: d}, nil
+}
+
+// buildDispatchChain constructs the ordered middleware slice for tool dispatch.
+// Order (outermost first): logging → timeout → circuit breaker → caller middlewares.
+func buildDispatchChain(o *options) []DispatchMiddleware {
+	mws := make([]DispatchMiddleware, 0, 3+len(o.dispatchMWs))
+	mws = append(mws, loggingMiddleware(o.logger))
+	mws = append(mws, timeoutMiddleware(o.toolTimeout))
+	if o.cbMaxFailures > 0 && o.cbResetTimeout > 0 {
+		mws = append(mws, circuitBreakerMiddleware(o.cbMaxFailures, o.cbResetTimeout, o.hooks.OnCircuitOpen))
+	}
+	mws = append(mws, o.dispatchMWs...)
+	return mws
 }
 
 // Close releases all MCP connections opened during New.
@@ -247,8 +264,6 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 		toolDefs = append(toolDefs, t.Definition())
 	}
 
-	d := newDispatcher(a.opts.tools, a.opts.logger)
-
 	for i := 0; i < a.opts.maxIterations; i++ {
 		iterations = i + 1
 
@@ -340,7 +355,7 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 		}
 
 		// Dispatch tool calls (fan-out/fan-in).
-		results := d.dispatch(ctx, resp.Message.ToolCalls)
+		results := a.dispatcher.dispatch(ctx, resp.Message.ToolCalls)
 
 		if fn := a.opts.hooks.OnToolResult; fn != nil {
 			for _, r := range results {
