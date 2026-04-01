@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/Germanblandin1/goagent"
@@ -1032,5 +1033,90 @@ func TestNew_MCPConnectorError_ClosesAlreadyOpened(t *testing.T) {
 	}
 	if closer1.closed != 1 {
 		t.Errorf("closer1.closed = %d, want 1 (should be closed on error)", closer1.closed)
+	}
+}
+
+// --- New() validation tests ---
+
+func TestNew_ValidatesOptions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		opts    []goagent.Option
+		wantErr string
+	}{
+		{
+			name:    "maxIterations zero",
+			opts:    []goagent.Option{goagent.WithProvider(testutil.NewMockProvider()), goagent.WithMaxIterations(0)},
+			wantErr: "WithMaxIterations(0): must be > 0",
+		},
+		{
+			name:    "maxIterations negative",
+			opts:    []goagent.Option{goagent.WithProvider(testutil.NewMockProvider()), goagent.WithMaxIterations(-5)},
+			wantErr: "WithMaxIterations(-5): must be > 0",
+		},
+		{
+			name:    "toolTimeout negative",
+			opts:    []goagent.Option{goagent.WithProvider(testutil.NewMockProvider()), goagent.WithToolTimeout(-1)},
+			wantErr: "WithToolTimeout(-1ns): must be >= 0",
+		},
+		{
+			name: "circuit breaker maxFailures only",
+			opts: []goagent.Option{
+				goagent.WithProvider(testutil.NewMockProvider()),
+				goagent.WithCircuitBreaker(3, 0),
+			},
+			wantErr: "resetTimeout must be > 0",
+		},
+		{
+			name: "circuit breaker resetTimeout only",
+			opts: []goagent.Option{
+				goagent.WithProvider(testutil.NewMockProvider()),
+				goagent.WithCircuitBreaker(0, 5),
+			},
+			wantErr: "maxFailures must be > 0",
+		},
+		{
+			name: "circuit breaker negative maxFailures",
+			opts: []goagent.Option{
+				goagent.WithProvider(testutil.NewMockProvider()),
+				goagent.WithCircuitBreaker(-1, 5),
+			},
+			wantErr: "maxFailures must be > 0",
+		},
+		{
+			name: "valid defaults pass",
+			opts: []goagent.Option{goagent.WithProvider(testutil.NewMockProvider())},
+		},
+		{
+			name: "valid with all options",
+			opts: []goagent.Option{
+				goagent.WithProvider(testutil.NewMockProvider()),
+				goagent.WithMaxIterations(5),
+				goagent.WithToolTimeout(0),
+				goagent.WithCircuitBreaker(3, 10),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := goagent.New(tt.opts...)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected no error, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %q, want substring %q", err.Error(), tt.wantErr)
+			}
+		})
 	}
 }

@@ -64,6 +64,10 @@ func New(opts ...Option) (*Agent, error) {
 		opt(o)
 	}
 
+	if err := validateOptions(o); err != nil {
+		return nil, err
+	}
+
 	for _, fn := range o.mcpConnectors {
 		tools, closer, err := fn(context.Background(), o.logger)
 		if err != nil {
@@ -97,6 +101,27 @@ func buildDispatchChain(o *options) []DispatchMiddleware {
 	mws = append(mws, o.dispatchMWs...)
 	mws = append(mws, panicRecoveryMiddleware())
 	return mws
+}
+
+// validateOptions checks for invalid option combinations and returns a
+// descriptive error. Called once during New, before any connections are opened.
+func validateOptions(o *options) error {
+	if o.maxIterations <= 0 {
+		return fmt.Errorf("goagent: WithMaxIterations(%d): must be > 0", o.maxIterations)
+	}
+	if o.toolTimeout < 0 {
+		return fmt.Errorf("goagent: WithToolTimeout(%v): must be >= 0", o.toolTimeout)
+	}
+	cbSet := o.cbMaxFailures > 0 || o.cbResetTimeout > 0
+	if cbSet {
+		if o.cbMaxFailures <= 0 {
+			return fmt.Errorf("goagent: WithCircuitBreaker: maxFailures must be > 0, got %d", o.cbMaxFailures)
+		}
+		if o.cbResetTimeout <= 0 {
+			return fmt.Errorf("goagent: WithCircuitBreaker: resetTimeout must be > 0, got %v", o.cbResetTimeout)
+		}
+	}
+	return nil
 }
 
 // Close releases all MCP connections opened during New.
