@@ -84,15 +84,18 @@ func New(opts ...Option) (*Agent, error) {
 }
 
 // buildDispatchChain constructs the ordered middleware slice for tool dispatch.
-// Order (outermost first): logging → timeout → circuit breaker → caller middlewares.
+// Order (outermost first): logging → timeout → circuit breaker → caller middlewares → panic recovery.
+// Panic recovery is innermost so that upstream middlewares (circuit breaker,
+// timeout) observe the recovered error rather than a raw panic.
 func buildDispatchChain(o *options) []DispatchMiddleware {
-	mws := make([]DispatchMiddleware, 0, 3+len(o.dispatchMWs))
+	mws := make([]DispatchMiddleware, 0, 4+len(o.dispatchMWs))
 	mws = append(mws, loggingMiddleware(o.logger))
 	mws = append(mws, timeoutMiddleware(o.toolTimeout))
 	if o.cbMaxFailures > 0 && o.cbResetTimeout > 0 {
 		mws = append(mws, circuitBreakerMiddleware(o.cbMaxFailures, o.cbResetTimeout, o.hooks.OnCircuitOpen))
 	}
 	mws = append(mws, o.dispatchMWs...)
+	mws = append(mws, panicRecoveryMiddleware())
 	return mws
 }
 

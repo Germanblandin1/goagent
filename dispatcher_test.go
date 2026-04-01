@@ -615,6 +615,222 @@ func TestWithCircuitBreaker_Concurrency(t *testing.T) {
 	}
 }
 
+// --- panic recovery tests ---
+
+// panickingTool panics with the given value when Execute is called.
+type panickingTool struct {
+	toolName   string
+	panicValue any
+}
+
+func (p *panickingTool) Definition() goagent.ToolDefinition {
+	return goagent.ToolDefinition{
+		Name:        p.toolName,
+		Description: "panics on execute",
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+	}
+}
+
+func (p *panickingTool) Execute(_ context.Context, _ map[string]any) ([]goagent.ContentBlock, error) {
+	panic(p.panicValue)
+}
+
+// TestPanicRecovery_ToolPanicBecomesError verifies that a panicking tool does
+// not crash the process and instead produces a *ToolPanicError observable
+// through the OnToolResult hook.
+func TestPanicRecovery_ToolPanicBecomesError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		panicValue any
+		wantSubstr string
+	}{
+		{
+			name:       "string panic",
+			panicValue: "something went wrong",
+			wantSubstr: "something went wrong",
+		},
+		{
+			name:       "error panic",
+			panicValue: errors.New("unexpected state"),
+			wantSubstr: "unexpected state",
+		},
+		{
+			name:       "integer panic",
+			panicValue: 42,
+			wantSubstr: "42",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			pt := &panickingTool{toolName: "panicker", panicValue: tt.panicValue}
+			mp := testutil.NewMockProvider(
+				toolUseResp("id1", "panicker", map[string]any{}),
+				endTurnResp("recovered"),
+			)
+
+			var toolErr error
+			a, err := goagent.New(
+				goagent.WithProvider(mp),
+				goagent.WithTool(pt),
+				goagent.WithHooks(goagent.Hooks{
+					OnToolResult: func(name string, _ []goagent.ContentBlock, _ time.Duration, err error) {
+						toolErr = err
+					},
+				}),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			result, err := a.Run(context.Background(), "trigger panic")
+			if err != nil {
+				t.Fatalf("agent should not return error (tool panic is an observation): %v", err)
+			}
+			if result != "recovered" {
+				t.Errorf("result = %q, want %q", result, "recovered")
+			}
+			if toolErr == nil {
+				t.Fatal("expected tool error from panic recovery, got nil")
+			}
+
+			// Unwrap through ToolExecutionError to find ToolPanicError.
+			var execErr *goagent.ToolExecutionError
+			if !errors.As(toolErr, &execErr) {
+				t.Fatalf("err type = %T, want *ToolExecutionError wrapping *ToolPanicError", toolErr)
+			}
+			var panicErr *goagent.ToolPanicError
+			if !errors.As(execErr, &panicErr) {
+				t.Fatalf("cause type = %T, want *ToolPanicError", execErr.Cause)
+			}
+			if panicErr.ToolName != "panicker" {
+				t.Errorf("ToolPanicError.ToolName = %q, want %q", panicErr.ToolName, "panicker")
+			}
+			if len(panicErr.Stack) == 0 {
+				t.Error("ToolPanicError.Stack is empty, want goroutine stack trace")
+			}
+			if trace := panicErr.StackTrace(); trace == "" {
+				t.Error("ToolPanicError.StackTrace() is empty")
+			}
+			errMsg := panicErr.Error()
+			if !contains(errMsg, tt.wantSubstr) {
+				t.Errorf("error message %q does not contain %q", errMsg, tt.wantSubstr)
+			}
+		})
+	}
+}
+
+// TestPanicRecovery_DoesNotAbortParallelCalls verifies that a panicking tool
+// does not affect other tools dispatched in the same parallel batch.
+func TestPanicRecovery_DoesNotAbortParallelCalls(t *testing.T) {
+	t.Parallel()
+
+	goodTool := testutil.NewMockTool("good", "works fine", "ok")
+	badTool := &panickingTool{toolName: "bad", panicValue: "boom"}
+
+	mp := testutil.NewMockProvider(
+		goagent.CompletionResponse{
+			Message: goagent.Message{
+				Role: goagent.RoleAssistant,
+				ToolCalls: []goagent.ToolCall{
+					{ID: "g", Name: "good", Arguments: map[string]any{}},
+					{ID: "b", Name: "bad", Arguments: map[string]any{}},
+				},
+			},
+			StopReason: goagent.StopReasonToolUse,
+		},
+		endTurnResp("both handled"),
+	)
+
+	a, err := goagent.New(
+		goagent.WithProvider(mp),
+		goagent.WithTool(goodTool),
+		goagent.WithTool(badTool),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := a.Run(context.Background(), "run both")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "both handled" {
+		t.Errorf("result = %q, want %q", result, "both handled")
+	}
+
+	// Both tool results must be present in the provider's second call.
+	calls := mp.Calls()
+	msgs := calls[1].Messages
+	toolMsgCount := 0
+	for _, m := range msgs {
+		if m.Role == goagent.RoleTool {
+			toolMsgCount++
+		}
+	}
+	if toolMsgCount != 2 {
+		t.Errorf("tool message count = %d, want 2", toolMsgCount)
+	}
+}
+
+// TestPanicRecovery_CircuitBreakerCountsPanicAsFailure verifies that a
+// recovered panic counts as a failure for the circuit breaker.
+func TestPanicRecovery_CircuitBreakerCountsPanicAsFailure(t *testing.T) {
+	t.Parallel()
+
+	pt := &panickingTool{toolName: "panicker", panicValue: "boom"}
+
+	// Two tool-use rounds: first panics → circuit records failure,
+	// second panics → circuit opens (maxFailures=2), third is rejected.
+	mp := testutil.NewMockProvider(
+		toolUseResp("id1", "panicker", map[string]any{}),
+		toolUseResp("id2", "panicker", map[string]any{}),
+		toolUseResp("id3", "panicker", map[string]any{}),
+		endTurnResp("done"),
+	)
+
+	var cbOpenSeen bool
+	a, err := goagent.New(
+		goagent.WithProvider(mp),
+		goagent.WithTool(pt),
+		goagent.WithCircuitBreaker(2, time.Minute),
+		goagent.WithHooks(goagent.Hooks{
+			OnCircuitOpen: func(_ string, _ time.Time) {
+				cbOpenSeen = true
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := a.Run(context.Background(), "trigger"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !cbOpenSeen {
+		t.Error("circuit breaker should have opened after panicking tool failures")
+	}
+}
+
+// contains is a simple string-contains helper for tests.
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && searchString(s, substr)
+}
+
+func searchString(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
 // TestLoggingMiddleware_NilLogger_NoPanic verifies that passing a nil logger to
 // loggingMiddleware (via WithLogger) does not panic during tool dispatch.
 // loggingMiddleware is a no-op pass-through when its logger is nil.

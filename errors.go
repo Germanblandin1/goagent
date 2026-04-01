@@ -3,6 +3,7 @@ package goagent
 import (
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"time"
 )
 
@@ -94,4 +95,38 @@ type CircuitOpenError struct {
 
 func (e *CircuitOpenError) Error() string {
 	return fmt.Sprintf("tool %q circuit breaker open until %s", e.Tool, e.OpenUntil.Format(time.RFC3339))
+}
+
+// ToolPanicError is returned when a tool's Execute method panics.
+// The panic is recovered and wrapped into this error so it propagates
+// through the middleware chain as a normal error instead of crashing
+// the host process.
+type ToolPanicError struct {
+	// ToolName is the name of the tool that panicked.
+	ToolName string
+
+	// Value is the value passed to panic().
+	Value any
+
+	// Stack is the goroutine stack trace captured at the point of recovery.
+	Stack []byte
+}
+
+func (e *ToolPanicError) Error() string {
+	return fmt.Sprintf("tool %q panicked: %v", e.ToolName, e.Value)
+}
+
+// StackTrace returns the goroutine stack trace captured at the point of
+// recovery. Useful for logging and debugging.
+func (e *ToolPanicError) StackTrace() string {
+	return string(e.Stack)
+}
+
+// newToolPanicError captures the current stack trace and wraps the panic value.
+func newToolPanicError(toolName string, value any) *ToolPanicError {
+	return &ToolPanicError{
+		ToolName: toolName,
+		Value:    value,
+		Stack:    debug.Stack(),
+	}
 }

@@ -162,6 +162,23 @@ func loggingMiddleware(logger *slog.Logger) DispatchMiddleware {
 	}
 }
 
+// panicRecoveryMiddleware returns a DispatchMiddleware that recovers from
+// panics in tool execution and converts them to *ToolPanicError. This is
+// always the innermost middleware in the chain so that upstream middlewares
+// (circuit breaker, timeout, logging) observe the recovered error.
+func panicRecoveryMiddleware() DispatchMiddleware {
+	return func(next DispatchFunc) DispatchFunc {
+		return func(ctx context.Context, name string, args map[string]any) (result []ContentBlock, err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					err = newToolPanicError(name, r)
+				}
+			}()
+			return next(ctx, name, args)
+		}
+	}
+}
+
 // dispatcher executes tool calls, running them in parallel via goroutines.
 // Each dispatcher is owned by a single Agent and is safe for concurrent use.
 type dispatcher struct {
