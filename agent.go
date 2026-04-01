@@ -92,7 +92,7 @@ func buildDispatchChain(o *options) []DispatchMiddleware {
 	mws = append(mws, loggingMiddleware(o.logger))
 	mws = append(mws, timeoutMiddleware(o.toolTimeout))
 	if o.cbMaxFailures > 0 && o.cbResetTimeout > 0 {
-		mws = append(mws, circuitBreakerMiddleware(o.cbMaxFailures, o.cbResetTimeout, o.hooks.OnCircuitOpen))
+		mws = append(mws, circuitBreakerMiddleware(o.cbMaxFailures, o.cbResetTimeout, o.logger, o.hooks.OnCircuitOpen))
 	}
 	mws = append(mws, o.dispatchMWs...)
 	mws = append(mws, panicRecoveryMiddleware())
@@ -204,6 +204,12 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 
 	runStart := time.Now()
 
+	a.opts.logger.InfoContext(ctx, "run started",
+		"model", a.opts.model,
+		"max_iterations", a.opts.maxIterations,
+		"tool_count", len(a.opts.tools),
+	)
+
 	if fn := a.opts.hooks.OnRunStart; fn != nil {
 		fn()
 	}
@@ -232,6 +238,14 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 			ToolTime:   totalToolTime,
 			Err:        runErr,
 		}
+		a.opts.logger.InfoContext(ctx, "run completed",
+			"duration", result.Duration,
+			"iterations", result.Iterations,
+			"input_tokens", result.TotalUsage.InputTokens,
+			"output_tokens", result.TotalUsage.OutputTokens,
+			"tool_calls", result.ToolCalls,
+			"error", result.Err,
+		)
 		if fn := a.opts.hooks.OnRunEnd; fn != nil {
 			fn(result)
 		}
@@ -273,6 +287,10 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 		// Respect context cancellation at each loop boundary.
 		select {
 		case <-ctx.Done():
+			a.opts.logger.InfoContext(ctx, "run cancelled",
+				"iteration", i+1,
+				"reason", ctx.Err(),
+			)
 			runErr = ctx.Err()
 			finishRun()
 			return "", runErr
@@ -296,11 +314,22 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 			fn(i, req.Model, len(req.Messages))
 		}
 
+		a.opts.logger.DebugContext(ctx, "provider request",
+			"iteration", i+1,
+			"model", req.Model,
+			"message_count", len(req.Messages),
+		)
+
 		provStart := time.Now()
 		resp, err := a.opts.provider.Complete(ctx, req)
 		provDuration := time.Since(provStart)
 
 		if err != nil {
+			a.opts.logger.WarnContext(ctx, "provider error",
+				"iteration", i+1,
+				"duration", provDuration,
+				"error", err,
+			)
 			if fn := a.opts.hooks.OnProviderResponse; fn != nil {
 				fn(i, ProviderEvent{
 					Duration: provDuration,
@@ -313,6 +342,15 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 		}
 
 		totalUsage.add(resp.Usage)
+
+		a.opts.logger.DebugContext(ctx, "provider response",
+			"iteration", i+1,
+			"duration", provDuration,
+			"input_tokens", resp.Usage.InputTokens,
+			"output_tokens", resp.Usage.OutputTokens,
+			"stop_reason", resp.StopReason,
+			"tool_calls", len(resp.Message.ToolCalls),
+		)
 
 		if fn := a.opts.hooks.OnProviderResponse; fn != nil {
 			fn(i, ProviderEvent{
@@ -333,13 +371,6 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 				}
 			}
 		}
-
-		a.opts.logger.Debug("agent iteration",
-			"iteration", i+1,
-			"stop_reason", resp.StopReason,
-			"content_len", len(lastContent),
-			"tool_calls", len(resp.Message.ToolCalls),
-		)
 
 		// Model produced a final answer — persist and return.
 		if resp.StopReason != StopReasonToolUse || len(resp.Message.ToolCalls) == 0 {

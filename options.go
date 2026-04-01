@@ -126,7 +126,17 @@ func WithShortTermTraceTools(include bool) Option {
 	return func(o *options) { o.traceTools = include }
 }
 
-// WithLogger sets the structured logger used for debug output.
+// WithLogger sets the structured logger for the agent's operational output.
+//
+// The agent logs at three levels:
+//   - Info: run lifecycle (start, end, cancellation)
+//   - Warn: recoverable failures (provider errors, memory write errors, circuit breaker open)
+//   - Debug: per-iteration detail (provider calls, tool dispatch)
+//
+// Default: slog.Default(). The logger is never nil internally — the default is
+// always applied. To suppress all log output, pass a logger with a discard handler:
+//
+//	goagent.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
 func WithLogger(l *slog.Logger) Option {
 	return func(o *options) { o.logger = l }
 }

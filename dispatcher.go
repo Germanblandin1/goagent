@@ -91,7 +91,7 @@ func (cb *circuitBreaker) recordFailure() {
 // circuit breaking. After maxFailures consecutive failures the tool is
 // disabled for resetTimeout. The onOpen callback (may be nil) is invoked each
 // time a call is rejected while the circuit is open.
-func circuitBreakerMiddleware(maxFailures int, resetTimeout time.Duration, onOpen func(string, time.Time)) DispatchMiddleware {
+func circuitBreakerMiddleware(maxFailures int, resetTimeout time.Duration, logger *slog.Logger, onOpen func(string, time.Time)) DispatchMiddleware {
 	var mapMu sync.Mutex
 	breakers := make(map[string]*circuitBreaker)
 
@@ -113,6 +113,7 @@ func circuitBreakerMiddleware(maxFailures int, resetTimeout time.Duration, onOpe
 				cb.mu.Lock()
 				openUntil := cb.openUntil
 				cb.mu.Unlock()
+				logger.WarnContext(ctx, "circuit breaker open", "tool", name, "open_until", openUntil)
 				if onOpen != nil {
 					onOpen(name, openUntil)
 				}
@@ -146,13 +147,10 @@ func timeoutMiddleware(d time.Duration) DispatchMiddleware {
 }
 
 // loggingMiddleware returns a DispatchMiddleware that logs each tool dispatch
-// at Debug level. If logger is nil the middleware is a no-op pass-through.
+// at Debug level with the tool name, duration, and error (if any).
 func loggingMiddleware(logger *slog.Logger) DispatchMiddleware {
 	return func(next DispatchFunc) DispatchFunc {
 		return func(ctx context.Context, name string, args map[string]any) ([]ContentBlock, error) {
-			if logger == nil {
-				return next(ctx, name, args)
-			}
 			start := time.Now()
 			result, err := next(ctx, name, args)
 			elapsed := time.Since(start)
@@ -222,9 +220,7 @@ func (d *dispatcher) dispatch(ctx context.Context, calls []ToolCall) []ToolResul
 func (d *dispatcher) execute(ctx context.Context, tc ToolCall) ToolResult {
 	t, ok := d.tools[tc.Name]
 	if !ok {
-		if d.logger != nil {
-			d.logger.Debug("tool not found", "tool", tc.Name)
-		}
+		d.logger.Debug("tool not found", "tool", tc.Name)
 		return ToolResult{
 			ToolCallID: tc.ID,
 			Name:       tc.Name,
