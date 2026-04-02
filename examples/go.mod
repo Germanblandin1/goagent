@@ -5,6 +5,7 @@ go 1.24.1
 require (
 	github.com/Germanblandin1/goagent v0.0.0
 	github.com/Germanblandin1/goagent/mcp v0.0.0
+	github.com/Germanblandin1/goagent/providers/ollama v0.0.0
 )
 
 require (
@@ -26,3 +27,5 @@ require (
 replace github.com/Germanblandin1/goagent => ..
 
 replace github.com/Germanblandin1/goagent/mcp => ../mcp
+
+replace github.com/Germanblandin1/goagent/providers/ollama => ../providers/ollama
