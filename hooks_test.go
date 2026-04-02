@@ -1379,3 +1379,219 @@ func TestHooks_Race(t *testing.T) {
 		t.Errorf("expected 3 iterations, got %d", len(iterStarts))
 	}
 }
+
+func TestMergeHooks_Empty(t *testing.T) {
+	t.Parallel()
+	h := goagent.MergeHooks()
+	// All fields should be nil on empty input.
+	if h.OnRunStart != nil {
+		t.Error("expected nil OnRunStart")
+	}
+	if h.OnToolCall != nil {
+		t.Error("expected nil OnToolCall")
+	}
+	if h.OnRunEnd != nil {
+		t.Error("expected nil OnRunEnd")
+	}
+}
+
+func TestMergeHooks_NilFieldsPreserved(t *testing.T) {
+	t.Parallel()
+	// When no input defines a field, the merged result must have nil for that
+	// field — not a no-op closure. This preserves zero-value semantics and
+	// avoids false positives in "if hook != nil" checks.
+	h1 := goagent.Hooks{OnRunStart: func() {}}
+	h2 := goagent.Hooks{OnToolCall: func(string, map[string]any) {}}
+
+	merged := goagent.MergeHooks(h1, h2)
+
+	if merged.OnRunStart == nil {
+		t.Error("OnRunStart should be non-nil (h1 defines it)")
+	}
+	if merged.OnToolCall == nil {
+		t.Error("OnToolCall should be non-nil (h2 defines it)")
+	}
+	// Fields defined by neither h1 nor h2 must remain nil.
+	if merged.OnThinking != nil {
+		t.Error("OnThinking should be nil (nobody defines it)")
+	}
+	if merged.OnRunEnd != nil {
+		t.Error("OnRunEnd should be nil (nobody defines it)")
+	}
+	if merged.OnToolResult != nil {
+		t.Error("OnToolResult should be nil (nobody defines it)")
+	}
+	if merged.OnLongTermStore != nil {
+		t.Error("OnLongTermStore should be nil (nobody defines it)")
+	}
+}
+
+func TestMergeHooks_Single(t *testing.T) {
+	t.Parallel()
+	var called bool
+	single := goagent.Hooks{
+		OnRunStart: func() { called = true },
+	}
+	merged := goagent.MergeHooks(single)
+	merged.OnRunStart()
+	if !called {
+		t.Error("single hook should be returned as-is")
+	}
+}
+
+func TestMergeHooks_MultipleCalled_InOrder(t *testing.T) {
+	t.Parallel()
+	var order []int
+
+	h1 := goagent.Hooks{
+		OnIterationStart: func(i int) { order = append(order, 1) },
+		OnToolCall:       func(name string, args map[string]any) { order = append(order, 10) },
+		OnResponse:       func(text string, iterations int) { order = append(order, 100) },
+	}
+	h2 := goagent.Hooks{
+		OnIterationStart: func(i int) { order = append(order, 2) },
+		OnToolCall:       func(name string, args map[string]any) { order = append(order, 20) },
+		OnResponse:       func(text string, iterations int) { order = append(order, 200) },
+	}
+	h3 := goagent.Hooks{
+		OnIterationStart: func(i int) { order = append(order, 3) },
+		OnToolCall:       func(name string, args map[string]any) { order = append(order, 30) },
+		OnResponse:       func(text string, iterations int) { order = append(order, 300) },
+	}
+
+	merged := goagent.MergeHooks(h1, h2, h3)
+
+	merged.OnIterationStart(0)
+	merged.OnToolCall("test", nil)
+	merged.OnResponse("done", 1)
+
+	expected := []int{1, 2, 3, 10, 20, 30, 100, 200, 300}
+	if len(order) != len(expected) {
+		t.Fatalf("expected %d calls, got %d: %v", len(expected), len(order), order)
+	}
+	for i, v := range expected {
+		if order[i] != v {
+			t.Errorf("order[%d] = %d, want %d", i, order[i], v)
+		}
+	}
+}
+
+func TestMergeHooks_NilHooksSkipped(t *testing.T) {
+	t.Parallel()
+	var called bool
+
+	// h1 has OnRunStart, h2 does not — merged should still work.
+	h1 := goagent.Hooks{OnRunStart: func() { called = true }}
+	h2 := goagent.Hooks{} // all nil
+
+	merged := goagent.MergeHooks(h1, h2)
+	merged.OnRunStart()
+	if !called {
+		t.Error("OnRunStart should have been called")
+	}
+}
+
+func TestMergeHooks_AllHookFields(t *testing.T) {
+	t.Parallel()
+
+	// Track which hooks were called.
+	called := make(map[string]int)
+
+	h := goagent.Hooks{
+		OnRunStart:         func() { called["OnRunStart"]++ },
+		OnRunEnd:           func(r goagent.RunResult) { called["OnRunEnd"]++ },
+		OnProviderRequest:  func(i int, m string, mc int) { called["OnProviderRequest"]++ },
+		OnProviderResponse: func(i int, e goagent.ProviderEvent) { called["OnProviderResponse"]++ },
+		OnIterationStart:   func(i int) { called["OnIterationStart"]++ },
+		OnThinking:         func(t string) { called["OnThinking"]++ },
+		OnToolCall:         func(n string, a map[string]any) { called["OnToolCall"]++ },
+		OnToolResult:       func(n string, c []goagent.ContentBlock, d time.Duration, e error) { called["OnToolResult"]++ },
+		OnCircuitOpen:      func(n string, t time.Time) { called["OnCircuitOpen"]++ },
+		OnResponse:         func(t string, i int) { called["OnResponse"]++ },
+		OnShortTermLoad:    func(r int, d time.Duration, e error) { called["OnShortTermLoad"]++ },
+		OnShortTermAppend:  func(m int, d time.Duration, e error) { called["OnShortTermAppend"]++ },
+		OnLongTermRetrieve: func(r int, d time.Duration, e error) { called["OnLongTermRetrieve"]++ },
+		OnLongTermStore:    func(m int, d time.Duration, e error) { called["OnLongTermStore"]++ },
+	}
+
+	merged := goagent.MergeHooks(h, h) // merge with itself — each should be called twice
+
+	// Invoke every hook.
+	merged.OnRunStart()
+	merged.OnRunEnd(goagent.RunResult{})
+	merged.OnProviderRequest(0, "m", 1)
+	merged.OnProviderResponse(0, goagent.ProviderEvent{})
+	merged.OnIterationStart(0)
+	merged.OnThinking("think")
+	merged.OnToolCall("tool", nil)
+	merged.OnToolResult("tool", nil, 0, nil)
+	merged.OnCircuitOpen("tool", time.Now())
+	merged.OnResponse("done", 1)
+	merged.OnShortTermLoad(0, 0, nil)
+	merged.OnShortTermAppend(0, 0, nil)
+	merged.OnLongTermRetrieve(0, 0, nil)
+	merged.OnLongTermStore(0, 0, nil)
+
+	hooks := []string{
+		"OnRunStart", "OnRunEnd", "OnProviderRequest", "OnProviderResponse",
+		"OnIterationStart", "OnThinking", "OnToolCall", "OnToolResult",
+		"OnCircuitOpen", "OnResponse", "OnShortTermLoad", "OnShortTermAppend",
+		"OnLongTermRetrieve", "OnLongTermStore",
+	}
+	for _, name := range hooks {
+		if called[name] != 2 {
+			t.Errorf("%s called %d times, want 2", name, called[name])
+		}
+	}
+}
+
+func TestMergeHooks_Integration(t *testing.T) {
+	t.Parallel()
+
+	var log1, log2 []string
+
+	hooks1 := goagent.Hooks{
+		OnToolCall: func(name string, _ map[string]any) {
+			log1 = append(log1, name)
+		},
+		OnResponse: func(text string, _ int) {
+			log1 = append(log1, "response:"+text)
+		},
+	}
+	hooks2 := goagent.Hooks{
+		OnToolCall: func(name string, _ map[string]any) {
+			log2 = append(log2, name)
+		},
+		OnResponse: func(text string, _ int) {
+			log2 = append(log2, "response:"+text)
+		},
+	}
+
+	agent, err := goagent.New(
+		goagent.WithProvider(testutil.NewMockProvider(
+			toolUseResp("t1", "calc", map[string]any{}),
+			endTurnResp("42"),
+		)),
+		goagent.WithTool(testutil.NewMockTool("calc", "arithmetic", "result")),
+		goagent.WithHooks(goagent.MergeHooks(hooks1, hooks2)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := agent.Run(context.Background(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != "42" {
+		t.Errorf("got %q, want %q", result, "42")
+	}
+
+	// Both hook sets should have seen the same events.
+	if len(log1) != 2 || log1[0] != "calc" || log1[1] != "response:42" {
+		t.Errorf("hooks1 log: %v", log1)
+	}
+	if len(log2) != 2 || log2[0] != "calc" || log2[1] != "response:42" {
+		t.Errorf("hooks2 log: %v", log2)
+	}
+}

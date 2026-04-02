@@ -1,6 +1,8 @@
 package goagent
 
-import "time"
+import (
+	"time"
+)
 
 // Hooks allows observing events in the ReAct loop without modifying its
 // behaviour. All fields are optional — a nil hook is silently skipped.
@@ -135,4 +137,178 @@ type Hooks struct {
 	// WritePolicy decided to persist the turn. Not called when the
 	// policy discards the turn.
 	OnLongTermStore func(msgs int, duration time.Duration, err error)
+}
+
+// MergeHooks combines multiple Hooks structs into one. For each hook field,
+// the merged hook calls every non-nil callback in order. Fields where no
+// input hook has a callback remain nil, preserving the zero-value semantics
+// of the Hooks struct.
+//
+// This enables composing independent hook sets (e.g. OTel tracing + custom
+// logging) without manual wiring.
+//
+//	agent, _ := goagent.New(
+//	    goagent.WithHooks(goagent.MergeHooks(otelHooks, loggingHooks, metricsHooks)),
+//	)
+func MergeHooks(hooks ...Hooks) Hooks {
+	if len(hooks) == 0 {
+		return Hooks{}
+	}
+	if len(hooks) == 1 {
+		return hooks[0]
+	}
+
+	var merged Hooks
+
+	if anyHas(hooks, func(h *Hooks) bool { return h.OnRunStart != nil }) {
+		merged.OnRunStart = func() {
+			for i := range hooks {
+				if fn := hooks[i].OnRunStart; fn != nil {
+					fn()
+				}
+			}
+		}
+	}
+
+	if anyHas(hooks, func(h *Hooks) bool { return h.OnRunEnd != nil }) {
+		merged.OnRunEnd = func(result RunResult) {
+			for i := range hooks {
+				if fn := hooks[i].OnRunEnd; fn != nil {
+					fn(result)
+				}
+			}
+		}
+	}
+
+	if anyHas(hooks, func(h *Hooks) bool { return h.OnProviderRequest != nil }) {
+		merged.OnProviderRequest = func(iteration int, model string, messageCount int) {
+			for i := range hooks {
+				if fn := hooks[i].OnProviderRequest; fn != nil {
+					fn(iteration, model, messageCount)
+				}
+			}
+		}
+	}
+
+	if anyHas(hooks, func(h *Hooks) bool { return h.OnProviderResponse != nil }) {
+		merged.OnProviderResponse = func(iteration int, event ProviderEvent) {
+			for i := range hooks {
+				if fn := hooks[i].OnProviderResponse; fn != nil {
+					fn(iteration, event)
+				}
+			}
+		}
+	}
+
+	if anyHas(hooks, func(h *Hooks) bool { return h.OnIterationStart != nil }) {
+		merged.OnIterationStart = func(iteration int) {
+			for i := range hooks {
+				if fn := hooks[i].OnIterationStart; fn != nil {
+					fn(iteration)
+				}
+			}
+		}
+	}
+
+	if anyHas(hooks, func(h *Hooks) bool { return h.OnThinking != nil }) {
+		merged.OnThinking = func(text string) {
+			for i := range hooks {
+				if fn := hooks[i].OnThinking; fn != nil {
+					fn(text)
+				}
+			}
+		}
+	}
+
+	if anyHas(hooks, func(h *Hooks) bool { return h.OnToolCall != nil }) {
+		merged.OnToolCall = func(name string, args map[string]any) {
+			for i := range hooks {
+				if fn := hooks[i].OnToolCall; fn != nil {
+					fn(name, args)
+				}
+			}
+		}
+	}
+
+	if anyHas(hooks, func(h *Hooks) bool { return h.OnToolResult != nil }) {
+		merged.OnToolResult = func(name string, content []ContentBlock, duration time.Duration, err error) {
+			for i := range hooks {
+				if fn := hooks[i].OnToolResult; fn != nil {
+					fn(name, content, duration, err)
+				}
+			}
+		}
+	}
+
+	if anyHas(hooks, func(h *Hooks) bool { return h.OnCircuitOpen != nil }) {
+		merged.OnCircuitOpen = func(toolName string, openUntil time.Time) {
+			for i := range hooks {
+				if fn := hooks[i].OnCircuitOpen; fn != nil {
+					fn(toolName, openUntil)
+				}
+			}
+		}
+	}
+
+	if anyHas(hooks, func(h *Hooks) bool { return h.OnResponse != nil }) {
+		merged.OnResponse = func(text string, iterations int) {
+			for i := range hooks {
+				if fn := hooks[i].OnResponse; fn != nil {
+					fn(text, iterations)
+				}
+			}
+		}
+	}
+
+	if anyHas(hooks, func(h *Hooks) bool { return h.OnShortTermLoad != nil }) {
+		merged.OnShortTermLoad = func(results int, duration time.Duration, err error) {
+			for i := range hooks {
+				if fn := hooks[i].OnShortTermLoad; fn != nil {
+					fn(results, duration, err)
+				}
+			}
+		}
+	}
+
+	if anyHas(hooks, func(h *Hooks) bool { return h.OnShortTermAppend != nil }) {
+		merged.OnShortTermAppend = func(msgs int, duration time.Duration, err error) {
+			for i := range hooks {
+				if fn := hooks[i].OnShortTermAppend; fn != nil {
+					fn(msgs, duration, err)
+				}
+			}
+		}
+	}
+
+	if anyHas(hooks, func(h *Hooks) bool { return h.OnLongTermRetrieve != nil }) {
+		merged.OnLongTermRetrieve = func(results int, duration time.Duration, err error) {
+			for i := range hooks {
+				if fn := hooks[i].OnLongTermRetrieve; fn != nil {
+					fn(results, duration, err)
+				}
+			}
+		}
+	}
+
+	if anyHas(hooks, func(h *Hooks) bool { return h.OnLongTermStore != nil }) {
+		merged.OnLongTermStore = func(msgs int, duration time.Duration, err error) {
+			for i := range hooks {
+				if fn := hooks[i].OnLongTermStore; fn != nil {
+					fn(msgs, duration, err)
+				}
+			}
+		}
+	}
+
+	return merged
+}
+
+// anyHas reports whether at least one hook in the slice satisfies the predicate.
+func anyHas(hooks []Hooks, check func(*Hooks) bool) bool {
+	for i := range hooks {
+		if check(&hooks[i]) {
+			return true
+		}
+	}
+	return false
 }
