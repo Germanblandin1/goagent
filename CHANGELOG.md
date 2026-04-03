@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-04-03
+
+### Added
+
+**OpenTelemetry sub-module (`goagent/otel`)**
+- New module `github.com/Germanblandin1/goagent/otel` (requires OTel v1.40.0, Go 1.24+)
+- `NewHooks(tracer trace.Tracer, meter metric.Meter) (goagent.Hooks, error)` — returns a fully wired `Hooks` struct that emits OTel spans and RED metrics; safe for concurrent use; plug into `WithHooks` or compose via `MergeHooks`
+- Span hierarchy per `Run` call: `goagent.run` (root) with child spans for each `goagent.provider.complete`, `goagent.tool.<name>`, `goagent.memory.short_term.load`, `goagent.memory.short_term.append`, `goagent.memory.long_term.retrieve`, `goagent.memory.long_term.store`
+- Retroactive span timestamps via `trace.WithTimestamp` so provider and tool spans reflect actual wall-clock windows, not callback dispatch time
+- If the caller context already carries an active span (e.g. from an HTTP handler), all `goagent.run` spans are automatically nested under it
+- RED metrics: `goagent.run.duration` (s), `goagent.run.errors` ({error}), `goagent.provider.duration` (s), `goagent.provider.tokens.input` ({token}), `goagent.provider.tokens.output` ({token}), `goagent.tool.duration` (s), `goagent.tool.errors` ({error}), `goagent.memory.load.duration` (s), `goagent.memory.append.duration` (s)
+- `tool.duration` and `tool.errors` carry a `tool.name` attribute for per-tool breakdowns in Grafana or any OTel-compatible backend
+
+### Changed
+
+**Observability hooks (`goagent`)**
+- All 14 hook callbacks now receive `ctx context.Context` as their first argument — the context carries span and baggage values set by `OnRunStart`
+- `OnRunStart` signature changed from `func()` to `func(ctx context.Context) context.Context` — returning an enriched context (e.g. with an embedded trace span) causes that context to be forwarded to every subsequent hook in the same run; returning `nil` is safe and preserves the original context
+- `MergeHooks` chains `OnRunStart` callbacks: the returned context from each hook is passed as input to the next, so span hierarchies nest correctly across composed hook sets
+- The context returned by `OnRunStart` is strictly scoped to hook callbacks; it is never used for I/O operations (provider, tools, memory) — this prevents a hook from cancelling the agent's flow by returning a context it controls
+
 ## [0.4.1] - 2026-03-29
 
 ### Changed

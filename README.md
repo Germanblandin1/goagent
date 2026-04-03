@@ -254,24 +254,95 @@ The full chain order (outermost first): `logging → timeout → circuit breaker
 
 ### Observability hooks
 
+All callbacks receive `ctx context.Context` as the first argument. `OnRunStart` returns a `context.Context` — use it to embed values (e.g. a trace span) that will be forwarded to every subsequent hook in the same run.
+
 ```go
 goagent.WithHooks(goagent.Hooks{
-    OnRunStart:          func()                                                               { /* ... */ },
-    OnRunEnd:            func(result goagent.RunResult)                                       { /* ... */ },
-    OnProviderRequest:   func(iteration int, model string, messageCount int)                  { /* ... */ },
-    OnProviderResponse:  func(iteration int, event goagent.ProviderEvent)                     { /* ... */ },
-    OnIterationStart:    func(i int)                                                          { /* ... */ },
-    OnThinking:          func(text string)                                                    { /* ... */ },
-    OnToolCall:          func(name string, args map[string]any)                               { /* ... */ },
-    OnToolResult:        func(name string, _ []goagent.ContentBlock, d time.Duration, err error) { /* ... */ },
-    OnCircuitOpen:       func(toolName string, openUntil time.Time)                           { /* ... */ },
-    OnResponse:          func(text string, iterations int)                                    { /* ... */ },
-    OnShortTermLoad:     func(results int, d time.Duration, err error)                        { /* ... */ },
-    OnShortTermAppend:   func(msgs int, d time.Duration, err error)                           { /* ... */ },
-    OnLongTermRetrieve:  func(results int, d time.Duration, err error)                        { /* ... */ },
-    OnLongTermStore:     func(msgs int, d time.Duration, err error)                           { /* ... */ },
+    OnRunStart:          func(ctx context.Context) context.Context                                              { return ctx },
+    OnRunEnd:            func(ctx context.Context, result goagent.RunResult)                                    { /* ... */ },
+    OnProviderRequest:   func(ctx context.Context, iteration int, model string, messageCount int)               { /* ... */ },
+    OnProviderResponse:  func(ctx context.Context, iteration int, event goagent.ProviderEvent)                  { /* ... */ },
+    OnIterationStart:    func(ctx context.Context, i int)                                                       { /* ... */ },
+    OnThinking:          func(ctx context.Context, text string)                                                 { /* ... */ },
+    OnToolCall:          func(ctx context.Context, name string, args map[string]any)                            { /* ... */ },
+    OnToolResult:        func(ctx context.Context, name string, _ []goagent.ContentBlock, d time.Duration, err error) { /* ... */ },
+    OnCircuitOpen:       func(ctx context.Context, toolName string, openUntil time.Time)                        { /* ... */ },
+    OnResponse:          func(ctx context.Context, text string, iterations int)                                 { /* ... */ },
+    OnShortTermLoad:     func(ctx context.Context, results int, d time.Duration, err error)                     { /* ... */ },
+    OnShortTermAppend:   func(ctx context.Context, msgs int, d time.Duration, err error)                        { /* ... */ },
+    OnLongTermRetrieve:  func(ctx context.Context, results int, d time.Duration, err error)                     { /* ... */ },
+    OnLongTermStore:     func(ctx context.Context, msgs int, d time.Duration, err error)                        { /* ... */ },
 })
 ```
+
+Multiple independent hook sets can be composed with `MergeHooks`. Each set's `OnRunStart` return value is chained — the enriched context from one hook is passed to the next, so span hierarchies nest correctly:
+
+```go
+goagent.WithHooks(goagent.MergeHooks(metricsHooks, loggingHooks))
+```
+
+### OpenTelemetry
+
+The `otel` sub-module translates hook events into OpenTelemetry spans and RED metrics (Rate, Errors, Duration) with no manual instrumentation required.
+
+```bash
+go get github.com/Germanblandin1/goagent/otel
+```
+
+```go
+import (
+    "go.opentelemetry.io/otel/metric"
+    "go.opentelemetry.io/otel/trace"
+    agentotel "github.com/Germanblandin1/goagent/otel"
+)
+
+hooks, err := agentotel.NewHooks(tracer, meter)
+if err != nil {
+    log.Fatal(err)
+}
+
+agent, err := goagent.New(
+    goagent.WithProvider(provider),
+    goagent.WithModel("claude-sonnet-4-6"),
+    goagent.WithHooks(hooks),
+)
+```
+
+If the caller context already carries an active span (e.g. from an HTTP handler), the agent's spans are automatically nested under it:
+
+```go
+ctx, span := tracer.Start(r.Context(), "handle_request")
+defer span.End()
+result, err := agent.Run(ctx, prompt)
+```
+
+**Span hierarchy** emitted per `Run` call:
+
+```
+goagent.run
+  ├── goagent.provider.complete   (one per LLM call)
+  ├── goagent.tool.<name>         (one per tool execution)
+  ├── goagent.memory.short_term.load
+  ├── goagent.memory.short_term.append
+  ├── goagent.memory.long_term.retrieve
+  └── goagent.memory.long_term.store
+```
+
+**RED metrics** recorded:
+
+| Metric | Instrument | Unit | Useful for |
+|---|---|---|---|
+| `goagent.run.duration` | Histogram | s | p50/p99 latency per run |
+| `goagent.run.errors` | Counter | {error} | Run error rate |
+| `goagent.provider.duration` | Histogram | s | LLM call latency per iteration |
+| `goagent.provider.tokens.input` | Counter | {token} | Input token spend |
+| `goagent.provider.tokens.output` | Counter | {token} | Output token spend |
+| `goagent.tool.duration` | Histogram | s | Tool latency by `tool.name` |
+| `goagent.tool.errors` | Counter | {error} | Tool error rate by `tool.name` |
+| `goagent.memory.load.duration` | Histogram | s | Memory read latency |
+| `goagent.memory.append.duration` | Histogram | s | Memory write latency |
+
+`tool.duration` and `tool.errors` carry the `tool.name` attribute, so you can break down latency and error rates per tool in Grafana or any OTel-compatible backend.
 
 ### Multimodal input
 
