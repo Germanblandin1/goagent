@@ -69,7 +69,7 @@ func TestHooks_OnIterationStart(t *testing.T) {
 			opts := []goagent.Option{
 				goagent.WithProvider(testutil.NewMockProvider(tt.responses...)),
 				goagent.WithHooks(goagent.Hooks{
-					OnIterationStart: func(i int) {
+					OnIterationStart: func(_ context.Context, i int) {
 						callCount++
 						iterations = append(iterations, i)
 					},
@@ -107,7 +107,7 @@ func TestHooks_OnThinking(t *testing.T) {
 			thinkingResp("step one", "final answer"),
 		)),
 		goagent.WithHooks(goagent.Hooks{
-			OnThinking: func(text string) {
+			OnThinking: func(_ context.Context, text string) {
 				gotTexts = append(gotTexts, text)
 			},
 		}),
@@ -150,7 +150,7 @@ func TestHooks_OnThinking_MultipleBlocks(t *testing.T) {
 	agent, err := goagent.New(
 		goagent.WithProvider(testutil.NewMockProvider(resp)),
 		goagent.WithHooks(goagent.Hooks{
-			OnThinking: func(text string) {
+			OnThinking: func(_ context.Context, text string) {
 				gotTexts = append(gotTexts, text)
 			},
 		}),
@@ -183,7 +183,7 @@ func TestHooks_OnThinking_NoThinking(t *testing.T) {
 	agent, err := goagent.New(
 		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("answer"))),
 		goagent.WithHooks(goagent.Hooks{
-			OnThinking: func(text string) { called = true },
+			OnThinking: func(_ context.Context, text string) { called = true },
 		}),
 	)
 	if err != nil {
@@ -247,7 +247,7 @@ func TestHooks_OnToolCall(t *testing.T) {
 				goagent.WithTool(testutil.NewMockTool("calc", "arithmetic", "42")),
 				goagent.WithTool(testutil.NewMockTool("search", "web search", "result")),
 				goagent.WithHooks(goagent.Hooks{
-					OnToolCall: func(name string, args map[string]any) {
+					OnToolCall: func(_ context.Context, name string, args map[string]any) {
 						gotNames = append(gotNames, name)
 					},
 				}),
@@ -290,7 +290,7 @@ func TestHooks_OnToolResult_Success(t *testing.T) {
 		)),
 		goagent.WithTool(testutil.NewMockTool("calc", "arithmetic", "42")),
 		goagent.WithHooks(goagent.Hooks{
-			OnToolResult: func(name string, _ []goagent.ContentBlock, dur time.Duration, err error) {
+			OnToolResult: func(_ context.Context, name string, _ []goagent.ContentBlock, dur time.Duration, err error) {
 				got = append(got, result{name: name, duration: dur, err: err})
 			},
 		}),
@@ -332,7 +332,7 @@ func TestHooks_OnToolResult_Error(t *testing.T) {
 		)),
 		goagent.WithTool(testutil.NewMockToolWithError("bad", "always fails", toolErr)),
 		goagent.WithHooks(goagent.Hooks{
-			OnToolResult: func(_ string, _ []goagent.ContentBlock, _ time.Duration, err error) {
+			OnToolResult: func(_ context.Context, _ string, _ []goagent.ContentBlock, _ time.Duration, err error) {
 				gotErr = err
 			},
 		}),
@@ -393,7 +393,7 @@ func TestHooks_OnResponse(t *testing.T) {
 			opts := []goagent.Option{
 				goagent.WithProvider(testutil.NewMockProvider(tt.responses...)),
 				goagent.WithHooks(goagent.Hooks{
-					OnResponse: func(text string, iters int) {
+					OnResponse: func(_ context.Context, text string, iters int) {
 						callCount++
 						gotText = text
 						gotIter = iters
@@ -445,7 +445,7 @@ func TestHooks_OnResponse_MaxIterations(t *testing.T) {
 		goagent.WithTool(calc),
 		goagent.WithMaxIterations(2),
 		goagent.WithHooks(goagent.Hooks{
-			OnResponse: func(_ string, iters int) {
+			OnResponse: func(_ context.Context, _ string, iters int) {
 				callCount++
 				gotIter = iters
 			},
@@ -507,7 +507,7 @@ func TestHooks_PartialHooks(t *testing.T) {
 		)),
 		goagent.WithTool(testutil.NewMockTool("calc", "arithmetic", "42")),
 		goagent.WithHooks(goagent.Hooks{
-			OnToolCall: func(name string, _ map[string]any) {
+			OnToolCall: func(_ context.Context, name string, _ map[string]any) {
 				toolCallCount++
 			},
 			// All other hooks intentionally nil.
@@ -546,7 +546,7 @@ func TestHooks_OnShortTermLoad(t *testing.T) {
 		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("hi"))),
 		goagent.WithShortTermMemory(stm),
 		goagent.WithHooks(goagent.Hooks{
-			OnShortTermLoad: func(results int, d time.Duration, err error) {
+			OnShortTermLoad: func(_ context.Context, results int, d time.Duration, err error) {
 				got = append(got, call{results, d, err})
 			},
 		}),
@@ -586,7 +586,7 @@ func TestHooks_OnShortTermLoad_Error(t *testing.T) {
 		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("hi"))),
 		goagent.WithShortTermMemory(stm),
 		goagent.WithHooks(goagent.Hooks{
-			OnShortTermLoad: func(_ int, _ time.Duration, err error) {
+			OnShortTermLoad: func(_ context.Context, _ int, _ time.Duration, err error) {
 				gotErr = err
 			},
 		}),
@@ -624,7 +624,7 @@ func TestHooks_OnShortTermAppend(t *testing.T) {
 		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("reply"))),
 		goagent.WithShortTermMemory(stm),
 		goagent.WithHooks(goagent.Hooks{
-			OnShortTermAppend: func(msgs int, d time.Duration, err error) {
+			OnShortTermAppend: func(_ context.Context, msgs int, d time.Duration, err error) {
 				got = append(got, call{msgs, d, err})
 			},
 		}),
@@ -665,7 +665,7 @@ func TestHooks_OnShortTermAppend_Error(t *testing.T) {
 		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("reply"))),
 		goagent.WithShortTermMemory(stm),
 		goagent.WithHooks(goagent.Hooks{
-			OnShortTermAppend: func(_ int, _ time.Duration, err error) {
+			OnShortTermAppend: func(_ context.Context, _ int, _ time.Duration, err error) {
 				gotErr = err
 			},
 		}),
@@ -708,7 +708,7 @@ func TestHooks_OnLongTermRetrieve(t *testing.T) {
 		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("hi"))),
 		goagent.WithLongTermMemory(ltm),
 		goagent.WithHooks(goagent.Hooks{
-			OnLongTermRetrieve: func(results int, d time.Duration, err error) {
+			OnLongTermRetrieve: func(_ context.Context, results int, d time.Duration, err error) {
 				got = append(got, call{results, d, err})
 			},
 		}),
@@ -748,7 +748,7 @@ func TestHooks_OnLongTermRetrieve_Error(t *testing.T) {
 		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("hi"))),
 		goagent.WithLongTermMemory(ltm),
 		goagent.WithHooks(goagent.Hooks{
-			OnLongTermRetrieve: func(_ int, _ time.Duration, err error) {
+			OnLongTermRetrieve: func(_ context.Context, _ int, _ time.Duration, err error) {
 				gotErr = err
 			},
 		}),
@@ -786,7 +786,7 @@ func TestHooks_OnLongTermStore(t *testing.T) {
 		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("reply"))),
 		goagent.WithLongTermMemory(ltm),
 		goagent.WithHooks(goagent.Hooks{
-			OnLongTermStore: func(msgs int, d time.Duration, err error) {
+			OnLongTermStore: func(_ context.Context, msgs int, d time.Duration, err error) {
 				got = append(got, call{msgs, d, err})
 			},
 		}),
@@ -827,7 +827,7 @@ func TestHooks_OnLongTermStore_Error(t *testing.T) {
 		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("reply"))),
 		goagent.WithLongTermMemory(ltm),
 		goagent.WithHooks(goagent.Hooks{
-			OnLongTermStore: func(_ int, _ time.Duration, err error) {
+			OnLongTermStore: func(_ context.Context, _ int, _ time.Duration, err error) {
 				gotErr = err
 			},
 		}),
@@ -862,7 +862,7 @@ func TestHooks_OnLongTermStore_PolicySkip(t *testing.T) {
 		goagent.WithLongTermMemory(ltm),
 		goagent.WithWritePolicy(goagent.MinLength(1000)),
 		goagent.WithHooks(goagent.Hooks{
-			OnLongTermStore: func(_ int, _ time.Duration, _ error) {
+			OnLongTermStore: func(_ context.Context, _ int, _ time.Duration, _ error) {
 				called = true
 			},
 		}),
@@ -909,7 +909,7 @@ func TestHooks_OnRunStart(t *testing.T) {
 	agent, err := goagent.New(
 		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("hi"))),
 		goagent.WithHooks(goagent.Hooks{
-			OnRunStart: func() { called = true },
+			OnRunStart: func(ctx context.Context) context.Context { called = true; return ctx },
 		}),
 	)
 	if err != nil {
@@ -936,7 +936,7 @@ func TestHooks_OnRunEnd_Success(t *testing.T) {
 			endTurnRespWithUsage("done", 100, 50),
 		)),
 		goagent.WithHooks(goagent.Hooks{
-			OnRunEnd: func(r goagent.RunResult) { got = r },
+			OnRunEnd: func(_ context.Context, r goagent.RunResult) { got = r },
 		}),
 	)
 	if err != nil {
@@ -981,7 +981,7 @@ func TestHooks_OnRunEnd_AccumulatesAcrossIterations(t *testing.T) {
 		)),
 		goagent.WithTool(testutil.NewMockTool("calc", "arithmetic", "42")),
 		goagent.WithHooks(goagent.Hooks{
-			OnRunEnd: func(r goagent.RunResult) { got = r },
+			OnRunEnd: func(_ context.Context, r goagent.RunResult) { got = r },
 		}),
 	)
 	if err != nil {
@@ -1024,7 +1024,7 @@ func TestHooks_OnRunEnd_ProviderError(t *testing.T) {
 	agent, err := goagent.New(
 		goagent.WithProvider(&errorProvider{err: provErr}),
 		goagent.WithHooks(goagent.Hooks{
-			OnRunEnd: func(r goagent.RunResult) { got = r },
+			OnRunEnd: func(_ context.Context, r goagent.RunResult) { got = r },
 		}),
 	)
 	if err != nil {
@@ -1061,7 +1061,7 @@ func TestHooks_OnRunEnd_MaxIterations(t *testing.T) {
 		goagent.WithTool(testutil.NewMockTool("calc", "arithmetic", "42")),
 		goagent.WithMaxIterations(2),
 		goagent.WithHooks(goagent.Hooks{
-			OnRunEnd: func(r goagent.RunResult) { got = r },
+			OnRunEnd: func(_ context.Context, r goagent.RunResult) { got = r },
 		}),
 	)
 	if err != nil {
@@ -1100,7 +1100,7 @@ func TestHooks_OnProviderRequest(t *testing.T) {
 		goagent.WithModel("test-model"),
 		goagent.WithTool(testutil.NewMockTool("calc", "arithmetic", "42")),
 		goagent.WithHooks(goagent.Hooks{
-			OnProviderRequest: func(iter int, model string, msgCount int) {
+			OnProviderRequest: func(_ context.Context, iter int, model string, msgCount int) {
 				got = append(got, call{iter, model, msgCount})
 			},
 		}),
@@ -1150,7 +1150,7 @@ func TestHooks_OnProviderResponse_Success(t *testing.T) {
 			endTurnRespWithUsage("done", 100, 50),
 		)),
 		goagent.WithHooks(goagent.Hooks{
-			OnProviderResponse: func(iter int, ev goagent.ProviderEvent) {
+			OnProviderResponse: func(_ context.Context, iter int, ev goagent.ProviderEvent) {
 				got = append(got, call{iter, ev})
 			},
 		}),
@@ -1199,7 +1199,7 @@ func TestHooks_OnProviderResponse_Error(t *testing.T) {
 	agent, err := goagent.New(
 		goagent.WithProvider(&errorProvider{err: provErr}),
 		goagent.WithHooks(goagent.Hooks{
-			OnProviderResponse: func(_ int, ev goagent.ProviderEvent) {
+			OnProviderResponse: func(_ context.Context, _ int, ev goagent.ProviderEvent) {
 				got = ev
 			},
 		}),
@@ -1243,7 +1243,7 @@ func TestHooks_OnProviderResponse_ToolCalls(t *testing.T) {
 		goagent.WithTool(testutil.NewMockTool("calc", "arithmetic", "42")),
 		goagent.WithTool(testutil.NewMockTool("search", "web search", "result")),
 		goagent.WithHooks(goagent.Hooks{
-			OnProviderResponse: func(_ int, ev goagent.ProviderEvent) {
+			OnProviderResponse: func(_ context.Context, _ int, ev goagent.ProviderEvent) {
 				got = append(got, ev)
 			},
 		}),
@@ -1355,10 +1355,10 @@ func TestHooks_Race(t *testing.T) {
 		)),
 		goagent.WithTool(testutil.NewMockTool("calc", "arithmetic", "42")),
 		goagent.WithHooks(goagent.Hooks{
-			OnIterationStart: func(i int) {
+			OnIterationStart: func(_ context.Context, i int) {
 				iterStarts = append(iterStarts, i)
 			},
-			OnToolCall: func(name string, _ map[string]any) {
+			OnToolCall: func(_ context.Context, name string, _ map[string]any) {
 				toolNames = append(toolNames, name)
 			},
 		}),
@@ -1400,8 +1400,8 @@ func TestMergeHooks_NilFieldsPreserved(t *testing.T) {
 	// When no input defines a field, the merged result must have nil for that
 	// field — not a no-op closure. This preserves zero-value semantics and
 	// avoids false positives in "if hook != nil" checks.
-	h1 := goagent.Hooks{OnRunStart: func() {}}
-	h2 := goagent.Hooks{OnToolCall: func(string, map[string]any) {}}
+	h1 := goagent.Hooks{OnRunStart: func(ctx context.Context) context.Context { return ctx }}
+	h2 := goagent.Hooks{OnToolCall: func(_ context.Context, _ string, _ map[string]any) {}}
 
 	merged := goagent.MergeHooks(h1, h2)
 
@@ -1430,10 +1430,10 @@ func TestMergeHooks_Single(t *testing.T) {
 	t.Parallel()
 	var called bool
 	single := goagent.Hooks{
-		OnRunStart: func() { called = true },
+		OnRunStart: func(ctx context.Context) context.Context { called = true; return ctx },
 	}
 	merged := goagent.MergeHooks(single)
-	merged.OnRunStart()
+	merged.OnRunStart(context.Background())
 	if !called {
 		t.Error("single hook should be returned as-is")
 	}
@@ -1444,26 +1444,26 @@ func TestMergeHooks_MultipleCalled_InOrder(t *testing.T) {
 	var order []int
 
 	h1 := goagent.Hooks{
-		OnIterationStart: func(i int) { order = append(order, 1) },
-		OnToolCall:       func(name string, args map[string]any) { order = append(order, 10) },
-		OnResponse:       func(text string, iterations int) { order = append(order, 100) },
+		OnIterationStart: func(_ context.Context, i int) { order = append(order, 1) },
+		OnToolCall:       func(_ context.Context, name string, args map[string]any) { order = append(order, 10) },
+		OnResponse:       func(_ context.Context, text string, iterations int) { order = append(order, 100) },
 	}
 	h2 := goagent.Hooks{
-		OnIterationStart: func(i int) { order = append(order, 2) },
-		OnToolCall:       func(name string, args map[string]any) { order = append(order, 20) },
-		OnResponse:       func(text string, iterations int) { order = append(order, 200) },
+		OnIterationStart: func(_ context.Context, i int) { order = append(order, 2) },
+		OnToolCall:       func(_ context.Context, name string, args map[string]any) { order = append(order, 20) },
+		OnResponse:       func(_ context.Context, text string, iterations int) { order = append(order, 200) },
 	}
 	h3 := goagent.Hooks{
-		OnIterationStart: func(i int) { order = append(order, 3) },
-		OnToolCall:       func(name string, args map[string]any) { order = append(order, 30) },
-		OnResponse:       func(text string, iterations int) { order = append(order, 300) },
+		OnIterationStart: func(_ context.Context, i int) { order = append(order, 3) },
+		OnToolCall:       func(_ context.Context, name string, args map[string]any) { order = append(order, 30) },
+		OnResponse:       func(_ context.Context, text string, iterations int) { order = append(order, 300) },
 	}
 
 	merged := goagent.MergeHooks(h1, h2, h3)
 
-	merged.OnIterationStart(0)
-	merged.OnToolCall("test", nil)
-	merged.OnResponse("done", 1)
+	merged.OnIterationStart(context.Background(), 0)
+	merged.OnToolCall(context.Background(), "test", nil)
+	merged.OnResponse(context.Background(), "done", 1)
 
 	expected := []int{1, 2, 3, 10, 20, 30, 100, 200, 300}
 	if len(order) != len(expected) {
@@ -1481,11 +1481,11 @@ func TestMergeHooks_NilHooksSkipped(t *testing.T) {
 	var called bool
 
 	// h1 has OnRunStart, h2 does not — merged should still work.
-	h1 := goagent.Hooks{OnRunStart: func() { called = true }}
+	h1 := goagent.Hooks{OnRunStart: func(ctx context.Context) context.Context { called = true; return ctx }}
 	h2 := goagent.Hooks{} // all nil
 
 	merged := goagent.MergeHooks(h1, h2)
-	merged.OnRunStart()
+	merged.OnRunStart(context.Background())
 	if !called {
 		t.Error("OnRunStart should have been called")
 	}
@@ -1498,39 +1498,40 @@ func TestMergeHooks_AllHookFields(t *testing.T) {
 	called := make(map[string]int)
 
 	h := goagent.Hooks{
-		OnRunStart:         func() { called["OnRunStart"]++ },
-		OnRunEnd:           func(r goagent.RunResult) { called["OnRunEnd"]++ },
-		OnProviderRequest:  func(i int, m string, mc int) { called["OnProviderRequest"]++ },
-		OnProviderResponse: func(i int, e goagent.ProviderEvent) { called["OnProviderResponse"]++ },
-		OnIterationStart:   func(i int) { called["OnIterationStart"]++ },
-		OnThinking:         func(t string) { called["OnThinking"]++ },
-		OnToolCall:         func(n string, a map[string]any) { called["OnToolCall"]++ },
-		OnToolResult:       func(n string, c []goagent.ContentBlock, d time.Duration, e error) { called["OnToolResult"]++ },
-		OnCircuitOpen:      func(n string, t time.Time) { called["OnCircuitOpen"]++ },
-		OnResponse:         func(t string, i int) { called["OnResponse"]++ },
-		OnShortTermLoad:    func(r int, d time.Duration, e error) { called["OnShortTermLoad"]++ },
-		OnShortTermAppend:  func(m int, d time.Duration, e error) { called["OnShortTermAppend"]++ },
-		OnLongTermRetrieve: func(r int, d time.Duration, e error) { called["OnLongTermRetrieve"]++ },
-		OnLongTermStore:    func(m int, d time.Duration, e error) { called["OnLongTermStore"]++ },
+		OnRunStart:         func(ctx context.Context) context.Context { called["OnRunStart"]++; return ctx },
+		OnRunEnd:           func(_ context.Context, r goagent.RunResult) { called["OnRunEnd"]++ },
+		OnProviderRequest:  func(_ context.Context, i int, m string, mc int) { called["OnProviderRequest"]++ },
+		OnProviderResponse: func(_ context.Context, i int, e goagent.ProviderEvent) { called["OnProviderResponse"]++ },
+		OnIterationStart:   func(_ context.Context, i int) { called["OnIterationStart"]++ },
+		OnThinking:         func(_ context.Context, t string) { called["OnThinking"]++ },
+		OnToolCall:         func(_ context.Context, n string, a map[string]any) { called["OnToolCall"]++ },
+		OnToolResult:       func(_ context.Context, n string, c []goagent.ContentBlock, d time.Duration, e error) { called["OnToolResult"]++ },
+		OnCircuitOpen:      func(_ context.Context, n string, t time.Time) { called["OnCircuitOpen"]++ },
+		OnResponse:         func(_ context.Context, t string, i int) { called["OnResponse"]++ },
+		OnShortTermLoad:    func(_ context.Context, r int, d time.Duration, e error) { called["OnShortTermLoad"]++ },
+		OnShortTermAppend:  func(_ context.Context, m int, d time.Duration, e error) { called["OnShortTermAppend"]++ },
+		OnLongTermRetrieve: func(_ context.Context, r int, d time.Duration, e error) { called["OnLongTermRetrieve"]++ },
+		OnLongTermStore:    func(_ context.Context, m int, d time.Duration, e error) { called["OnLongTermStore"]++ },
 	}
 
 	merged := goagent.MergeHooks(h, h) // merge with itself — each should be called twice
 
 	// Invoke every hook.
-	merged.OnRunStart()
-	merged.OnRunEnd(goagent.RunResult{})
-	merged.OnProviderRequest(0, "m", 1)
-	merged.OnProviderResponse(0, goagent.ProviderEvent{})
-	merged.OnIterationStart(0)
-	merged.OnThinking("think")
-	merged.OnToolCall("tool", nil)
-	merged.OnToolResult("tool", nil, 0, nil)
-	merged.OnCircuitOpen("tool", time.Now())
-	merged.OnResponse("done", 1)
-	merged.OnShortTermLoad(0, 0, nil)
-	merged.OnShortTermAppend(0, 0, nil)
-	merged.OnLongTermRetrieve(0, 0, nil)
-	merged.OnLongTermStore(0, 0, nil)
+	bg := context.Background()
+	merged.OnRunStart(bg)
+	merged.OnRunEnd(bg, goagent.RunResult{})
+	merged.OnProviderRequest(bg, 0, "m", 1)
+	merged.OnProviderResponse(bg, 0, goagent.ProviderEvent{})
+	merged.OnIterationStart(bg, 0)
+	merged.OnThinking(bg, "think")
+	merged.OnToolCall(bg, "tool", nil)
+	merged.OnToolResult(bg, "tool", nil, 0, nil)
+	merged.OnCircuitOpen(bg, "tool", time.Now())
+	merged.OnResponse(bg, "done", 1)
+	merged.OnShortTermLoad(bg, 0, 0, nil)
+	merged.OnShortTermAppend(bg, 0, 0, nil)
+	merged.OnLongTermRetrieve(bg, 0, 0, nil)
+	merged.OnLongTermStore(bg, 0, 0, nil)
 
 	hooks := []string{
 		"OnRunStart", "OnRunEnd", "OnProviderRequest", "OnProviderResponse",
@@ -1551,18 +1552,18 @@ func TestMergeHooks_Integration(t *testing.T) {
 	var log1, log2 []string
 
 	hooks1 := goagent.Hooks{
-		OnToolCall: func(name string, _ map[string]any) {
+		OnToolCall: func(_ context.Context, name string, _ map[string]any) {
 			log1 = append(log1, name)
 		},
-		OnResponse: func(text string, _ int) {
+		OnResponse: func(_ context.Context, text string, _ int) {
 			log1 = append(log1, "response:"+text)
 		},
 	}
 	hooks2 := goagent.Hooks{
-		OnToolCall: func(name string, _ map[string]any) {
+		OnToolCall: func(_ context.Context, name string, _ map[string]any) {
 			log2 = append(log2, name)
 		},
-		OnResponse: func(text string, _ int) {
+		OnResponse: func(_ context.Context, text string, _ int) {
 			log2 = append(log2, "response:"+text)
 		},
 	}

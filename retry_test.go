@@ -282,7 +282,7 @@ func TestRetryTool_ExhaustsAttempts(t *testing.T) {
 		goagent.WithProvider(mp),
 		goagent.WithTool(retried),
 		goagent.WithHooks(goagent.Hooks{
-			OnToolResult: func(_ string, _ []goagent.ContentBlock, _ time.Duration, err error) {
+			OnToolResult: func(_ context.Context, _ string, _ []goagent.ContentBlock, _ time.Duration, err error) {
 				toolErr = err
 			},
 		}),

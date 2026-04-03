@@ -328,7 +328,7 @@ func TestWithToolTimeout_CancelsToolContext(t *testing.T) {
 		goagent.WithTool(bt),
 		goagent.WithToolTimeout(100*time.Millisecond),
 		goagent.WithHooks(goagent.Hooks{
-			OnToolResult: func(name string, _ []goagent.ContentBlock, _ time.Duration, err error) {
+			OnToolResult: func(_ context.Context, name string, _ []goagent.ContentBlock, _ time.Duration, err error) {
 				toolErr = err
 			},
 		}),
@@ -395,10 +395,10 @@ func TestWithCircuitBreaker_OpensAfterMaxFailures(t *testing.T) {
 				goagent.WithTool(failTool),
 				goagent.WithCircuitBreaker(tt.maxFailures, time.Minute),
 				goagent.WithHooks(goagent.Hooks{
-					OnCircuitOpen: func(_ string, _ time.Time) {
+					OnCircuitOpen: func(_ context.Context, _ string, _ time.Time) {
 						cbOpenSeen = true
 					},
-					OnToolResult: func(_ string, _ []goagent.ContentBlock, _ time.Duration, err error) {
+					OnToolResult: func(_ context.Context, _ string, _ []goagent.ContentBlock, _ time.Duration, err error) {
 						toolResults = append(toolResults, err)
 					},
 				}),
@@ -464,7 +464,7 @@ func TestWithCircuitBreaker_HalfOpen_SuccessResetsToClosed(t *testing.T) {
 		goagent.WithTool(tool),
 		goagent.WithCircuitBreaker(1, resetTimeout),
 		goagent.WithHooks(goagent.Hooks{
-			OnToolResult: func(_ string, _ []goagent.ContentBlock, _ time.Duration, err error) {
+			OnToolResult: func(_ context.Context, _ string, _ []goagent.ContentBlock, _ time.Duration, err error) {
 				var cbErr *goagent.CircuitOpenError
 				if errors.As(err, &cbErr) {
 					cbErrors++
@@ -533,7 +533,7 @@ func TestWithCircuitBreaker_HalfOpen_FailureReopens(t *testing.T) {
 		goagent.WithTool(failTool),
 		goagent.WithCircuitBreaker(1, resetTimeout),
 		goagent.WithHooks(goagent.Hooks{
-			OnToolResult: func(_ string, _ []goagent.ContentBlock, _ time.Duration, err error) {
+			OnToolResult: func(_ context.Context, _ string, _ []goagent.ContentBlock, _ time.Duration, err error) {
 				var cbErr *goagent.CircuitOpenError
 				if errors.As(err, &cbErr) {
 					cbErrors++
@@ -678,7 +678,7 @@ func TestPanicRecovery_ToolPanicBecomesError(t *testing.T) {
 				goagent.WithProvider(mp),
 				goagent.WithTool(pt),
 				goagent.WithHooks(goagent.Hooks{
-					OnToolResult: func(name string, _ []goagent.ContentBlock, _ time.Duration, err error) {
+					OnToolResult: func(_ context.Context, name string, _ []goagent.ContentBlock, _ time.Duration, err error) {
 						toolErr = err
 					},
 				}),
@@ -799,7 +799,7 @@ func TestPanicRecovery_CircuitBreakerCountsPanicAsFailure(t *testing.T) {
 		goagent.WithTool(pt),
 		goagent.WithCircuitBreaker(2, time.Minute),
 		goagent.WithHooks(goagent.Hooks{
-			OnCircuitOpen: func(_ string, _ time.Time) {
+			OnCircuitOpen: func(_ context.Context, _ string, _ time.Time) {
 				cbOpenSeen = true
 			},
 		}),

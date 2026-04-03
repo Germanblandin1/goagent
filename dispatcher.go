@@ -91,7 +91,7 @@ func (cb *circuitBreaker) recordFailure() {
 // circuit breaking. After maxFailures consecutive failures the tool is
 // disabled for resetTimeout. The onOpen callback (may be nil) is invoked each
 // time a call is rejected while the circuit is open.
-func circuitBreakerMiddleware(maxFailures int, resetTimeout time.Duration, logger *slog.Logger, onOpen func(string, time.Time)) DispatchMiddleware {
+func circuitBreakerMiddleware(maxFailures int, resetTimeout time.Duration, logger *slog.Logger, onOpen func(context.Context, string, time.Time)) DispatchMiddleware {
 	var mapMu sync.Mutex
 	breakers := make(map[string]*circuitBreaker)
 
@@ -115,7 +115,7 @@ func circuitBreakerMiddleware(maxFailures int, resetTimeout time.Duration, logge
 				cb.mu.Unlock()
 				logger.WarnContext(ctx, "circuit breaker open", "tool", name, "open_until", openUntil)
 				if onOpen != nil {
-					onOpen(name, openUntil)
+					onOpen(hookFromCtx(ctx), name, openUntil)
 				}
 				return nil, &CircuitOpenError{Tool: name, OpenUntil: openUntil}
 			}
@@ -198,15 +198,20 @@ func newDispatcher(tools []Tool, logger *slog.Logger, mws []DispatchMiddleware) 
 // Each goroutine writes to its own index in results, so no mutex is needed.
 // A missing or failing tool is recorded as an error result and does not abort
 // the remaining calls.
-func (d *dispatcher) dispatch(ctx context.Context, calls []ToolCall) []ToolResult {
+//
+// rctx.io is used for tool execution and context cancellation.
+// rctx.hook is embedded as a value so that middlewares (e.g. the circuit
+// breaker) can extract it to fire hook callbacks with the correct context.
+func (d *dispatcher) dispatch(rctx runContexts, calls []ToolCall) []ToolResult {
 	results := make([]ToolResult, len(calls))
+	dispatchCtx := rctx.withHookEmbedded()
 
 	var wg sync.WaitGroup
 	for i, call := range calls {
 		wg.Add(1)
 		go func(idx int, tc ToolCall) {
 			defer wg.Done()
-			results[idx] = d.execute(ctx, tc)
+			results[idx] = d.execute(dispatchCtx, tc)
 		}(i, call)
 	}
 	wg.Wait()

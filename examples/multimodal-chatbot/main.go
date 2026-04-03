@@ -104,21 +104,21 @@ func main() {
 				"Be concise for conversational questions, detailed for file analysis.",
 		),
 		goagent.WithHooks(goagent.Hooks{
-			OnIterationStart: func(i int) {
+			OnIterationStart: func(_ context.Context, i int) {
 				logStep(colorBlue, "LOOP", fmt.Sprintf("iteration %d", i+1))
 			},
-			OnThinking: func(text string) {
+			OnThinking: func(_ context.Context, text string) {
 				preview := text
 				if len(preview) > 100 {
 					preview = preview[:100] + "…"
 				}
 				logStep(colorGray, "THINKING", preview)
 			},
-			OnToolCall: func(name string, args map[string]any) {
+			OnToolCall: func(_ context.Context, name string, args map[string]any) {
 				b, _ := json.Marshal(args)
 				logStep(colorYellow, "TOOL→", fmt.Sprintf("%s(%s)", name, b))
 			},
-			OnToolResult: func(name string, content []goagent.ContentBlock, d time.Duration, err error) {
+			OnToolResult: func(_ context.Context, name string, content []goagent.ContentBlock, d time.Duration, err error) {
 				if err != nil {
 					logStep(colorRed, "TOOL←", fmt.Sprintf("%s ERR [%s]: %v", name, d.Round(time.Millisecond), err))
 					return
@@ -144,35 +144,35 @@ func main() {
 					name, d.Round(time.Millisecond), textBytes, images, preview,
 				))
 			},
-			OnShortTermLoad: func(results int, d time.Duration, err error) {
+			OnShortTermLoad: func(_ context.Context, results int, d time.Duration, err error) {
 				if err != nil {
 					logStep(colorRed, "STM←", fmt.Sprintf("load ERR [%s]: %v", d.Round(time.Millisecond), err))
 					return
 				}
 				logStep(colorGray, "STM←", fmt.Sprintf("load OK [%s] msgs=%d", d.Round(time.Millisecond), results))
 			},
-			OnShortTermAppend: func(msgs int, d time.Duration, err error) {
+			OnShortTermAppend: func(_ context.Context, msgs int, d time.Duration, err error) {
 				if err != nil {
 					logStep(colorRed, "STM→", fmt.Sprintf("append ERR [%s]: %v", d.Round(time.Millisecond), err))
 					return
 				}
 				logStep(colorGray, "STM→", fmt.Sprintf("append OK [%s] msgs=%d", d.Round(time.Millisecond), msgs))
 			},
-			OnLongTermRetrieve: func(results int, d time.Duration, err error) {
+			OnLongTermRetrieve: func(_ context.Context, results int, d time.Duration, err error) {
 				if err != nil {
 					logStep(colorRed, "LTM←", fmt.Sprintf("retrieve ERR [%s]: %v", d.Round(time.Millisecond), err))
 					return
 				}
 				logStep(colorGray, "LTM←", fmt.Sprintf("retrieve OK [%s] results=%d", d.Round(time.Millisecond), results))
 			},
-			OnLongTermStore: func(msgs int, d time.Duration, err error) {
+			OnLongTermStore: func(_ context.Context, msgs int, d time.Duration, err error) {
 				if err != nil {
 					logStep(colorRed, "LTM→", fmt.Sprintf("store ERR [%s]: %v", d.Round(time.Millisecond), err))
 					return
 				}
 				logStep(colorGray, "LTM→", fmt.Sprintf("store OK [%s] msgs=%d", d.Round(time.Millisecond), msgs))
 			},
-			OnResponse: func(text string, iterations int) {
+			OnResponse: func(_ context.Context, text string, iterations int) {
 				logStep(colorCyan, "DONE", fmt.Sprintf("iterations=%d len=%d", iterations, len(text)))
 			},
 		}),

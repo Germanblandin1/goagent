@@ -1,6 +1,7 @@
 package goagent
 
 import (
+	"context"
 	"time"
 )
 
@@ -18,31 +19,39 @@ import (
 //	agent := goagent.New(
 //	    goagent.WithProvider(provider),
 //	    goagent.WithHooks(goagent.Hooks{
-//	        OnToolCall: func(name string, args map[string]any) {
+//	        OnToolCall: func(_ context.Context, name string, args map[string]any) {
 //	            fmt.Printf("tool: %s\n", name)
 //	        },
 //	    }),
 //	)
 type Hooks struct {
 	// OnRunStart is called at the beginning of each Run/RunBlocks call,
-	// before loading memory or building messages. Use it to initialise
-	// external metrics or start a tracing span for the entire Run.
-	OnRunStart func()
+	// before loading memory or building messages. It may return an enriched
+	// ctx (e.g. containing an OTel span) that the loop will use for all
+	// subsequent hook calls and operations. If it returns nil, the loop
+	// uses the original ctx unchanged.
+	//
+	// For callers that only need to observe the event without enriching ctx:
+	//   OnRunStart: func(ctx context.Context) context.Context { return ctx }
+	OnRunStart func(ctx context.Context) context.Context
 
 	// OnRunEnd is called at the end of each Run/RunBlocks call, just
 	// before returning to the caller. It is always called — on success,
 	// provider failure, MaxIterationsError, and context cancellation.
 	//
+	// ctx is the same context returned by OnRunStart (or the original ctx
+	// if OnRunStart was not set), allowing span finalisation and cleanup.
+	//
 	// result contains accumulated metrics: total duration, iterations,
 	// total token usage, total tool calls, and total tool execution time.
 	// result.Err is nil when the Run succeeds.
-	OnRunEnd func(result RunResult)
+	OnRunEnd func(ctx context.Context, result RunResult)
 
 	// OnProviderRequest is called before each Provider.Complete call,
 	// once per iteration of the ReAct loop.
 	// iteration is 0-indexed. model is the identifier sent to the provider.
 	// messageCount is the number of messages in the request.
-	OnProviderRequest func(iteration int, model string, messageCount int)
+	OnProviderRequest func(ctx context.Context, iteration int, model string, messageCount int)
 
 	// OnProviderResponse is called after each Provider.Complete call,
 	// on both success and provider error.
@@ -51,12 +60,12 @@ type Hooks struct {
 	//
 	// On provider error, event.Err carries the underlying error (before
 	// wrapping as *ProviderError) and Usage/StopReason are zero values.
-	OnProviderResponse func(iteration int, event ProviderEvent)
+	OnProviderResponse func(ctx context.Context, iteration int, event ProviderEvent)
 
 	// OnIterationStart is called at the start of each ReAct loop
 	// iteration, before calling the provider.
 	// iteration is 0-indexed: the first iteration is 0.
-	OnIterationStart func(iteration int)
+	OnIterationStart func(ctx context.Context, iteration int)
 
 	// OnThinking is called when the model produces a thinking block.
 	// text is the reasoning content — it may be a summary on Claude 4+
@@ -68,13 +77,13 @@ type Hooks struct {
 	//
 	// Only called when thinking is enabled (WithThinking,
 	// WithAdaptiveThinking) or when a local model produces thinking.
-	OnThinking func(text string)
+	OnThinking func(ctx context.Context, text string)
 
 	// OnToolCall is called when the model requests a tool invocation,
 	// before the dispatcher executes it.
 	// Called once per tool call in the model's response. If the model
 	// requests N tools in parallel, it is called N times before dispatch.
-	OnToolCall func(name string, args map[string]any)
+	OnToolCall func(ctx context.Context, name string, args map[string]any)
 
 	// OnToolResult is called after a tool finishes executing.
 	// content is the result that will be sent back to the model.
@@ -83,12 +92,12 @@ type Hooks struct {
 	//
 	// Called even when the tool fails — err contains the error.
 	// Called once per tool call, after all parallel calls complete.
-	OnToolResult func(name string, content []ContentBlock, duration time.Duration, err error)
+	OnToolResult func(ctx context.Context, name string, content []ContentBlock, duration time.Duration, err error)
 
 	// OnCircuitOpen is called when a tool's circuit breaker transitions to the
 	// open state and rejects a call. toolName is the name of the disabled tool
 	// and openUntil is the earliest time the circuit may close again.
-	OnCircuitOpen func(toolName string, openUntil time.Time)
+	OnCircuitOpen func(ctx context.Context, toolName string, openUntil time.Time)
 
 	// OnResponse is called when the model produces the final response,
 	// just before Run/RunBlocks returns to the caller.
@@ -97,7 +106,7 @@ type Hooks struct {
 	//
 	// Also called when the loop is exhausted (MaxIterationsError) —
 	// text may be "" if the last iteration ended with a tool use.
-	OnResponse func(text string, iterations int)
+	OnResponse func(ctx context.Context, text string, iterations int)
 
 	// OnShortTermLoad is called after the agent loads conversation history
 	// from short-term memory at the start of each Run, on both success
@@ -107,7 +116,7 @@ type Hooks struct {
 	// err is nil on success.
 	//
 	// Only called when a ShortTermMemory is configured.
-	OnShortTermLoad func(results int, duration time.Duration, err error)
+	OnShortTermLoad func(ctx context.Context, results int, duration time.Duration, err error)
 
 	// OnShortTermAppend is called after the agent persists the turn to
 	// short-term memory at the end of each Run, on both success and error.
@@ -116,7 +125,7 @@ type Hooks struct {
 	// err is nil on success.
 	//
 	// Only called when a ShortTermMemory is configured.
-	OnShortTermAppend func(msgs int, duration time.Duration, err error)
+	OnShortTermAppend func(ctx context.Context, msgs int, duration time.Duration, err error)
 
 	// OnLongTermRetrieve is called after the agent queries long-term
 	// memory at the start of each Run, on both success and error.
@@ -125,7 +134,7 @@ type Hooks struct {
 	// err is nil on success.
 	//
 	// Only called when a LongTermMemory is configured.
-	OnLongTermRetrieve func(results int, duration time.Duration, err error)
+	OnLongTermRetrieve func(ctx context.Context, results int, duration time.Duration, err error)
 
 	// OnLongTermStore is called after the agent persists a turn to
 	// long-term memory at the end of each Run, on both success and error.
@@ -136,13 +145,17 @@ type Hooks struct {
 	// Only called when a LongTermMemory is configured and the
 	// WritePolicy decided to persist the turn. Not called when the
 	// policy discards the turn.
-	OnLongTermStore func(msgs int, duration time.Duration, err error)
+	OnLongTermStore func(ctx context.Context, msgs int, duration time.Duration, err error)
 }
 
 // MergeHooks combines multiple Hooks structs into one. For each hook field,
 // the merged hook calls every non-nil callback in order. Fields where no
 // input hook has a callback remain nil, preserving the zero-value semantics
 // of the Hooks struct.
+//
+// OnRunStart is special: each hook's return value is passed as the input ctx
+// to the next hook in the chain, so multiple hooks can each enrich the context
+// (e.g. adding an OTel span, a request ID, and a logger simultaneously).
 //
 // This enables composing independent hook sets (e.g. OTel tracing + custom
 // logging) without manual wiring.
@@ -161,140 +174,143 @@ func MergeHooks(hooks ...Hooks) Hooks {
 	var merged Hooks
 
 	if anyHas(hooks, func(h *Hooks) bool { return h.OnRunStart != nil }) {
-		merged.OnRunStart = func() {
+		merged.OnRunStart = func(ctx context.Context) context.Context {
 			for i := range hooks {
 				if fn := hooks[i].OnRunStart; fn != nil {
-					fn()
+					if enriched := fn(ctx); enriched != nil {
+						ctx = enriched
+					}
 				}
 			}
+			return ctx
 		}
 	}
 
 	if anyHas(hooks, func(h *Hooks) bool { return h.OnRunEnd != nil }) {
-		merged.OnRunEnd = func(result RunResult) {
+		merged.OnRunEnd = func(ctx context.Context, result RunResult) {
 			for i := range hooks {
 				if fn := hooks[i].OnRunEnd; fn != nil {
-					fn(result)
+					fn(ctx, result)
 				}
 			}
 		}
 	}
 
 	if anyHas(hooks, func(h *Hooks) bool { return h.OnProviderRequest != nil }) {
-		merged.OnProviderRequest = func(iteration int, model string, messageCount int) {
+		merged.OnProviderRequest = func(ctx context.Context, iteration int, model string, messageCount int) {
 			for i := range hooks {
 				if fn := hooks[i].OnProviderRequest; fn != nil {
-					fn(iteration, model, messageCount)
+					fn(ctx, iteration, model, messageCount)
 				}
 			}
 		}
 	}
 
 	if anyHas(hooks, func(h *Hooks) bool { return h.OnProviderResponse != nil }) {
-		merged.OnProviderResponse = func(iteration int, event ProviderEvent) {
+		merged.OnProviderResponse = func(ctx context.Context, iteration int, event ProviderEvent) {
 			for i := range hooks {
 				if fn := hooks[i].OnProviderResponse; fn != nil {
-					fn(iteration, event)
+					fn(ctx, iteration, event)
 				}
 			}
 		}
 	}
 
 	if anyHas(hooks, func(h *Hooks) bool { return h.OnIterationStart != nil }) {
-		merged.OnIterationStart = func(iteration int) {
+		merged.OnIterationStart = func(ctx context.Context, iteration int) {
 			for i := range hooks {
 				if fn := hooks[i].OnIterationStart; fn != nil {
-					fn(iteration)
+					fn(ctx, iteration)
 				}
 			}
 		}
 	}
 
 	if anyHas(hooks, func(h *Hooks) bool { return h.OnThinking != nil }) {
-		merged.OnThinking = func(text string) {
+		merged.OnThinking = func(ctx context.Context, text string) {
 			for i := range hooks {
 				if fn := hooks[i].OnThinking; fn != nil {
-					fn(text)
+					fn(ctx, text)
 				}
 			}
 		}
 	}
 
 	if anyHas(hooks, func(h *Hooks) bool { return h.OnToolCall != nil }) {
-		merged.OnToolCall = func(name string, args map[string]any) {
+		merged.OnToolCall = func(ctx context.Context, name string, args map[string]any) {
 			for i := range hooks {
 				if fn := hooks[i].OnToolCall; fn != nil {
-					fn(name, args)
+					fn(ctx, name, args)
 				}
 			}
 		}
 	}
 
 	if anyHas(hooks, func(h *Hooks) bool { return h.OnToolResult != nil }) {
-		merged.OnToolResult = func(name string, content []ContentBlock, duration time.Duration, err error) {
+		merged.OnToolResult = func(ctx context.Context, name string, content []ContentBlock, duration time.Duration, err error) {
 			for i := range hooks {
 				if fn := hooks[i].OnToolResult; fn != nil {
-					fn(name, content, duration, err)
+					fn(ctx, name, content, duration, err)
 				}
 			}
 		}
 	}
 
 	if anyHas(hooks, func(h *Hooks) bool { return h.OnCircuitOpen != nil }) {
-		merged.OnCircuitOpen = func(toolName string, openUntil time.Time) {
+		merged.OnCircuitOpen = func(ctx context.Context, toolName string, openUntil time.Time) {
 			for i := range hooks {
 				if fn := hooks[i].OnCircuitOpen; fn != nil {
-					fn(toolName, openUntil)
+					fn(ctx, toolName, openUntil)
 				}
 			}
 		}
 	}
 
 	if anyHas(hooks, func(h *Hooks) bool { return h.OnResponse != nil }) {
-		merged.OnResponse = func(text string, iterations int) {
+		merged.OnResponse = func(ctx context.Context, text string, iterations int) {
 			for i := range hooks {
 				if fn := hooks[i].OnResponse; fn != nil {
-					fn(text, iterations)
+					fn(ctx, text, iterations)
 				}
 			}
 		}
 	}
 
 	if anyHas(hooks, func(h *Hooks) bool { return h.OnShortTermLoad != nil }) {
-		merged.OnShortTermLoad = func(results int, duration time.Duration, err error) {
+		merged.OnShortTermLoad = func(ctx context.Context, results int, duration time.Duration, err error) {
 			for i := range hooks {
 				if fn := hooks[i].OnShortTermLoad; fn != nil {
-					fn(results, duration, err)
+					fn(ctx, results, duration, err)
 				}
 			}
 		}
 	}
 
 	if anyHas(hooks, func(h *Hooks) bool { return h.OnShortTermAppend != nil }) {
-		merged.OnShortTermAppend = func(msgs int, duration time.Duration, err error) {
+		merged.OnShortTermAppend = func(ctx context.Context, msgs int, duration time.Duration, err error) {
 			for i := range hooks {
 				if fn := hooks[i].OnShortTermAppend; fn != nil {
-					fn(msgs, duration, err)
+					fn(ctx, msgs, duration, err)
 				}
 			}
 		}
 	}
 
 	if anyHas(hooks, func(h *Hooks) bool { return h.OnLongTermRetrieve != nil }) {
-		merged.OnLongTermRetrieve = func(results int, duration time.Duration, err error) {
+		merged.OnLongTermRetrieve = func(ctx context.Context, results int, duration time.Duration, err error) {
 			for i := range hooks {
 				if fn := hooks[i].OnLongTermRetrieve; fn != nil {
-					fn(results, duration, err)
+					fn(ctx, results, duration, err)
 				}
 			}
 		}
 	}
 
 	if anyHas(hooks, func(h *Hooks) bool { return h.OnLongTermStore != nil }) {
-		merged.OnLongTermStore = func(msgs int, duration time.Duration, err error) {
+		merged.OnLongTermStore = func(ctx context.Context, msgs int, duration time.Duration, err error) {
 			for i := range hooks {
 				if fn := hooks[i].OnLongTermStore; fn != nil {
-					fn(msgs, duration, err)
+					fn(ctx, msgs, duration, err)
 				}
 			}
 		}

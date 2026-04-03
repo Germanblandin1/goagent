@@ -37,7 +37,7 @@ func main() {
 		goagent.WithShortTermMemory(mem),
 		goagent.WithSystemPrompt("You are a helpful and concise assistant. Your name is GoAgentBot."),
 		goagent.WithHooks(goagent.Hooks{
-			OnThinking: func(text string) {
+			OnThinking: func(_ context.Context, text string) {
 				fmt.Printf("\033[90m💭 %s\033[0m\n\n", text)
 			},
 		}),

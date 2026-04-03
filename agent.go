@@ -96,7 +96,8 @@ func buildDispatchChain(o *options) []DispatchMiddleware {
 	mws = append(mws, loggingMiddleware(o.logger))
 	mws = append(mws, timeoutMiddleware(o.toolTimeout))
 	if o.cbMaxFailures > 0 && o.cbResetTimeout > 0 {
-		mws = append(mws, circuitBreakerMiddleware(o.cbMaxFailures, o.cbResetTimeout, o.logger, o.hooks.OnCircuitOpen))
+		onOpen := o.hooks.OnCircuitOpen
+		mws = append(mws, circuitBreakerMiddleware(o.cbMaxFailures, o.cbResetTimeout, o.logger, onOpen))
 	}
 	mws = append(mws, o.dispatchMWs...)
 	mws = append(mws, panicRecoveryMiddleware())
@@ -229,14 +230,39 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 
 	runStart := time.Now()
 
+	// Inject the agent name as the session ID so that LongTermMemory and
+	// InMemoryStore can scope vector entries to this agent. Done before
+	// OnRunStart so the enriched ctx (e.g. an OTel span) inherits the
+	// session scope. The name is validated here: ":" is forbidden because
+	// it is the separator used in the "sessionID:baseID:chunkIndex" entry
+	// ID format.
+	if a.opts.name != "" {
+		var err error
+		ctx, err = session.NewContext(ctx, a.opts.name)
+		if err != nil {
+			return "", fmt.Errorf("goagent: invalid agent name %q: %w", a.opts.name, err)
+		}
+	}
+
 	a.opts.logger.InfoContext(ctx, "run started",
 		"model", a.opts.model,
 		"max_iterations", a.opts.maxIterations,
 		"tool_count", len(a.opts.tools),
 	)
 
+	// OnRunStart may enrich ctx (e.g. embedding an OTel trace span). The
+	// returned context is used exclusively for hook callbacks. I/O operations
+	// (provider, tools, memory) always use the original ctx so that a hook
+	// consumer cannot affect cancellation by controlling the returned context.
+	rctx := runContexts{io: ctx}
 	if fn := a.opts.hooks.OnRunStart; fn != nil {
-		fn()
+		if enriched := fn(ctx); enriched != nil {
+			rctx.hook = enriched
+		} else {
+			rctx.hook = ctx
+		}
+	} else {
+		rctx.hook = ctx
 	}
 
 	// Accumulators for RunResult — populated throughout the loop and
@@ -263,7 +289,7 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 			ToolTime:   totalToolTime,
 			Err:        runErr,
 		}
-		a.opts.logger.InfoContext(ctx, "run completed",
+		a.opts.logger.InfoContext(rctx.io, "run completed",
 			"duration", result.Duration,
 			"iterations", result.Iterations,
 			"input_tokens", result.TotalUsage.InputTokens,
@@ -272,28 +298,14 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 			"error", result.Err,
 		)
 		if fn := a.opts.hooks.OnRunEnd; fn != nil {
-			fn(result)
+			fn(rctx.hook, result)
 		}
 		if a.opts.runResult != nil {
 			*a.opts.runResult = result
 		}
 	}
 
-	if a.opts.name != "" {
-		// Inject the agent name as the session ID so that LongTermMemory and
-		// InMemoryStore can scope vector entries to this agent. The name is
-		// validated here: ":" is forbidden because it is the separator used in
-		// the "sessionID:baseID:chunkIndex" entry ID format.
-		var err error
-		ctx, err = session.NewContext(ctx, a.opts.name)
-		if err != nil {
-			runErr = fmt.Errorf("goagent: invalid agent name %q: %w", a.opts.name, err)
-			finishRun()
-			return "", runErr
-		}
-	}
-
-	messages, historyLen, err := a.buildMessages(ctx, content)
+	messages, historyLen, err := a.buildMessages(rctx, content)
 	if err != nil {
 		runErr = err
 		finishRun()
@@ -311,19 +323,19 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 
 		// Respect context cancellation at each loop boundary.
 		select {
-		case <-ctx.Done():
-			a.opts.logger.InfoContext(ctx, "run cancelled",
+		case <-rctx.io.Done():
+			a.opts.logger.InfoContext(rctx.io, "run cancelled",
 				"iteration", i+1,
-				"reason", ctx.Err(),
+				"reason", rctx.io.Err(),
 			)
-			runErr = ctx.Err()
+			runErr = rctx.io.Err()
 			finishRun()
 			return "", runErr
 		default:
 		}
 
 		if fn := a.opts.hooks.OnIterationStart; fn != nil {
-			fn(i)
+			fn(rctx.hook, i)
 		}
 
 		req := CompletionRequest{
@@ -336,27 +348,27 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 		}
 
 		if fn := a.opts.hooks.OnProviderRequest; fn != nil {
-			fn(i, req.Model, len(req.Messages))
+			fn(rctx.hook, i, req.Model, len(req.Messages))
 		}
 
-		a.opts.logger.DebugContext(ctx, "provider request",
+		a.opts.logger.DebugContext(rctx.io, "provider request",
 			"iteration", i+1,
 			"model", req.Model,
 			"message_count", len(req.Messages),
 		)
 
 		provStart := time.Now()
-		resp, err := a.opts.provider.Complete(ctx, req)
+		resp, err := a.opts.provider.Complete(rctx.io, req)
 		provDuration := time.Since(provStart)
 
 		if err != nil {
-			a.opts.logger.WarnContext(ctx, "provider error",
+			a.opts.logger.WarnContext(rctx.io, "provider error",
 				"iteration", i+1,
 				"duration", provDuration,
 				"error", err,
 			)
 			if fn := a.opts.hooks.OnProviderResponse; fn != nil {
-				fn(i, ProviderEvent{
+				fn(rctx.hook, i, ProviderEvent{
 					Duration: provDuration,
 					Err:      err,
 				})
@@ -368,7 +380,7 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 
 		totalUsage.add(resp.Usage)
 
-		a.opts.logger.DebugContext(ctx, "provider response",
+		a.opts.logger.DebugContext(rctx.io, "provider response",
 			"iteration", i+1,
 			"duration", provDuration,
 			"input_tokens", resp.Usage.InputTokens,
@@ -378,7 +390,7 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 		)
 
 		if fn := a.opts.hooks.OnProviderResponse; fn != nil {
-			fn(i, ProviderEvent{
+			fn(rctx.hook, i, ProviderEvent{
 				Duration:   provDuration,
 				Usage:      resp.Usage,
 				StopReason: resp.StopReason,
@@ -392,7 +404,7 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 		if fn := a.opts.hooks.OnThinking; fn != nil {
 			for _, block := range resp.Message.Content {
 				if block.Type == ContentThinking && block.Thinking != nil {
-					fn(block.Thinking.Thinking)
+					fn(rctx.hook, block.Thinking.Thinking)
 				}
 			}
 		}
@@ -400,25 +412,25 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 		// Model produced a final answer — persist and return.
 		if resp.StopReason != StopReasonToolUse || len(resp.Message.ToolCalls) == 0 {
 			if fn := a.opts.hooks.OnResponse; fn != nil {
-				fn(lastContent, i+1)
+				fn(rctx.hook, lastContent, i+1)
 			}
 			finishRun()
-			a.persistTurn(ctx, messages, historyLen, lastContent)
+			a.persistTurn(rctx, messages, historyLen, lastContent)
 			return lastContent, nil
 		}
 
 		if fn := a.opts.hooks.OnToolCall; fn != nil {
 			for _, tc := range resp.Message.ToolCalls {
-				fn(tc.Name, tc.Arguments)
+				fn(rctx.hook, tc.Name, tc.Arguments)
 			}
 		}
 
 		// Dispatch tool calls (fan-out/fan-in).
-		results := a.dispatcher.dispatch(ctx, resp.Message.ToolCalls)
+		results := a.dispatcher.dispatch(rctx, resp.Message.ToolCalls)
 
 		if fn := a.opts.hooks.OnToolResult; fn != nil {
 			for _, r := range results {
-				fn(r.Name, r.Content, r.Duration, r.Err)
+				fn(rctx.hook, r.Name, r.Content, r.Duration, r.Err)
 			}
 		}
 
@@ -445,14 +457,14 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 
 	// Iteration budget exhausted — persist what we have and return an error.
 	if fn := a.opts.hooks.OnResponse; fn != nil {
-		fn(lastContent, a.opts.maxIterations)
+		fn(rctx.hook, lastContent, a.opts.maxIterations)
 	}
 	runErr = &MaxIterationsError{
 		Iterations:  a.opts.maxIterations,
 		LastThought: lastContent,
 	}
 	finishRun()
-	a.persistTurn(ctx, messages, historyLen, lastContent)
+	a.persistTurn(rctx, messages, historyLen, lastContent)
 	return "", runErr
 }
 
@@ -462,15 +474,15 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 //
 // Returns the message slice and historyLen — the number of messages that came
 // from memory (used to compute the delta for persistence at the end of run).
-func (a *Agent) buildMessages(ctx context.Context, content []ContentBlock) ([]Message, int, error) {
+func (a *Agent) buildMessages(rctx runContexts, content []ContentBlock) ([]Message, int, error) {
 	var longTermMsgs, shortTermMsgs []Message
 
 	if a.opts.longTerm != nil {
 		start := time.Now()
 		var rerr error
-		longTermMsgs, rerr = a.opts.longTerm.Retrieve(ctx, content, a.opts.longTermTopK)
+		longTermMsgs, rerr = a.opts.longTerm.Retrieve(rctx.io, content, a.opts.longTermTopK)
 		if fn := a.opts.hooks.OnLongTermRetrieve; fn != nil {
-			fn(len(longTermMsgs), time.Since(start), rerr)
+			fn(rctx.hook, len(longTermMsgs), time.Since(start), rerr)
 		}
 		if rerr != nil {
 			return nil, 0, fmt.Errorf("goagent: retrieving long-term context: %w", rerr)
@@ -480,9 +492,9 @@ func (a *Agent) buildMessages(ctx context.Context, content []ContentBlock) ([]Me
 	if a.opts.shortTerm != nil {
 		start := time.Now()
 		var rerr error
-		shortTermMsgs, rerr = a.opts.shortTerm.Messages(ctx)
+		shortTermMsgs, rerr = a.opts.shortTerm.Messages(rctx.io)
 		if fn := a.opts.hooks.OnShortTermLoad; fn != nil {
-			fn(len(shortTermMsgs), time.Since(start), rerr)
+			fn(rctx.hook, len(shortTermMsgs), time.Since(start), rerr)
 		}
 		if rerr != nil {
 			return nil, 0, fmt.Errorf("goagent: loading short-term history: %w", rerr)
@@ -504,7 +516,7 @@ func (a *Agent) buildMessages(ctx context.Context, content []ContentBlock) ([]Me
 // messages is the full slice (history + new turn).
 // historyLen marks where the new turn begins.
 // finalContent is the model's last text response.
-func (a *Agent) persistTurn(ctx context.Context, messages []Message, historyLen int, finalContent string) {
+func (a *Agent) persistTurn(rctx runContexts, messages []Message, historyLen int, finalContent string) {
 	if a.opts.shortTerm != nil {
 		var toStore []Message
 		if a.opts.traceTools {
@@ -520,9 +532,9 @@ func (a *Agent) persistTurn(ctx context.Context, messages []Message, historyLen 
 			}
 		}
 		start := time.Now()
-		serr := a.opts.shortTerm.Append(ctx, toStore...)
+		serr := a.opts.shortTerm.Append(rctx.io, toStore...)
 		if fn := a.opts.hooks.OnShortTermAppend; fn != nil {
-			fn(len(toStore), time.Since(start), serr)
+			fn(rctx.hook, len(toStore), time.Since(start), serr)
 		}
 		if serr != nil {
 			a.opts.logger.Warn("short-term memory append failed", "error", serr)
@@ -539,9 +551,9 @@ func (a *Agent) persistTurn(ctx context.Context, messages []Message, historyLen 
 		// the policy transforms or condenses the turn (e.g. an LLM judge).
 		if msgs := policy(messages[historyLen], AssistantMessage(finalContent)); msgs != nil {
 			start := time.Now()
-			serr := a.opts.longTerm.Store(ctx, msgs...)
+			serr := a.opts.longTerm.Store(rctx.io, msgs...)
 			if fn := a.opts.hooks.OnLongTermStore; fn != nil {
-				fn(len(msgs), time.Since(start), serr)
+				fn(rctx.hook, len(msgs), time.Since(start), serr)
 			}
 			if serr != nil {
 				a.opts.logger.Warn("long-term memory store failed", "error", serr)
