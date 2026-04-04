@@ -127,14 +127,19 @@ type Hooks struct {
 	// Only called when a ShortTermMemory is configured.
 	OnShortTermAppend func(ctx context.Context, msgs int, duration time.Duration, err error)
 
-	// OnLongTermRetrieve is called after the agent queries long-term
-	// memory at the start of each Run, on both success and error.
-	// results is the number of messages retrieved (0 if err != nil).
+	// OnLongTermRetrieve is called after the agent queries long-term memory
+	// at the start of each Run, on both success and error.
+	// results is the slice of messages retrieved, each paired with its
+	// similarity score. The slice is nil when err is non-nil.
 	// duration is how long the retrieval operation took.
 	// err is nil on success.
 	//
+	// Score in each ScoredMessage is the cosine similarity in [0.0, 1.0]
+	// when the underlying VectorStore implements ScoredStore.
+	// Score is 0.0 when the store does not expose scores.
+	//
 	// Only called when a LongTermMemory is configured.
-	OnLongTermRetrieve func(ctx context.Context, results int, duration time.Duration, err error)
+	OnLongTermRetrieve func(ctx context.Context, results []ScoredMessage, duration time.Duration, err error)
 
 	// OnLongTermStore is called after the agent persists a turn to
 	// long-term memory at the end of each Run, on both success and error.
@@ -297,7 +302,7 @@ func MergeHooks(hooks ...Hooks) Hooks {
 	}
 
 	if anyHas(hooks, func(h *Hooks) bool { return h.OnLongTermRetrieve != nil }) {
-		merged.OnLongTermRetrieve = func(ctx context.Context, results int, duration time.Duration, err error) {
+		merged.OnLongTermRetrieve = func(ctx context.Context, results []ScoredMessage, duration time.Duration, err error) {
 			for i := range hooks {
 				if fn := hooks[i].OnLongTermRetrieve; fn != nil {
 					fn(ctx, results, duration, err)

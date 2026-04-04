@@ -148,12 +148,12 @@ func NewHooks(tracer trace.Tracer, meter metric.Meter) (goagent.Hooks, error) {
 			inst.memoryAppendDuration.Record(ctx, dur.Seconds())
 		},
 
-		OnLongTermRetrieve: func(ctx context.Context, results int, dur time.Duration, err error) {
+		OnLongTermRetrieve: func(ctx context.Context, results []goagent.ScoredMessage, dur time.Duration, err error) {
 			start := time.Now().Add(-dur)
 			_, span := tracer.Start(ctx, "goagent.memory.long_term.retrieve",
 				trace.WithTimestamp(start),
 			)
-			span.SetAttributes(attribute.Int("message_count", results))
+			span.SetAttributes(attribute.Int("message_count", len(results)))
 			if err != nil {
 				span.RecordError(err)
 				span.SetStatus(codes.Error, err.Error())

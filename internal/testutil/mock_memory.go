@@ -73,10 +73,10 @@ func (m *MockMemory) All() []goagent.Message {
 
 // MockLongTermMemory is a thread-safe LongTermMemory implementation for tests.
 type MockLongTermMemory struct {
-	mu         sync.Mutex
-	stored     []goagent.Message
-	retrieved  []goagent.Message // fixed set returned by Retrieve
-	storeErr   error
+	mu          sync.Mutex
+	stored      []goagent.Message
+	retrieved   []goagent.ScoredMessage // fixed set returned by Retrieve
+	storeErr    error
 	retrieveErr error
 }
 
@@ -87,9 +87,13 @@ func NewMockLongTermMemory() *MockLongTermMemory {
 }
 
 // NewMockLongTermMemoryWithRetrieve creates a MockLongTermMemory that returns
-// retrieved as the fixed response to every Retrieve call.
+// the given messages (with Score 0.0) as the fixed response to every Retrieve call.
 func NewMockLongTermMemoryWithRetrieve(retrieved ...goagent.Message) *MockLongTermMemory {
-	return &MockLongTermMemory{retrieved: retrieved}
+	scored := make([]goagent.ScoredMessage, len(retrieved))
+	for i, m := range retrieved {
+		scored[i] = goagent.ScoredMessage{Message: m}
+	}
+	return &MockLongTermMemory{retrieved: scored}
 }
 
 // NewMockLongTermMemoryWithErrors creates a MockLongTermMemory that returns
@@ -110,13 +114,13 @@ func (m *MockLongTermMemory) Store(_ context.Context, msgs ...goagent.Message) e
 }
 
 // Retrieve returns the fixed retrieved slice. Returns retrieveErr if configured.
-func (m *MockLongTermMemory) Retrieve(_ context.Context, _ []goagent.ContentBlock, _ int) ([]goagent.Message, error) {
+func (m *MockLongTermMemory) Retrieve(_ context.Context, _ []goagent.ContentBlock, _ int) ([]goagent.ScoredMessage, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.retrieveErr != nil {
 		return nil, m.retrieveErr
 	}
-	out := make([]goagent.Message, len(m.retrieved))
+	out := make([]goagent.ScoredMessage, len(m.retrieved))
 	copy(out, m.retrieved)
 	return out, nil
 }

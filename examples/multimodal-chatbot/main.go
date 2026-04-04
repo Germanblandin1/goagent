@@ -158,12 +158,12 @@ func main() {
 				}
 				logStep(colorGray, "STM→", fmt.Sprintf("append OK [%s] msgs=%d", d.Round(time.Millisecond), msgs))
 			},
-			OnLongTermRetrieve: func(_ context.Context, results int, d time.Duration, err error) {
+			OnLongTermRetrieve: func(_ context.Context, results []goagent.ScoredMessage, d time.Duration, err error) {
 				if err != nil {
 					logStep(colorRed, "LTM←", fmt.Sprintf("retrieve ERR [%s]: %v", d.Round(time.Millisecond), err))
 					return
 				}
-				logStep(colorGray, "LTM←", fmt.Sprintf("retrieve OK [%s] results=%d", d.Round(time.Millisecond), results))
+				logStep(colorGray, "LTM←", fmt.Sprintf("retrieve OK [%s] results=%d", d.Round(time.Millisecond), len(results)))
 			},
 			OnLongTermStore: func(_ context.Context, msgs int, d time.Duration, err error) {
 				if err != nil {

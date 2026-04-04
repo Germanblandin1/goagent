@@ -479,13 +479,19 @@ func (a *Agent) buildMessages(rctx runContexts, content []ContentBlock) ([]Messa
 
 	if a.opts.longTerm != nil {
 		start := time.Now()
-		var rerr error
-		longTermMsgs, rerr = a.opts.longTerm.Retrieve(rctx.io, content, a.opts.longTermTopK)
+		scored, rerr := a.opts.longTerm.Retrieve(rctx.io, content, a.opts.longTermTopK)
 		if fn := a.opts.hooks.OnLongTermRetrieve; fn != nil {
-			fn(rctx.hook, len(longTermMsgs), time.Since(start), rerr)
+			fn(rctx.hook, scored, time.Since(start), rerr)
 		}
 		if rerr != nil {
 			return nil, 0, fmt.Errorf("goagent: retrieving long-term context: %w", rerr)
+		}
+		longTermMsgs = make([]Message, len(scored))
+		for i, s := range scored {
+			if s.Message.Role == RoleDocument {
+				return nil, 0, fmt.Errorf("goagent: RoleDocument message found in long-term memory retrieval — RAG and LTM VectorStores must not be shared")
+			}
+			longTermMsgs[i] = s.Message
 		}
 	}
 

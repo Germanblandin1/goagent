@@ -22,7 +22,7 @@ func (s *recordingVectorStore) Upsert(_ context.Context, id string, _ []float32,
 	return nil
 }
 
-func (s *recordingVectorStore) Search(_ context.Context, _ []float32, _ int) ([]goagent.Message, error) {
+func (s *recordingVectorStore) Search(_ context.Context, _ []float32, _ int) ([]goagent.ScoredMessage, error) {
 	return nil, nil
 }
 
@@ -164,7 +164,7 @@ func TestMessageIDUniqueness(t *testing.T) {
 
 // searchableVectorStore records the topK passed to Search and returns fixed results.
 type searchableVectorStore struct {
-	results  []goagent.Message
+	results  []goagent.ScoredMessage
 	lastTopK int
 }
 
@@ -172,7 +172,7 @@ func (s *searchableVectorStore) Upsert(_ context.Context, _ string, _ []float32,
 	return nil
 }
 
-func (s *searchableVectorStore) Search(_ context.Context, _ []float32, topK int) ([]goagent.Message, error) {
+func (s *searchableVectorStore) Search(_ context.Context, _ []float32, topK int) ([]goagent.ScoredMessage, error) {
 	s.lastTopK = topK
 	return s.results, nil
 }
@@ -180,7 +180,7 @@ func (s *searchableVectorStore) Search(_ context.Context, _ []float32, topK int)
 func TestLongTerm_Retrieve(t *testing.T) {
 	t.Parallel()
 
-	want := []goagent.Message{goagent.UserMessage("past context")}
+	want := []goagent.ScoredMessage{{Message: goagent.UserMessage("past context")}}
 	store := &searchableVectorStore{results: want}
 	m, err := memory.NewLongTerm(
 		memory.WithVectorStore(store),
@@ -195,7 +195,7 @@ func TestLongTerm_Retrieve(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Retrieve: %v", err)
 		}
-		if len(got) != 1 || got[0].TextContent() != "past context" {
+		if len(got) != 1 || got[0].Message.TextContent() != "past context" {
 			t.Errorf("got %v, want %v", got, want)
 		}
 		if store.lastTopK != 3 {

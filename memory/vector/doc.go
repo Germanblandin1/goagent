@@ -67,7 +67,8 @@
 // the boundary between the session prefix and the base ID:
 //
 //	ctx, err := session.NewContext(ctx, "user-42")
-//	msgs, err := store.Search(ctx, queryVec, 3)
+//	results, err := store.Search(ctx, queryVec, 3)
+//	// results[i].Message holds the message; results[i].Score is cosine similarity.
 //
 // # Similarity
 //

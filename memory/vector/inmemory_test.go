@@ -62,11 +62,11 @@ func TestInMemoryStore_SearchOrder(t *testing.T) {
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got %d", len(results))
 	}
-	if results[0].TextContent() != "A" {
-		t.Errorf("results[0] = %q, want %q", results[0].TextContent(), "A")
+	if results[0].Message.TextContent() != "A" {
+		t.Errorf("results[0] = %q, want %q", results[0].Message.TextContent(), "A")
 	}
-	if results[2].TextContent() != "B" {
-		t.Errorf("results[2] = %q, want %q", results[2].TextContent(), "B")
+	if results[2].Message.TextContent() != "B" {
+		t.Errorf("results[2] = %q, want %q", results[2].Message.TextContent(), "B")
 	}
 }
 
@@ -113,8 +113,8 @@ func TestInMemoryStore_SessionFilter(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result for sess-A, got %d", len(results))
 	}
-	if results[0].TextContent() != "A" {
-		t.Errorf("got %q, want %q", results[0].TextContent(), "A")
+	if results[0].Message.TextContent() != "A" {
+		t.Errorf("got %q, want %q", results[0].Message.TextContent(), "A")
 	}
 }
 

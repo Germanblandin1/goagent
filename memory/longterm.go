@@ -155,7 +155,7 @@ func (m *longTermMemory) Store(ctx context.Context, msgs ...goagent.Message) err
 	return nil
 }
 
-func (m *longTermMemory) Retrieve(ctx context.Context, query []goagent.ContentBlock, topK int) ([]goagent.Message, error) {
+func (m *longTermMemory) Retrieve(ctx context.Context, query []goagent.ContentBlock, topK int) ([]goagent.ScoredMessage, error) {
 	k := topK
 	if k <= 0 {
 		k = m.topK

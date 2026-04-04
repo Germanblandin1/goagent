@@ -29,10 +29,15 @@ type LongTermMemory interface {
 	Store(ctx context.Context, msgs ...Message) error
 
 	// Retrieve returns the topK messages most semantically similar to the
-	// given content. The full []ContentBlock is passed so that embedder
-	// implementations that support vision or documents can build a meaningful
-	// query vector even when the prompt contains no text.
-	Retrieve(ctx context.Context, query []ContentBlock, topK int) ([]Message, error)
+	// given content, each paired with its similarity score.
+	//
+	// The full []ContentBlock is passed so that embedder implementations
+	// that support vision or documents can build a meaningful query vector
+	// even when the prompt contains no text.
+	//
+	// Score in each ScoredMessage is the cosine similarity in [0.0, 1.0]
+	// as computed by the underlying VectorStore.
+	Retrieve(ctx context.Context, query []ContentBlock, topK int) ([]ScoredMessage, error)
 }
 
 // WritePolicy decides what to persist after a completed turn. It is called
@@ -81,8 +86,10 @@ type VectorStore interface {
 	// id must be a stable identifier for the message (e.g. content hash).
 	Upsert(ctx context.Context, id string, vector []float32, msg Message) error
 
-	// Search returns the topK messages most similar to the given vector.
-	Search(ctx context.Context, vector []float32, topK int) ([]Message, error)
+	// Search returns the topK messages most similar to the given vector,
+	// each paired with its similarity score. Score is in [0.0, 1.0] for
+	// stores that use cosine similarity with normalised vectors.
+	Search(ctx context.Context, vector []float32, topK int) ([]ScoredMessage, error)
 }
 
 // Embedder converts message content into a dense vector representation

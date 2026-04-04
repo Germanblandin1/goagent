@@ -76,7 +76,7 @@ func TestWithName_LongTermMemoryNamespaceIsolation(t *testing.T) {
 		t.Fatalf("Search alice: %v", err)
 	}
 	for _, msg := range aliceMsgs {
-		text := msg.TextContent()
+		text := msg.Message.TextContent()
 		if text == "hello from bob" || text == "bob-answer" {
 			t.Errorf("alice's view contains bob's message: %q", text)
 		}
@@ -92,7 +92,7 @@ func TestWithName_LongTermMemoryNamespaceIsolation(t *testing.T) {
 		t.Fatalf("Search bob: %v", err)
 	}
 	for _, msg := range bobMsgs {
-		text := msg.TextContent()
+		text := msg.Message.TextContent()
 		if text == "hello from alice" || text == "alice-answer" {
 			t.Errorf("bob's view contains alice's message: %q", text)
 		}

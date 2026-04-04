@@ -698,7 +698,7 @@ func TestHooks_OnLongTermRetrieve(t *testing.T) {
 	ltm := testutil.NewMockLongTermMemoryWithRetrieve(retrieved...)
 
 	type call struct {
-		results  int
+		results  []goagent.ScoredMessage
 		duration time.Duration
 		err      error
 	}
@@ -708,7 +708,7 @@ func TestHooks_OnLongTermRetrieve(t *testing.T) {
 		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("hi"))),
 		goagent.WithLongTermMemory(ltm),
 		goagent.WithHooks(goagent.Hooks{
-			OnLongTermRetrieve: func(_ context.Context, results int, d time.Duration, err error) {
+			OnLongTermRetrieve: func(_ context.Context, results []goagent.ScoredMessage, d time.Duration, err error) {
 				got = append(got, call{results, d, err})
 			},
 		}),
@@ -725,8 +725,8 @@ func TestHooks_OnLongTermRetrieve(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("OnLongTermRetrieve called %d times, want 1", len(got))
 	}
-	if got[0].results != len(retrieved) {
-		t.Errorf("results = %d, want %d", got[0].results, len(retrieved))
+	if len(got[0].results) != len(retrieved) {
+		t.Errorf("results = %d, want %d", len(got[0].results), len(retrieved))
 	}
 	if got[0].err != nil {
 		t.Errorf("err = %v, want nil", got[0].err)
@@ -748,7 +748,7 @@ func TestHooks_OnLongTermRetrieve_Error(t *testing.T) {
 		goagent.WithProvider(testutil.NewMockProvider(endTurnResp("hi"))),
 		goagent.WithLongTermMemory(ltm),
 		goagent.WithHooks(goagent.Hooks{
-			OnLongTermRetrieve: func(_ context.Context, _ int, _ time.Duration, err error) {
+			OnLongTermRetrieve: func(_ context.Context, _ []goagent.ScoredMessage, _ time.Duration, err error) {
 				gotErr = err
 			},
 		}),
@@ -1510,7 +1510,7 @@ func TestMergeHooks_AllHookFields(t *testing.T) {
 		OnResponse:         func(_ context.Context, t string, i int) { called["OnResponse"]++ },
 		OnShortTermLoad:    func(_ context.Context, r int, d time.Duration, e error) { called["OnShortTermLoad"]++ },
 		OnShortTermAppend:  func(_ context.Context, m int, d time.Duration, e error) { called["OnShortTermAppend"]++ },
-		OnLongTermRetrieve: func(_ context.Context, r int, d time.Duration, e error) { called["OnLongTermRetrieve"]++ },
+		OnLongTermRetrieve: func(_ context.Context, r []goagent.ScoredMessage, d time.Duration, e error) { called["OnLongTermRetrieve"]++ },
 		OnLongTermStore:    func(_ context.Context, m int, d time.Duration, e error) { called["OnLongTermStore"]++ },
 	}
 
@@ -1530,7 +1530,7 @@ func TestMergeHooks_AllHookFields(t *testing.T) {
 	merged.OnResponse(bg, "done", 1)
 	merged.OnShortTermLoad(bg, 0, 0, nil)
 	merged.OnShortTermAppend(bg, 0, 0, nil)
-	merged.OnLongTermRetrieve(bg, 0, 0, nil)
+	merged.OnLongTermRetrieve(bg, nil, 0, nil)
 	merged.OnLongTermStore(bg, 0, 0, nil)
 
 	hooks := []string{

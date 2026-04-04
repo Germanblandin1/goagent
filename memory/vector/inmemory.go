@@ -10,7 +10,7 @@ import (
 	"github.com/Germanblandin1/goagent/internal/session"
 )
 
-// Compile-time check: InMemoryStore implements goagent.VectorStore.
+// Compile-time check.
 var _ goagent.VectorStore = (*InMemoryStore)(nil)
 
 type entry struct {
@@ -47,43 +47,33 @@ func (s *InMemoryStore) Upsert(_ context.Context, id string, vec []float32, msg 
 }
 
 // Search returns the topK messages most similar to the query vector,
-// ordered by cosine similarity descending. If the context carries a session
-// ID (set via WithSessionID), only entries whose id starts with
-// "sessionID:" are considered. Returns fewer than topK results when the
-// store contains fewer matching entries.
-func (s *InMemoryStore) Search(ctx context.Context, query []float32, topK int) ([]goagent.Message, error) {
+// ordered by cosine similarity descending, each paired with its cosine
+// similarity score. If the context carries a session ID (set via
+// WithSessionID), only entries whose id starts with "sessionID:" are
+// considered. Returns fewer than topK results when the store contains
+// fewer matching entries.
+func (s *InMemoryStore) Search(ctx context.Context, query []float32, topK int) ([]goagent.ScoredMessage, error) {
 	sessionID, hasSession := session.IDFromContext(ctx)
 
-	type scored struct {
-		msg   goagent.Message
-		score float64
-	}
-
 	s.mu.RLock()
-	results := make([]scored, 0, len(s.entries))
+	results := make([]goagent.ScoredMessage, 0, len(s.entries))
 	for id, e := range s.entries {
 		if hasSession && !strings.HasPrefix(id, sessionID+":") {
 			continue
 		}
-		results = append(results, scored{
-			msg:   e.msg,
-			score: CosineSimilarity(query, e.vector),
+		results = append(results, goagent.ScoredMessage{
+			Message: e.msg,
+			Score:   CosineSimilarity(query, e.vector),
 		})
 	}
 	s.mu.RUnlock()
 
 	sort.Slice(results, func(i, j int) bool {
-		return results[i].score > results[j].score
+		return results[i].Score > results[j].Score
 	})
 
-	k := topK
-	if k > len(results) {
-		k = len(results)
+	if topK < len(results) {
+		results = results[:topK]
 	}
-
-	msgs := make([]goagent.Message, k)
-	for i := range k {
-		msgs[i] = results[i].msg
-	}
-	return msgs, nil
+	return results, nil
 }
