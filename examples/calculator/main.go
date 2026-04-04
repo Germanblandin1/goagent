@@ -21,19 +21,11 @@ func main() {
 	calc := goagent.ToolFunc(
 		"calculator",
 		"Performs basic arithmetic. Supported operations: add, sub, mul, div.",
-		map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"operation": map[string]any{
-					"type":        "string",
-					"enum":        []string{"add", "sub", "mul", "div"},
-					"description": "The arithmetic operation to perform.",
-				},
-				"a": map[string]any{"type": "number", "description": "First operand."},
-				"b": map[string]any{"type": "number", "description": "Second operand."},
-			},
-			"required": []string{"operation", "a", "b"},
-		},
+		goagent.SchemaFrom(struct {
+			Operation string  `json:"operation" jsonschema_enum:"add,sub,mul,div" jsonschema_description:"The arithmetic operation to perform."`
+			A         float64 `json:"a" jsonschema_description:"First operand."`
+			B         float64 `json:"b" jsonschema_description:"Second operand."`
+		}{}),
 		func(_ context.Context, args map[string]any) (string, error) {
 			op, _ := args["operation"].(string)
 			a, _ := args["a"].(float64)

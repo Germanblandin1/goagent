@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Germanblandin1/goagent"
 	"github.com/Germanblandin1/goagent/mcp"
 )
 
@@ -23,15 +24,9 @@ func runServer(root string) error {
 	s.MustAddTool("list_dir",
 		"Lists the files and sub-directories inside a directory. "+
 			`Use "." to list the working directory.`,
-		map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path": map[string]any{
-					"type":        "string",
-					"description": `Relative path to the directory (e.g. ".", "src", "src/util"). Defaults to ".".`,
-				},
-			},
-		},
+		goagent.SchemaFrom(struct {
+			Path string `json:"path,omitempty" jsonschema_description:"Relative path to the directory (e.g. \".\", \"src\", \"src/util\"). Defaults to \".\"."`
+		}{}),
 		func(_ context.Context, args map[string]any) (string, error) {
 			rel, _ := args["path"].(string)
 			if rel == "" {
@@ -49,16 +44,9 @@ func runServer(root string) error {
 	s.MustAddTool("read_file",
 		"Returns the text content of a file. "+
 			fmt.Sprintf("Files larger than %d KB are rejected.", maxFileKB),
-		map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"path": map[string]any{
-					"type":        "string",
-					"description": `Relative path to the file (e.g. "README.md", "src/main.go").`,
-				},
-			},
-			"required": []string{"path"},
-		},
+		goagent.SchemaFrom(struct {
+			Path string `json:"path" jsonschema_description:"Relative path to the file (e.g. \"README.md\", \"src/main.go\")."`
+		}{}),
 		func(_ context.Context, args map[string]any) (string, error) {
 			rel, _ := args["path"].(string)
 			abs, err := safePath(root, rel)

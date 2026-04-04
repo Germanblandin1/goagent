@@ -22,14 +22,10 @@
 //	provider := ollama.New(ollama.WithBaseURL("http://localhost:11434"))
 //
 //	add := goagent.ToolFunc("add", "Sum two numbers",
-//	    map[string]any{
-//	        "type": "object",
-//	        "properties": map[string]any{
-//	            "a": map[string]any{"type": "number"},
-//	            "b": map[string]any{"type": "number"},
-//	        },
-//	        "required": []string{"a", "b"},
-//	    },
+//	    goagent.SchemaFrom(struct {
+//	        A float64 `json:"a" jsonschema_description:"First operand."`
+//	        B float64 `json:"b" jsonschema_description:"Second operand."`
+//	    }{}),
 //	    func(ctx context.Context, args map[string]any) (string, error) {
 //	        a, _ := args["a"].(float64)
 //	        b, _ := args["b"].(float64)

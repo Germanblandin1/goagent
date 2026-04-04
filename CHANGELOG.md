@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2026-04-04
+
+### Added
+
+**Schema helper (`goagent`)**
+- `Schema` — type alias for `map[string]any`; interchangeable with `ToolDefinition.Parameters` and the `parameters` argument of `ToolFunc` / `ToolBlocksFunc`
+- `SchemaFrom(v any) Schema` — derives a JSON Schema object from a struct value using reflection; eliminates the need to write nested `map[string]any` literals by hand
+- Supported struct tags:
+  - `json:"name"` — property name in the schema; `"-"` skips the field entirely
+  - `json:"name,omitempty"` — marks the field as optional (not included in `"required"`)
+  - `jsonschema_description:"text"` — adds a `"description"` key to the property
+  - `jsonschema_enum:"a,b,c"` — adds an `"enum"` key with the comma-separated values
+- Go → JSON Schema type mapping: `string` → `"string"`, integer kinds → `"integer"`, float kinds → `"number"`, `bool` → `"boolean"`, slice/array → `"array"`, anything else → `"string"` (conservative fallback)
+- Pointer arguments are dereferenced before inspection; non-struct inputs (after dereferencing) return `{"type":"object"}` without panicking
+- `"required"` key is omitted entirely when no required fields exist (an absent key is cleaner than an empty array)
+
+### Changed
+
+**Call sites migrated to `SchemaFrom`**
+- `examples/calculator` — `operation` field now carries `jsonschema_enum:"add,sub,mul,div"`, restoring the enum constraint that was previously inexpressible without a manual map
+- `examples/multimodal-chatbot` — both `NewLoadFileTool` (`path`) and `NewScanDirTool` (`path`, `recursive`) migrated; the intermediate `params` variable is removed in each constructor
+- `examples/chatbot-mcp-fs` — `list_dir` (`path` optional) and `read_file` (`path` required) migrated; `SchemaFrom` is passed directly as the `schema any` argument of `MustAddTool` since it serialises to JSON via `json.Marshal` internally
+- `providers/anthropic/example_test.go` — `ExampleNew_withTool` migrated
+- `doc.go` — package-level quickstart example updated
+- `tool_test.go` — dummy schemas replaced with `SchemaFrom(struct{}{})`
+
 ## [0.4.2] - 2026-04-03
 
 ### Added

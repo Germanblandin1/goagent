@@ -81,15 +81,13 @@ goagent/              Core — Agent, ReAct loop, interfaces
 
 ### Tools
 
-Implement the `Tool` interface or use the `ToolFunc` helper:
+Implement the `Tool` interface or use the `ToolFunc` helper. Use `SchemaFrom` to derive the JSON Schema from a struct instead of building the map by hand:
 
 ```go
 echo := goagent.ToolFunc("echo", "Returns the input text.",
-    map[string]any{
-        "type": "object",
-        "properties": map[string]any{"text": map[string]any{"type": "string"}},
-        "required": []string{"text"},
-    },
+    goagent.SchemaFrom(struct {
+        Text string `json:"text" jsonschema_description:"Text to echo back."`
+    }{}),
     func(_ context.Context, args map[string]any) (string, error) {
         return args["text"].(string), nil
     },
@@ -101,6 +99,15 @@ agent, _ := goagent.New(
     goagent.WithTool(echo),
 )
 ```
+
+`SchemaFrom` supports four struct tags:
+
+| Tag | Effect |
+|---|---|
+| `json:"name"` | Property name; `"-"` skips the field |
+| `json:"name,omitempty"` | Optional field (omitted from `"required"`) |
+| `jsonschema_description:"text"` | Adds `"description"` to the property |
+| `jsonschema_enum:"a,b,c"` | Adds `"enum"` with the comma-separated values |
 
 ### MCP (Model Context Protocol)
 
@@ -129,7 +136,10 @@ Multiple servers can be attached in a single `New` call. Build your own MCP serv
 
 ```go
 s := mcp.NewServer("my-tools", "1.0.0")
-s.MustAddTool("echo", "Returns the input unchanged", nil,
+s.MustAddTool("echo", "Returns the input unchanged",
+    goagent.SchemaFrom(struct {
+        Text string `json:"text" jsonschema_description:"Text to echo back."`
+    }{}),
     func(_ context.Context, args map[string]any) (string, error) {
         return args["text"].(string), nil
     },

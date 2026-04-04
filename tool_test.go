@@ -11,8 +11,7 @@ import (
 func TestToolBlocksFunc_Definition(t *testing.T) {
 	t.Parallel()
 
-	params := map[string]any{"type": "object"}
-	tool := goagent.ToolBlocksFunc("screenshot", "captures the screen", params,
+	tool := goagent.ToolBlocksFunc("screenshot", "captures the screen", goagent.SchemaFrom(struct{}{}),
 		func(_ context.Context, _ map[string]any) ([]goagent.ContentBlock, error) {
 			return nil, nil
 		},
@@ -62,8 +61,7 @@ func TestToolBlocksFunc_Execute(t *testing.T) {
 func TestToolFunc_Definition(t *testing.T) {
 	t.Parallel()
 
-	params := map[string]any{"type": "object"}
-	tool := goagent.ToolFunc("greet", "says hello", params,
+	tool := goagent.ToolFunc("greet", "says hello", goagent.SchemaFrom(struct{}{}),
 		func(_ context.Context, _ map[string]any) (string, error) { return "", nil },
 	)
 

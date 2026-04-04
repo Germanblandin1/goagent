@@ -69,25 +69,14 @@ func isSupportedFile(name string) bool {
 //   - PDF (.pdf): text extracted via ledongthuc/pdf
 //   - Plain text (.txt): content read directly
 func NewLoadFileTool() goagent.Tool {
-	params := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"path": map[string]any{
-				"type": "string",
-				"description": "Absolute or relative path to the file to load. " +
-					"Supported images: jpg, png, gif, webp. " +
-					"Supported documents: pdf, txt.",
-			},
-		},
-		"required": []string{"path"},
-	}
-
 	return goagent.ToolBlocksFunc(
 		"load_file",
 		"Load an image or document from the local filesystem so it can be analyzed. "+
 			"Images: jpg, png, gif, webp. Documents: pdf, txt. "+
 			"Call this tool when the user mentions a file path or asks to analyze a file.",
-		params,
+		goagent.SchemaFrom(struct {
+			Path string `json:"path" jsonschema_description:"Absolute or relative path to the file to load. Supported images: jpg, png, gif, webp. Supported documents: pdf, txt."`
+		}{}),
 		func(ctx context.Context, args map[string]any) ([]goagent.ContentBlock, error) {
 			path, ok := args["path"].(string)
 			if !ok || path == "" {
@@ -174,26 +163,14 @@ func extractPDFText(path string) (string, error) {
 // inside a directory. By default it scans only the top level; set recursive=true
 // to walk sub-directories.
 func NewScanDirTool() goagent.Tool {
-	params := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"path": map[string]any{
-				"type":        "string",
-				"description": "Absolute or relative path to the directory to scan.",
-			},
-			"recursive": map[string]any{
-				"type":        "boolean",
-				"description": "If true, walk all sub-directories. Defaults to false.",
-			},
-		},
-		"required": []string{"path"},
-	}
-
 	return goagent.ToolFunc(
 		"scan_dir",
 		"List supported files (images: jpg, png, gif, webp; documents: pdf, txt) in a directory. "+
 			"Use this to discover available files before loading one with load_file.",
-		params,
+		goagent.SchemaFrom(struct {
+			Path      string `json:"path" jsonschema_description:"Absolute or relative path to the directory to scan."`
+			Recursive bool   `json:"recursive,omitempty" jsonschema_description:"If true, walk all sub-directories. Defaults to false."`
+		}{}),
 		func(ctx context.Context, args map[string]any) (string, error) {
 			dir, ok := args["path"].(string)
 			if !ok || dir == "" {
