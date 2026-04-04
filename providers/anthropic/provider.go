@@ -154,6 +154,9 @@ func toAnthropicMessages(msgs []goagent.Message) ([]sdk.MessageParam, error) {
 			// System messages are handled via the top-level system param.
 			// Skip them here.
 			continue
+
+		default:
+			return nil, fmt.Errorf("goagent/anthropic: unsupported role %q — only user/assistant/tool/system are valid in conversation history", m.Role)
 		}
 	}
 	return out, nil

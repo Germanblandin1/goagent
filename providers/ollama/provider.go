@@ -149,8 +149,12 @@ func toOpenAIMessage(m goagent.Message) (openai.ChatCompletionMessage, error) {
 		}
 	}
 
+	role, err := toOpenAIRole(m.Role)
+	if err != nil {
+		return openai.ChatCompletionMessage{}, err
+	}
 	msg := openai.ChatCompletionMessage{
-		Role:       toOpenAIRole(m.Role),
+		Role:       role,
 		ToolCallID: m.ToolCallID,
 	}
 
@@ -220,16 +224,18 @@ func toOpenAIParts(blocks []goagent.ContentBlock) ([]openai.ChatMessagePart, err
 	return parts, nil
 }
 
-func toOpenAIRole(r goagent.Role) string {
+func toOpenAIRole(r goagent.Role) (string, error) {
 	switch r {
+	case goagent.RoleUser:
+		return openai.ChatMessageRoleUser, nil
 	case goagent.RoleSystem:
-		return openai.ChatMessageRoleSystem
+		return openai.ChatMessageRoleSystem, nil
 	case goagent.RoleAssistant:
-		return openai.ChatMessageRoleAssistant
+		return openai.ChatMessageRoleAssistant, nil
 	case goagent.RoleTool:
-		return openai.ChatMessageRoleTool
+		return openai.ChatMessageRoleTool, nil
 	default:
-		return openai.ChatMessageRoleUser
+		return "", fmt.Errorf("goagent/ollama: unsupported role %q — only user/assistant/tool/system are valid in conversation history", r)
 	}
 }
 

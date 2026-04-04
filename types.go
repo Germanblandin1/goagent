@@ -20,6 +20,12 @@ const (
 	// with this role. Callers do not need to construct RoleSystem messages
 	// directly.
 	RoleSystem Role = "system"
+
+	// RoleDocument marks messages that represent indexed document chunks in a
+	// RAG pipeline. These messages live only in the VectorStore — they are
+	// never sent to a provider. Formatters extract their Content and embed it
+	// into tool-result blocks before the agent sees them.
+	RoleDocument Role = "document"
 )
 
 // Message is a single turn in a conversation.
@@ -42,6 +48,15 @@ type Message struct {
 	// Provider implementations must populate ToolCall.ID for the correlation
 	// to work correctly.
 	ToolCallID string
+
+	// Metadata is a free-form map for infrastructure components (RAG pipelines,
+	// vector stores) to attach auxiliary information such as source document,
+	// chunk index, or retrieval score.
+	//
+	// The Agent and all Provider implementations ignore this field — it is never
+	// serialised or sent to the model. Callers must not rely on Metadata being
+	// propagated through the provider round-trip.
+	Metadata map[string]any
 }
 
 // ToolCall represents a request from the model to invoke a tool.
