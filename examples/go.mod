@@ -5,7 +5,9 @@ go 1.24.1
 require (
 	github.com/Germanblandin1/goagent v0.0.0
 	github.com/Germanblandin1/goagent/mcp v0.0.0
+	github.com/Germanblandin1/goagent/providers/anthropic v0.0.0
 	github.com/Germanblandin1/goagent/providers/ollama v0.0.0
+	github.com/Germanblandin1/goagent/rag v0.0.0
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 )
 
@@ -24,4 +26,8 @@ replace github.com/Germanblandin1/goagent => ..
 
 replace github.com/Germanblandin1/goagent/mcp => ../mcp
 
+replace github.com/Germanblandin1/goagent/providers/anthropic => ../providers/anthropic
+
 replace github.com/Germanblandin1/goagent/providers/ollama => ../providers/ollama
+
+replace github.com/Germanblandin1/goagent/rag => ../rag
