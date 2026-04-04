@@ -111,12 +111,14 @@ func main() {
 	)
 
 	// 6. Agent — shares the same OllamaClient as the embedder
-	provider := ollama.NewWithClient(client,
-		ollama.WithModel("qwen3.5:cloud"),
+	provider := ollama.NewWithClient(
+		client,
 	)
 	agent, err := goagent.New(
+		goagent.WithModel("qwen3.5:cloud"),
 		goagent.WithProvider(provider),
 		goagent.WithTool(searchTool),
+		goagent.WithMaxIterations(40),
 		goagent.WithSystemPrompt(
 			"You are a helpful assistant for the goagent library. "+
 				"Use search_docs to answer questions about the library's design and API.",
