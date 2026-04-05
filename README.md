@@ -42,11 +42,13 @@ goagent/              Core — Agent, ReAct loop, interfaces
 │   ├── anthropic/    Anthropic Messages API (Claude)
 │   ├── ollama/       Local Ollama via OpenAI-compatible API (+ embedder)
 │   └── voyage/       Voyage AI embedder
+├── rag/              RAG pipeline — Pipeline, NewTool, observers, formatters
 ├── examples/
 │   ├── calculator/           Tool use with arithmetic
 │   ├── chatbot/              Multi-turn conversation
 │   ├── chatbot-persistent/   Persistent memory across sessions
-│   └── chatbot-mcp-fs/       Filesystem access via MCP stdio
+│   ├── chatbot-mcp-fs/       Filesystem access via MCP stdio
+│   └── rag_docs/             RAG over local Markdown files with Ollama
 └── internal/testutil/        Shared mocks
 ```
 
@@ -198,6 +200,74 @@ ltm, err := memory.NewLongTerm(
     )),
 )
 ```
+
+Available chunkers:
+
+| Chunker | When to use |
+|---------|-------------|
+| `NewNoOpChunker()` | Conversational messages (default) |
+| `NewTextChunker(...)` | Long text blocks; word-boundary splits with configurable max size and overlap |
+| `NewSentenceChunker(...)` | Narrative or prose text; overlap counted in complete sentences |
+| `NewRecursiveChunker(...)` | Markdown and structured docs; respects `\n\n` → `\n` → sentence → word hierarchy |
+| `NewBlockChunker(...)` | Mixed multimodal content; text chunked, images pass through, PDFs split by page |
+| `NewPageChunker(...)` | PDF-only per-page chunking |
+
+### RAG (Retrieval-Augmented Generation)
+
+The `rag` sub-module provides a standalone pipeline for indexing documents and exposing them as an agent tool. It is decoupled from long-term memory — use it when you want to index a corpus offline and let the agent search it on demand.
+
+```bash
+go get github.com/Germanblandin1/goagent/rag
+```
+
+```go
+import "github.com/Germanblandin1/goagent/rag"
+
+// 1. Build the pipeline
+pipeline, err := rag.NewPipeline(
+    vector.NewRecursiveChunker(vector.WithRCMaxSize(400), vector.WithRCOverlap(40)),
+    ollama.NewEmbedder(ollama.WithEmbedModel("nomic-embed-text")),
+    vector.NewInMemoryStore(),
+)
+
+// 2. Index documents
+docs := []rag.Document{
+    {Source: "readme.md", Content: []goagent.ContentBlock{goagent.TextBlock(text)}},
+}
+if err := pipeline.Index(ctx, docs...); err != nil { log.Fatal(err) }
+
+// 3. Wrap as a tool and give it to the agent
+searchTool := rag.NewTool(pipeline,
+    rag.WithToolName("search_docs"),
+    rag.WithToolDescription("Search the project documentation."),
+    rag.WithTopK(3),
+)
+
+agent, _ := goagent.New(
+    goagent.WithProvider(ollama.New()),
+    goagent.WithModel("llama3.2"),
+    goagent.WithTool(searchTool),
+)
+```
+
+Observe indexing and retrieval with the built-in callbacks:
+
+```go
+pipeline, _ := rag.NewPipeline(chunker, embedder, store,
+    rag.WithIndexObserver(func(ctx context.Context, source string,
+        chunked, embedded, skipped int, dur time.Duration, err error) {
+        slog.Info("indexed", "source", source, "chunks", embedded, "skipped", skipped)
+    }),
+    rag.WithSearchObserver(func(ctx context.Context, query string,
+        results []rag.SearchResult, dur time.Duration, err error) {
+        if len(results) > 0 && results[0].Score < 0.5 {
+            slog.Warn("low quality retrieval", "query", query, "score", results[0].Score)
+        }
+    }),
+)
+```
+
+Both observers receive the caller's `ctx`, so active OTel spans are accessible via `trace.SpanFromContext(ctx)` without the `rag` package importing the OTel SDK.
 
 ### Extended thinking & effort
 

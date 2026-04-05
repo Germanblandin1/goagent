@@ -15,11 +15,13 @@ goagent/                      Root package — Agent, ReAct loop, core interface
 │   ├── anthropic/            Provider for Claude (Anthropic API)
 │   ├── ollama/               Provider for local models (OpenAI-compatible API) + embedder
 │   └── voyage/               Voyage AI embedder
+├── rag/                      RAG pipeline — Pipeline, Document, NewTool, observers, formatters
 ├── examples/
 │   ├── calculator/           Example: agent with a calculator tool
 │   ├── chatbot/              Example: multi-turn conversation with memory
 │   ├── chatbot-persistent/   Example: file-backed persistence
-│   └── chatbot-mcp-fs/       Example: chatbot with filesystem access via MCP stdio
+│   ├── chatbot-mcp-fs/       Example: chatbot with filesystem access via MCP stdio
+│   └── rag_docs/             Example: RAG over local Markdown files with Ollama
 └── internal/
     └── testutil/             Provider, Tool and Memory mocks for tests
 ```
@@ -52,10 +54,17 @@ type LongTermMemory interface {
     Retrieve(ctx context.Context, query []ContentBlock, topK int) ([]Message, error)
 }
 
-// VectorStore — vector index backing LongTermMemory
+// ScoredMessage combines a Message with its similarity score.
+// Score is in [0.0, 1.0] for stores using cosine similarity with normalised vectors.
+type ScoredMessage struct {
+    Message Message
+    Score   float64
+}
+
+// VectorStore — vector index backing LongTermMemory and the rag.Pipeline
 type VectorStore interface {
     Upsert(ctx context.Context, id string, vector []float32, msg Message) error
-    Search(ctx context.Context, vector []float32, topK int) ([]Message, error)
+    Search(ctx context.Context, vector []float32, topK int) ([]ScoredMessage, error)
 }
 
 // Embedder — converts content blocks to a float vector
@@ -335,8 +344,10 @@ Chunkers split a message into smaller pieces before embedding, improving retriev
 | Chunker | When to use |
 |---------|-------------|
 | `NewNoOpChunker()` | Conversational messages (default) |
-| `NewTextChunker(...)` | Long text blocks; splits at word boundaries with configurable max size and overlap |
-| `NewBlockChunker(...)` | Mixed multimodal content; text is chunked, images pass through, PDFs split by page when a `PDFExtractor` is provided |
+| `NewTextChunker(...)` | Long text blocks; word-boundary splits with configurable max size and overlap |
+| `NewSentenceChunker(...)` | Narrative or prose; overlap counted in complete sentences to preserve semantic coherence |
+| `NewRecursiveChunker(...)` | Markdown and structured docs; tries `\n\n` → `\n` → sentences → words, falling back only when needed |
+| `NewBlockChunker(...)` | Mixed multimodal content; text chunked, images pass through, PDFs split by page when a `PDFExtractor` is provided |
 | `NewPageChunker(...)` | PDF-only per-page chunking |
 
 All chunkers respect the `Chunker` interface:
@@ -362,6 +373,14 @@ Used by `TextChunker` / `BlockChunker` to measure chunk sizes:
 | `HeuristicTokenEstimator` | ±15 % | zero (default) |
 | `CharEstimator` | exact Unicode code points | zero |
 | `OllamaTokenEstimator` | exact tokens via `/api/tokenize` | one HTTP call per chunk (not for hot paths) |
+
+### `SentenceChunker` and `RecursiveChunker`
+
+Two additional chunkers complement `TextChunker` for structured content:
+
+- **`SentenceChunker`**: splits at sentence boundaries (`.` `!` `?` followed by whitespace, or `\n\n`). Overlap is counted in complete sentences rather than tokens, preserving semantic coherence at chunk boundaries. Configure with `WithSCMaxSize`, `WithSCOverlap`, and `WithSCEstimator`.
+
+- **`RecursiveChunker`**: tries a separator hierarchy (`\n\n` → `\n` → `. ` / `! ` / `? ` → ` `) and falls back to finer boundaries only when a chunk still exceeds `maxSize`. Overlap is extracted from the tail of the previous chunk and prepended to the next. Best for Markdown and documentation where paragraph structure should be respected. Configure with `WithRCSeparators`, `WithRCMaxSize`, `WithRCOverlap`, and `WithRCEstimator`.
 
 ### `NewLongTerm` — wiring it together
 
@@ -389,18 +408,125 @@ The write side is controlled by `WithWritePolicy`:
 
 ---
 
+## RAG — `rag/` sub-module
+
+The `rag` sub-package provides a composable Retrieval-Augmented Generation pipeline that is **independent of long-term memory**. It is designed for offline corpus indexing and agent-driven on-demand search.
+
+### Key distinction: RAG vs LongTermMemory
+
+| | `LongTermMemory` | `rag.Pipeline` |
+|--|--|--|
+| Purpose | Persist and recall conversation turns | Index and search a document corpus |
+| Index time | Automatic, end of each `Run` | Manual, before the agent starts |
+| Retrieval | Automatic, start of each `Run` | On-demand, when the agent calls the tool |
+| Content | Messages (`user` + `assistant` pairs) | `Document`s (`RoleDocument` chunks) |
+
+### Core types
+
+```go
+// Document is the unit fed to Pipeline.Index.
+type Document struct {
+    Source  string               // file path, URL, or logical name; used as ID prefix
+    Content []goagent.ContentBlock
+}
+
+// SearchResult is returned by Pipeline.Search.
+type SearchResult struct {
+    Message goagent.Message
+    Score   float64  // cosine similarity in [0.0, 1.0] for normalised embedders
+    Source  string   // extracted from chunk Metadata["source"]
+}
+```
+
+### Pipeline flow
+
+```
+Index phase (offline)
+  Documents
+      │
+      ▼
+  Chunker.Chunk()          → []ChunkResult
+      │
+      ▼  (per chunk)
+  Embedder.Embed()         → []float32
+      │
+      ▼
+  VectorStore.Upsert()     ID = "<source>:<chunk_index>"
+      │
+      ▼
+  IndexObserver (optional) reports chunked/embedded/skipped counts
+
+Search phase (at agent runtime, via tool call)
+  query string
+      │
+      ▼
+  Embedder.Embed(query)    → []float32
+      │
+      ▼
+  VectorStore.Search()     → []ScoredMessage
+      │
+      ▼
+  []SearchResult           (Message + Score + Source)
+      │
+      ▼
+  Formatter                → []ContentBlock  (sent to model)
+      │
+      ▼
+  SearchObserver (optional)
+```
+
+### Observability without OTel dependency
+
+`SearchObserver` and `IndexObserver` receive the caller's `ctx`. If the caller has an active OTel span, it is accessible inside the observer via `trace.SpanFromContext(ctx)`. The `rag` package itself never imports the OTel SDK.
+
+### `RoleDocument`
+
+RAG chunks are stored as `Message{Role: RoleDocument}`. This role must never reach a provider. Two guards enforce this:
+
+1. `agent.buildMessages` returns an error if `LongTermMemory.Retrieve` surfaces a `RoleDocument` message — this diagnoses a misconfiguration where the RAG `VectorStore` and LTM `VectorStore` are accidentally shared.
+2. Both `providers/anthropic` and `providers/ollama` now return an explicit error for any unrecognised role, replacing the previous silent drop/mapping behaviour.
+
+### Wiring into an agent
+
+```go
+pipeline, _ := rag.NewPipeline(
+    vector.NewRecursiveChunker(vector.WithRCMaxSize(400)),
+    ollama.NewEmbedder(ollama.WithEmbedModel("nomic-embed-text")),
+    vector.NewInMemoryStore(),
+    rag.WithIndexObserver(func(_ context.Context, source string,
+        chunked, embedded, skipped int, dur time.Duration, err error) {
+        slog.Info("indexed", "source", source, "chunks", embedded)
+    }),
+)
+pipeline.Index(ctx, docs...)
+
+agent, _ := goagent.New(
+    goagent.WithProvider(provider),
+    goagent.WithModel("llama3.2"),
+    goagent.WithTool(rag.NewTool(pipeline,
+        rag.WithToolName("search_docs"),
+        rag.WithToolDescription("Search goagent documentation."),
+    )),
+)
+```
+
+---
+
 ## Message types
 
 ```go
 type Message struct {
-    Role       Role           // user, assistant, tool, system
+    Role       Role           // user, assistant, tool, system, document
     Content    []ContentBlock // text, image or document
     ToolCalls  []ToolCall     // only in assistant messages (tool requests)
     ToolCallID string         // only in tool messages (links result to request)
+    Metadata   map[string]any // optional; used by RAG chunks (source, chunk_index)
 }
 ```
 
 Multimodal support is first-class: `ContentBlock` can be text (`ContentText`), image (`ContentImage` — JPEG, PNG, GIF, WebP) or document (`ContentDocument` — PDF, text/plain).
+
+`RoleDocument` marks RAG chunk messages. They live only inside the `VectorStore` and are never forwarded to a provider.
 
 ## Run metrics types
 
@@ -567,7 +693,7 @@ agent, _ := goagent.New(
 | `OnResponse(text, iterations)` | Just before `Run` returns, including on MaxIterationsError |
 | `OnShortTermLoad(results, duration, err)` | After loading history from `ShortTermMemory` at run start |
 | `OnShortTermAppend(msgs, duration, err)` | After persisting the turn to `ShortTermMemory` at run end |
-| `OnLongTermRetrieve(results, duration, err)` | After retrieving context from `LongTermMemory` at run start |
+| `OnLongTermRetrieve(results []ScoredMessage, duration, err)` | After retrieving context from `LongTermMemory` at run start; results carry individual similarity scores |
 | `OnLongTermStore(msgs, duration, err)` | After storing the turn in `LongTermMemory` at run end (when policy permits) |
 
 Hooks are invoked **synchronously** inside the loop. For heavy work (sending to external services, distributed logging), the hook should spawn a goroutine internally to avoid blocking the loop.

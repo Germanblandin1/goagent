@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-04-05
+
+### Added
+
+**RAG sub-module (`goagent/rag`)**
+- New sub-module `github.com/Germanblandin1/goagent/rag` providing a composable Retrieval-Augmented Generation pipeline
+- `Document` — unit of input for `Pipeline.Index`; carries a `Source` identifier and `[]ContentBlock` content
+- `SearchResult` — enriched retrieval result with `Message`, cosine `Score`, and `Source` (extracted from chunk metadata)
+- `Pipeline` — combines a `Chunker`, `Embedder`, and `VectorStore` into two phases: **Index** (chunk → embed → upsert) and **Search** (embed query → vector lookup → `[]SearchResult`)
+- `NewPipeline(chunker, embedder, store, opts...)` — constructor; returns an error if any required component is nil
+- `Pipeline.Index(ctx, docs...)` — processes documents through the chunk → embed → upsert pipeline; chunk IDs are `"<source>:<index>"` (deterministic, idempotent); chunks with no embeddable content are silently skipped; the `IndexObserver` is notified per document
+- `Pipeline.Search(ctx, query, topK)` — embeds the query and retrieves the top-k most similar chunks; the `SearchObserver` is notified after every call
+- `SearchObserver` — callback type `func(ctx, query string, results []SearchResult, dur time.Duration, err error)` invoked after every `Search`; receives the caller's `ctx` so active OTel spans are accessible via `trace.SpanFromContext`
+- `IndexObserver` — callback type `func(ctx, source string, chunked, embedded, skipped int, dur time.Duration, err error)` invoked per document after `Index`; reports chunk counts and timing; receives the caller's `ctx` for OTel access
+- `WithSearchObserver(obs SearchObserver)` — `PipelineOption` to register a search callback
+- `WithIndexObserver(obs IndexObserver)` — `PipelineOption` to register a per-document index callback
+- `NewTool(pipeline, opts...)` — wraps a `Pipeline` as a `goagent.Tool`; the agent invokes it autonomously when it decides to search; panics on nil pipeline (programming error)
+- `WithToolName(name)`, `WithToolDescription(desc)`, `WithTopK(k)`, `WithFormatter(f)` — `ToolOption`s for `NewTool`; defaults: `"search_knowledge_base"`, generic description, `topK=3`, `defaultFormat`
+- `MultimodalFormat` — result formatter that returns raw `ContentBlock`s instead of serialising to text; use when the corpus contains images indexed with a multimodal embedder and the provider has vision
+
+**Core types (`goagent`)**
+- `ScoredMessage` — new struct pairing a `Message` with its cosine similarity `Score float64`; returned by `VectorStore.Search` and `LongTermMemory.Retrieve`
+- `RoleDocument` — new role constant for RAG chunk messages stored in a `VectorStore`; these messages must never reach a provider; `buildMessages` returns an error if LTM retrieval surfaces a `RoleDocument` message (diagnostic for shared RAG/LTM store misconfiguration); both Anthropic and Ollama providers now return an explicit error on unrecognised roles instead of silently dropping/mapping them
+
+**Chunkers (`goagent/memory/vector`)**
+- `SentenceChunker` — splits text at sentence boundaries (punctuation + whitespace, or paragraph breaks); overlap is counted in complete sentences to preserve semantic coherence at chunk boundaries
+- `NewSentenceChunker(opts...)` — constructor with `WithSCMaxSize(n)`, `WithSCOverlap(n)`, `WithSCEstimator(e)` options
+- `RecursiveChunker` — splits text by respecting a separator hierarchy (`\n\n` → `\n` → sentences → words), falling back to finer boundaries only when necessary; ideal for Markdown and paragraph-structured documents; overlap is applied post-split via tail extraction
+- `NewRecursiveChunker(opts...)` — constructor with `WithRCSeparators(seps)`, `WithRCMaxSize(n)`, `WithRCOverlap(n)`, `WithRCEstimator(e)` options
+
+**Examples**
+- `examples/rag_docs` — RAG pipeline over local Markdown files; uses Ollama for both the chat model (`llama3.2`) and the embedding model (`nomic-embed-text`); demonstrates a shared `OllamaClient`, `TextChunker`, `InMemoryStore`, `SearchObserver` with low-score warning, and `NewTool` wired into an agent
+
+### Changed
+
+**`VectorStore` interface (`goagent`)**
+- `Search(ctx, vector, topK)` return type changed from `([]Message, error)` to `([]ScoredMessage, error)` — every store now provides similarity scores by default; the `ScoredStore` opt-in interface and the `vector.ScoredSearch` helper are removed
+- `InMemoryStore.SearchScored` removed; `Search` now always returns `[]ScoredMessage`
+- `OnLongTermRetrieve` hook: the `results int` argument is now `results []ScoredMessage` — callers can inspect individual scores and sources without a separate lookup
+
+**Providers (`goagent/providers/anthropic`, `goagent/providers/ollama`)**
+- `WithModel` option removed from both providers; the model is owned exclusively by the agent (`goagent.WithModel`) and forwarded to the provider through `CompletionRequest.Model`; providers now return an error if `req.Model` is empty
+
 ## [0.4.3] - 2026-04-04
 
 ### Added
