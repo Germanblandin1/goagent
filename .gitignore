@@ -10,3 +10,4 @@ check.bat
 *.exe
 chatbot-memory.jsonl
 coverage.out
+.env.test
