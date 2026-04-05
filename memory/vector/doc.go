@@ -38,6 +38,15 @@
 //	    vector.WithOverlap(50),
 //	)
 //
+// SentenceChunker splits text at sentence boundaries, grouping complete
+// sentences until the size limit is reached. Overlap is counted in sentences,
+// not tokens, which keeps adjacent chunks semantically coherent:
+//
+//	c := vector.NewSentenceChunker(
+//	    vector.WithSentenceMaxSize(300),
+//	    vector.WithSentenceOverlap(2),
+//	)
+//
 // BlockChunker processes mixed content (text, images, PDFs) per block:
 //
 //	c := vector.NewBlockChunker(vector.WithPDFExtractor(myExtractor))
