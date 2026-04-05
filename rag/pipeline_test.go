@@ -55,6 +55,24 @@ func (e *errEmbedder) Embed(_ context.Context, _ []goagent.ContentBlock) ([]floa
 	return nil, e.err
 }
 
+// errChunker always returns an error from Chunk.
+type errChunker struct{ err error }
+
+func (c *errChunker) Chunk(_ context.Context, _ vector.ChunkContent) ([]vector.ChunkResult, error) {
+	return nil, c.err
+}
+
+// errStore is a minimal VectorStore whose Upsert always returns an error.
+type errStore struct{ err error }
+
+func (s *errStore) Upsert(_ context.Context, _ string, _ []float32, _ goagent.Message) error {
+	return s.err
+}
+
+func (s *errStore) Search(_ context.Context, _ []float32, _ int) ([]goagent.ScoredMessage, error) {
+	return nil, nil
+}
+
 // basicStore is a minimal VectorStore that returns Score 0.0 for all results.
 type basicStore struct {
 	mu      sync.Mutex
@@ -363,5 +381,211 @@ func TestNewPipeline_NilComponents(t *testing.T) {
 	}
 	if _, err := rag.NewPipeline(ch, emb, nil); err == nil {
 		t.Error("expected error for nil store")
+	}
+}
+
+func TestPipeline_IndexObserverCalledOnSuccess(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	type observation struct {
+		source   string
+		chunked  int
+		embedded int
+		skipped  int
+		dur      time.Duration
+		err      error
+	}
+	var got observation
+
+	p, err := rag.NewPipeline(
+		vector.NewNoOpChunker(),
+		&stubEmbedder{vec: []float32{1, 0}},
+		vector.NewInMemoryStore(),
+		rag.WithIndexObserver(func(_ context.Context, source string, chunked, embedded, skipped int, dur time.Duration, err error) {
+			got = observation{source, chunked, embedded, skipped, dur, err}
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc := rag.Document{Source: "doc.md", Content: []goagent.ContentBlock{goagent.TextBlock("hello")}}
+	if err := p.Index(ctx, doc); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	if got.source != "doc.md" {
+		t.Errorf("source = %q, want doc.md", got.source)
+	}
+	if got.chunked != 1 {
+		t.Errorf("chunked = %d, want 1", got.chunked)
+	}
+	if got.embedded != 1 {
+		t.Errorf("embedded = %d, want 1", got.embedded)
+	}
+	if got.skipped != 0 {
+		t.Errorf("skipped = %d, want 0", got.skipped)
+	}
+	if got.dur < 0 {
+		t.Errorf("negative duration")
+	}
+	if got.err != nil {
+		t.Errorf("err = %v, want nil", got.err)
+	}
+}
+
+func TestPipeline_IndexObserverCalledPerDocument(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	calls := 0
+	p, err := rag.NewPipeline(
+		vector.NewNoOpChunker(),
+		&stubEmbedder{vec: []float32{1, 0}},
+		vector.NewInMemoryStore(),
+		rag.WithIndexObserver(func(_ context.Context, _ string, _, _, _ int, _ time.Duration, _ error) {
+			calls++
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	docs := []rag.Document{
+		{Source: "a.md", Content: []goagent.ContentBlock{goagent.TextBlock("a")}},
+		{Source: "b.md", Content: []goagent.ContentBlock{goagent.TextBlock("b")}},
+		{Source: "c.md", Content: []goagent.ContentBlock{goagent.TextBlock("c")}},
+	}
+	if err := p.Index(ctx, docs...); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("observer called %d times, want 3", calls)
+	}
+}
+
+func TestPipeline_IndexObserverSkippedCount(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	var gotSkipped int
+	p, err := rag.NewPipeline(
+		vector.NewNoOpChunker(),
+		&stubEmbedder{vec: []float32{1, 0}}, // rejects image blocks
+		vector.NewInMemoryStore(),
+		rag.WithIndexObserver(func(_ context.Context, _ string, _, _, skipped int, _ time.Duration, _ error) {
+			gotSkipped = skipped
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc := rag.Document{
+		Source:  "img.png",
+		Content: []goagent.ContentBlock{goagent.ImageBlock([]byte("data"), "image/png")},
+	}
+	if err := p.Index(ctx, doc); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	if gotSkipped != 1 {
+		t.Errorf("skipped = %d, want 1", gotSkipped)
+	}
+}
+
+func TestPipeline_IndexObserverChunkError(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	chunkErr := errors.New("chunker failed")
+	var observerErr error
+
+	p, err := rag.NewPipeline(
+		&errChunker{err: chunkErr},
+		&stubEmbedder{vec: []float32{1, 0}},
+		vector.NewInMemoryStore(),
+		rag.WithIndexObserver(func(_ context.Context, _ string, _, _, _ int, _ time.Duration, err error) {
+			observerErr = err
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc := rag.Document{Source: "doc.md", Content: []goagent.ContentBlock{goagent.TextBlock("text")}}
+	indexErr := p.Index(ctx, doc)
+	if indexErr == nil {
+		t.Fatal("expected Index to return error")
+	}
+	if observerErr == nil {
+		t.Fatal("observer was not called with error")
+	}
+	if !errors.Is(observerErr, chunkErr) {
+		t.Errorf("observer error = %v, want to wrap %v", observerErr, chunkErr)
+	}
+}
+
+func TestPipeline_IndexObserverEmbedError(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	embedErr := errors.New("embed failed")
+	var observerErr error
+
+	p, err := rag.NewPipeline(
+		vector.NewNoOpChunker(),
+		&errEmbedder{err: embedErr},
+		vector.NewInMemoryStore(),
+		rag.WithIndexObserver(func(_ context.Context, _ string, _, _, _ int, _ time.Duration, err error) {
+			observerErr = err
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc := rag.Document{Source: "doc.md", Content: []goagent.ContentBlock{goagent.TextBlock("text")}}
+	indexErr := p.Index(ctx, doc)
+	if indexErr == nil {
+		t.Fatal("expected Index to return error")
+	}
+	if observerErr == nil {
+		t.Fatal("observer was not called with error")
+	}
+	if !errors.Is(observerErr, embedErr) {
+		t.Errorf("observer error = %v, want to wrap %v", observerErr, embedErr)
+	}
+}
+
+func TestPipeline_IndexObserverUpsertError(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	upsertErr := errors.New("upsert failed")
+	var observerErr error
+
+	p, err := rag.NewPipeline(
+		vector.NewNoOpChunker(),
+		&stubEmbedder{vec: []float32{1, 0}},
+		&errStore{err: upsertErr},
+		rag.WithIndexObserver(func(_ context.Context, _ string, _, _, _ int, _ time.Duration, err error) {
+			observerErr = err
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc := rag.Document{Source: "doc.md", Content: []goagent.ContentBlock{goagent.TextBlock("text")}}
+	indexErr := p.Index(ctx, doc)
+	if indexErr == nil {
+		t.Fatal("expected Index to return error")
+	}
+	if observerErr == nil {
+		t.Fatal("observer was not called with error")
+	}
+	if !errors.Is(observerErr, upsertErr) {
+		t.Errorf("observer error = %v, want to wrap %v", observerErr, upsertErr)
 	}
 }

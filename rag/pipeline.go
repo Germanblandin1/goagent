@@ -82,6 +82,63 @@ type SearchObserver func(
 	err     error,
 )
 
+// IndexObserver is a callback invoked after every [Pipeline.Index] call for
+// each individual document. It receives the ctx from Index — if the caller
+// propagated an active OTel span, the observer can access it via
+// trace.SpanFromContext(ctx).
+//
+// source identifies the document (Document.Source). chunked is the total
+// number of chunks produced by the Chunker. embedded is the number of chunks
+// successfully embedded and stored. skipped is the number of chunks with no
+// embeddable content (e.g. image chunks with a text-only embedder). err is
+// non-nil if indexing that document failed.
+//
+// The observer cannot modify results or cancel the operation.
+// If the observer panics, the panic propagates to the Index caller.
+//
+// # Logging example
+//
+//	rag.WithIndexObserver(func(ctx context.Context, source string,
+//	    chunked, embedded, skipped int, dur time.Duration, err error) {
+//
+//	    if err != nil {
+//	        slog.Error("rag index failed", "source", source, "err", err)
+//	        return
+//	    }
+//	    slog.Debug("rag indexed",
+//	        "source", source, "chunks", embedded,
+//	        "skipped", skipped, "dur", dur)
+//	})
+//
+// # OTel example
+//
+// The package rag/ does not import the OTel SDK. The caller that already
+// has OTel imported can annotate the active span via the ctx argument:
+//
+//	rag.WithIndexObserver(func(ctx context.Context, source string,
+//	    chunked, embedded, skipped int, dur time.Duration, err error) {
+//
+//	    span := trace.SpanFromContext(ctx)
+//	    if err != nil {
+//	        span.RecordError(err)
+//	        return
+//	    }
+//	    span.SetAttributes(
+//	        attribute.String("rag.source", source),
+//	        attribute.Int("rag.chunks_embedded", embedded),
+//	        attribute.Int("rag.chunks_skipped", skipped),
+//	    )
+//	})
+type IndexObserver func(
+	ctx      context.Context,
+	source   string,
+	chunked  int,
+	embedded int,
+	skipped  int,
+	dur      time.Duration,
+	err      error,
+)
+
 // Pipeline combines a Chunker, Embedder, and VectorStore into a composable
 // RAG pipeline. It is independent of any agent — it can be used standalone
 // for offline indexing or wrapped in a Tool via [NewTool].
@@ -89,15 +146,17 @@ type SearchObserver func(
 // Usage:
 //
 //	pipeline, err := rag.NewPipeline(chunker, embedder, store,
-//	    rag.WithSearchObserver(myObserver),
+//	    rag.WithIndexObserver(myIndexObserver),
+//	    rag.WithSearchObserver(mySearchObserver),
 //	)
 //	if err := pipeline.Index(ctx, docs...); err != nil { ... }
 //	results, err := pipeline.Search(ctx, "error handling", 3)
 type Pipeline struct {
-	chunker  vector.Chunker
-	embedder goagent.Embedder
-	store    goagent.VectorStore
-	observer SearchObserver // nil = no-op
+	chunker       vector.Chunker
+	embedder      goagent.Embedder
+	store         goagent.VectorStore
+	observer      SearchObserver // nil = no-op
+	indexObserver IndexObserver  // nil = no-op
 }
 
 // PipelineOption configures a Pipeline at construction time.
@@ -107,6 +166,12 @@ type PipelineOption func(*Pipeline)
 // When not configured, Search has no callback overhead.
 func WithSearchObserver(obs SearchObserver) PipelineOption {
 	return func(p *Pipeline) { p.observer = obs }
+}
+
+// WithIndexObserver registers a callback invoked after indexing each Document.
+// When not configured, Index has no callback overhead.
+func WithIndexObserver(obs IndexObserver) PipelineOption {
+	return func(p *Pipeline) { p.indexObserver = obs }
 }
 
 // NewPipeline constructs a Pipeline with the given components.
@@ -147,31 +212,64 @@ func NewPipeline(
 //
 // Chunks with no embeddable content (e.g. image chunks with a text-only
 // embedder) are silently skipped. All other errors are returned immediately.
+//
+// The IndexObserver (if configured) is invoked after each Document, including
+// on error — it receives the error as its last argument.
 func (p *Pipeline) Index(ctx context.Context, docs ...Document) error {
 	for _, doc := range docs {
-		content := vector.ChunkContent{
-			Blocks:   doc.Content,
-			Metadata: map[string]any{"source": doc.Source},
-		}
-		chunks, err := p.chunker.Chunk(ctx, content)
-		if err != nil {
-			return fmt.Errorf("rag: chunking %q: %w", doc.Source, err)
-		}
-		for i, chunk := range chunks {
-			vec, err := p.embedder.Embed(ctx, chunk.Blocks)
-			if err != nil {
-				if errors.Is(err, vector.ErrNoEmbeddeableContent) {
-					continue
-				}
-				return fmt.Errorf("rag: embedding chunk %d of %q: %w", i, doc.Source, err)
-			}
-			id := fmt.Sprintf("%s:%d", doc.Source, i)
-			payload := chunkToMessage(doc.Source, chunk)
-			if err := p.store.Upsert(ctx, id, vec, payload); err != nil {
-				return fmt.Errorf("rag: upserting chunk %d of %q: %w", i, doc.Source, err)
-			}
+		if err := p.indexOne(ctx, doc); err != nil {
+			return err
 		}
 	}
+	return nil
+}
+
+// indexOne runs the chunk → embed → upsert pipeline for a single document and
+// notifies the IndexObserver (if set) with the outcome.
+func (p *Pipeline) indexOne(ctx context.Context, doc Document) error {
+	start := time.Now()
+	chunked, embedded, skipped := 0, 0, 0
+
+	notify := func(err error) {
+		if p.indexObserver != nil {
+			p.indexObserver(ctx, doc.Source, chunked, embedded, skipped, time.Since(start), err)
+		}
+	}
+
+	content := vector.ChunkContent{
+		Blocks:   doc.Content,
+		Metadata: map[string]any{"source": doc.Source},
+	}
+	chunks, err := p.chunker.Chunk(ctx, content)
+	if err != nil {
+		wrapErr := fmt.Errorf("rag: chunking %q: %w", doc.Source, err)
+		notify(wrapErr)
+		return wrapErr
+	}
+	chunked = len(chunks)
+
+	for i, chunk := range chunks {
+		vec, err := p.embedder.Embed(ctx, chunk.Blocks)
+		if err != nil {
+			if errors.Is(err, vector.ErrNoEmbeddeableContent) {
+				skipped++
+				continue
+			}
+			wrapErr := fmt.Errorf("rag: embedding chunk %d of %q: %w", i, doc.Source, err)
+			notify(wrapErr)
+			return wrapErr
+		}
+		id := fmt.Sprintf("%s:%d", doc.Source, i)
+		payload := chunkToMessage(doc.Source, chunk)
+		if err := p.store.Upsert(ctx, id, vec, payload); err != nil {
+			wrapErr := fmt.Errorf("rag: upserting chunk %d of %q: %w", i, doc.Source, err)
+			notify(wrapErr)
+			return wrapErr
+		}
+		embedded++
+	}
+
+	notify(nil)
 	return nil
 }
 
