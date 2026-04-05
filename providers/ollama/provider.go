@@ -17,18 +17,10 @@ import (
 // Provider implements goagent.Provider using Ollama's OpenAI-compatible endpoint.
 type Provider struct {
 	client *OllamaClient
-	model  string
 }
 
 // ProviderOption is a functional option for configuring a Provider.
 type ProviderOption func(*Provider)
-
-// WithModel sets a default model on the Provider. It is used when the
-// CompletionRequest does not specify a model. The per-request model always
-// takes precedence.
-func WithModel(model string) ProviderOption {
-	return func(p *Provider) { p.model = model }
-}
 
 // New creates a Provider with a default OllamaClient targeting localhost:11434.
 // For custom HTTP settings (timeout, base URL, transport), create a client
@@ -74,9 +66,8 @@ type ollamaResponse struct {
 // Complete sends a chat completion request to the Ollama API and returns the
 // model's response.
 //
-// The model is resolved from the request first, then from the Provider's
-// WithModel option; if both are empty, Complete returns an error without
-// making a network call.
+// The model is resolved from the request; if empty, Complete returns an error
+// without making a network call.
 //
 // If any message contains ContentDocument blocks, Complete returns an
 // *UnsupportedContentError because the OpenAI-compatible API does not support
@@ -87,9 +78,6 @@ type ollamaResponse struct {
 // descriptive message.
 func (p *Provider) Complete(ctx context.Context, req goagent.CompletionRequest) (goagent.CompletionResponse, error) {
 	model := req.Model
-	if model == "" {
-		model = p.model
-	}
 	if model == "" {
 		return goagent.CompletionResponse{}, fmt.Errorf("ollama: model not set; use goagent.WithModel")
 	}

@@ -17,7 +17,6 @@ const defaultMaxTokens = 4096
 type Provider struct {
 	client    *AnthropicClient
 	maxTokens int64
-	model     string
 }
 
 // ProviderOption is a functional option for configuring a Provider.
@@ -27,13 +26,6 @@ type ProviderOption func(*Provider)
 // completion. Default: 4096.
 func WithMaxTokens(n int64) ProviderOption {
 	return func(p *Provider) { p.maxTokens = n }
-}
-
-// WithModel sets a default model on the Provider. It is used when the
-// CompletionRequest does not specify a model. The per-request model always
-// takes precedence.
-func WithModel(model string) ProviderOption {
-	return func(p *Provider) { p.model = model }
 }
 
 // New creates a Provider with a default AnthropicClient.
@@ -61,9 +53,8 @@ func NewWithClient(client *AnthropicClient, opts ...ProviderOption) *Provider {
 // Complete sends a chat completion request to the Anthropic Messages API and
 // returns the model's response.
 //
-// The model is resolved from the request first, then from the Provider's
-// WithModel option; if both are empty, Complete returns an error without
-// making a network call.
+// The model is resolved from the request; if empty, Complete returns an error
+// without making a network call.
 //
 // Possible errors:
 //   - error if model is empty
@@ -71,9 +62,6 @@ func NewWithClient(client *AnthropicClient, opts ...ProviderOption) *Provider {
 //   - error on message/tool conversion failures
 func (p *Provider) Complete(ctx context.Context, req goagent.CompletionRequest) (goagent.CompletionResponse, error) {
 	model := req.Model
-	if model == "" {
-		model = p.model
-	}
 	if model == "" {
 		return goagent.CompletionResponse{}, fmt.Errorf("anthropic: model not set; use goagent.WithModel")
 	}

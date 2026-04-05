@@ -27,7 +27,7 @@
 //
 // Any model available in Ollama can be used (qwen3, llama3, mistral, gemma2,
 // phi3, deepseek-r1, etc.). The chat model is selected at the agent level via
-// [goagent.WithModel] or via [WithModel] on the Provider. The embedding model
+// [goagent.WithModel]. The embedding model
 // is set via [WithEmbedModel].
 //
 // # Default URL

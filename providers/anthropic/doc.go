@@ -26,8 +26,7 @@
 //
 // Any model available through the Anthropic Messages API can be used
 // (claude-sonnet-4-6, claude-haiku-4-5-20251001, claude-opus-4-6, etc.).
-// The model is selected at the agent level via [goagent.WithModel] or via
-// [WithModel] on the Provider.
+// The model is selected at the agent level via [goagent.WithModel].
 //
 // # Multimodal support
 //

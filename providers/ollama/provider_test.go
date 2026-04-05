@@ -243,24 +243,6 @@ func TestProvider_EmptyModel(t *testing.T) {
 	}
 }
 
-func TestProvider_ModelFromProvider(t *testing.T) {
-	t.Parallel()
-
-	var captured map[string]any
-	srv := capturingServer(t, stopResponse, &captured)
-	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)), ollama.WithModel("llama3"))
-
-	_, err := p.Complete(context.Background(), goagent.CompletionRequest{
-		// Model not set in the request — should fall back to provider model.
-		Messages: []goagent.Message{goagent.UserMessage("hi")},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if captured["model"] != "llama3" {
-		t.Errorf("model = %v, want llama3", captured["model"])
-	}
-}
 
 func TestProvider_DocumentContent_ReturnsUnsupportedError(t *testing.T) {
 	t.Parallel()
