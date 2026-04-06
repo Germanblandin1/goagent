@@ -13,6 +13,23 @@ A minimal, Go-idiomatic framework for building AI agents with a [ReAct](https://
 go get github.com/Germanblandin1/goagent
 ```
 
+## Sub-modules
+
+Each sub-module is versioned and installed independently.
+
+| Module | Description |
+|--------|-------------|
+| [providers/anthropic](providers/anthropic/README.md) | Anthropic Messages API provider (Claude) |
+| [providers/ollama](providers/ollama/README.md) | Local Ollama provider + embedder |
+| [providers/voyage](providers/voyage/README.md) | Voyage AI embedder |
+| [mcp](mcp/README.md) | MCP client + server integration |
+| [rag](rag/README.md) | RAG pipeline — chunking, embedding, retrieval |
+| [otel](otel/README.md) | OpenTelemetry spans and metrics |
+| [ratelimit](ratelimit/README.md) | Token-bucket rate limiters for tool dispatch |
+| [memory/vector/pgvector](memory/vector/pgvector/README.md) | Persistent VectorStore — PostgreSQL + pgvector |
+| [memory/vector/sqlitevec](memory/vector/sqlitevec/README.md) | Persistent VectorStore — SQLite + sqlite-vec (CGO) |
+| [memory/vector/tiktoken](memory/vector/tiktoken/README.md) | Exact token-count SizeEstimator via tiktoken |
+
 ## Quickstart
 
 ```go
