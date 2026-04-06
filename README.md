@@ -443,7 +443,7 @@ goagent.WithHooks(goagent.Hooks{
     OnResponse:          func(ctx context.Context, text string, iterations int)                                 { /* ... */ },
     OnShortTermLoad:     func(ctx context.Context, results int, d time.Duration, err error)                     { /* ... */ },
     OnShortTermAppend:   func(ctx context.Context, msgs int, d time.Duration, err error)                        { /* ... */ },
-    OnLongTermRetrieve:  func(ctx context.Context, results int, d time.Duration, err error)                     { /* ... */ },
+    OnLongTermRetrieve:  func(ctx context.Context, results []goagent.ScoredMessage, d time.Duration, err error) { /* ... */ },
     OnLongTermStore:     func(ctx context.Context, msgs int, d time.Duration, err error)                        { /* ... */ },
 })
 ```

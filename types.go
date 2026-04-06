@@ -23,8 +23,9 @@ const (
 
 	// RoleDocument marks messages that represent indexed document chunks in a
 	// RAG pipeline. These messages live only in the VectorStore — they are
-	// never sent to a provider. Formatters extract their Content and embed it
-	// into tool-result blocks before the agent sees them.
+	// never sent to a provider directly. The rag sub-package provides
+	// formatters that extract their Content and embed it into tool-result
+	// blocks before the model sees the retrieved context.
 	RoleDocument Role = "document"
 )
 

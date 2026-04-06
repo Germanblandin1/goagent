@@ -35,6 +35,11 @@ type Schema = map[string]any
 //	[]T / [n]T          → "array"
 //	anything else       → "string"  (conservative fallback)
 //
+// Note: slice and array fields map to {"type": "array"} without an "items"
+// property — the element type is not reflected. If the model needs to know
+// the element type, build the schema manually or augment the returned map
+// after calling SchemaFrom.
+//
 // Pointer arguments are dereferenced before inspection. For non-struct types
 // (after pointer dereferencing), SchemaFrom returns {"type":"object"} without
 // panicking.

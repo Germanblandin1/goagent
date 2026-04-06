@@ -100,7 +100,9 @@ type ToolResult struct {
 	ToolCallID string
 	Name       string
 	Content    []ContentBlock
-	Err        error
+	// Err is nil on success. On tool failure it carries the underlying error,
+	// typically *ToolExecutionError or *CircuitOpenError.
+	Err error
 	// Duration is how long Execute took. It is zero when the tool was not
 	// found (ErrToolNotFound) — no execution occurred in that case.
 	Duration time.Duration

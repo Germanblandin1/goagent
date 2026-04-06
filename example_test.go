@@ -197,3 +197,38 @@ func ExampleTextFrom() {
 	fmt.Println(goagent.TextFrom(blocks))
 	// Output: hello world
 }
+
+// ExampleAgent_Run_withShortTermMemory shows how to configure short-term
+// memory so that conversation history persists across Run calls.
+func ExampleAgent_Run_withShortTermMemory() {
+	mock := testutil.NewMockProvider(
+		goagent.CompletionResponse{
+			Message:    goagent.AssistantMessage("Paris."),
+			StopReason: goagent.StopReasonEndTurn,
+		},
+		goagent.CompletionResponse{
+			Message:    goagent.AssistantMessage("It has about 2 million inhabitants."),
+			StopReason: goagent.StopReasonEndTurn,
+		},
+	)
+
+	mem := memory.NewShortTerm()
+
+	agent, err := goagent.New(
+		goagent.WithProvider(mock),
+		goagent.WithShortTermMemory(mem),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	ctx := context.Background()
+	first, _ := agent.Run(ctx, "What is the capital of France?")
+	fmt.Println(first)
+
+	second, _ := agent.Run(ctx, "What is its population?")
+	fmt.Println(second)
+	// Output:
+	// Paris.
+	// It has about 2 million inhabitants.
+}
