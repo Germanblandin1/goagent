@@ -10,10 +10,8 @@ A minimal, Go-idiomatic framework for building AI agents with a [ReAct](https://
 ## Install
 
 ```bash
-git clone https://github.com/Germanblandin1/goagent.git
+go get github.com/Germanblandin1/goagent
 ```
-
-> `go get` will be available once the first version is tagged.
 
 ## Quickstart
 
