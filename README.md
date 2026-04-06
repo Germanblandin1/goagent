@@ -38,6 +38,8 @@ goagent/              Core — Agent, ReAct loop, interfaces
 │   ├── storage/      InMemory storage
 │   ├── policy/       FixedWindow, TokenWindow, NoOp
 │   └── vector/       VectorStore, chunkers, similarity, size estimators
+│       ├── pgvector/ Persistent VectorStore — PostgreSQL + pgvector (HNSW)
+│       └── sqlitevec/ Persistent VectorStore — SQLite + sqlite-vec (CGO)
 ├── providers/
 │   ├── anthropic/    Anthropic Messages API (Claude)
 │   ├── ollama/       Local Ollama via OpenAI-compatible API (+ embedder)
@@ -211,6 +213,97 @@ Available chunkers:
 | `NewRecursiveChunker(...)` | Markdown and structured docs; respects `\n\n` → `\n` → sentence → word hierarchy |
 | `NewBlockChunker(...)` | Mixed multimodal content; text chunked, images pass through, PDFs split by page |
 | `NewPageChunker(...)` | PDF-only per-page chunking |
+
+### Persistent vector stores
+
+`vector.NewInMemoryStore()` is the default and is suitable for development and single-process use. For production deployments that require durability or shared access across processes, two persistent backends are available as separate sub-modules.
+
+#### PostgreSQL + pgvector
+
+```bash
+go get github.com/Germanblandin1/goagent/memory/vector/pgvector
+```
+
+```go
+import (
+    "database/sql"
+    _ "github.com/jackc/pgx/v5/stdlib"
+    "github.com/Germanblandin1/goagent/memory/vector/pgvector"
+)
+
+db, _ := sql.Open("pgx", "postgres://user:pass@localhost/mydb")
+
+// Optional: create the extension, table, and HNSW index automatically.
+pgvector.Migrate(ctx, db, pgvector.MigrateConfig{
+    TableName: "goagent_embeddings",
+    Dims:      1024, // must match your embedding model
+})
+
+store, err := pgvector.New(db, pgvector.TableConfig{
+    Table:          "goagent_embeddings",
+    IDColumn:       "id",
+    VectorColumn:   "embedding",
+    TextColumn:     "content",
+    MetadataColumn: "metadata", // optional JSONB column
+})
+```
+
+`TableConfig` describes the caller's existing table — the package imposes no schema. Pass your own table or a PostgreSQL view when you need metadata filters or JOINs with other tables.
+
+Three distance functions are available via `WithDistanceFunc`:
+
+| Constant | Operator | Score | Recommended when |
+|----------|----------|-------|-----------------|
+| `pgvector.Cosine` (default) | `<=>` | `1 − distance` ∈ [0, 1] | Most text embedding models |
+| `pgvector.L2` | `<->` | `1 / (1 + distance)` ∈ (0, 1] | Non-normalised vectors |
+| `pgvector.InnerProduct` | `<#>` | `−distance` | Normalised vectors, speed-sensitive |
+
+The `DistanceFunc` passed to `New` and the HNSW operator class used by `Migrate` must match — a mismatch causes pgvector to fall back to a sequential scan.
+
+`pgvector.New` accepts a `Querier` — the minimal interface satisfied by both `*sql.DB` and `*sql.Tx` — so queries can run inside a caller-managed transaction.
+
+#### SQLite + sqlite-vec
+
+```bash
+go get github.com/Germanblandin1/goagent/memory/vector/sqlitevec
+```
+
+> **Build requirement:** this package requires CGO. Run once from the repository root:
+> ```bash
+> go env -w CGO_CFLAGS="-I$(pwd)/memory/vector/sqlitevec/csrc -I$(go env GOMODCACHE)/github.com/mattn/go-sqlite3@v1.14.40"
+> ```
+
+```go
+import "github.com/Germanblandin1/goagent/memory/vector/sqlitevec"
+
+// Open registers the sqlite-vec extension and opens the database.
+db, _ := sqlitevec.Open("/path/to/mydb.sqlite")
+
+// Optional: create the data table and the vec0 virtual table.
+sqlitevec.Migrate(ctx, db, sqlitevec.MigrateConfig{
+    TableName: "goagent_embeddings",
+    Dims:      768, // must match your embedding model
+})
+
+store, err := sqlitevec.New(db, sqlitevec.TableConfig{
+    Table:          "goagent_embeddings",
+    IDColumn:       "id",
+    VectorColumn:   "embedding",
+    TextColumn:     "content",
+    MetadataColumn: "metadata", // optional TEXT/JSON column
+})
+```
+
+The schema uses two tables: a regular data table (`Table`) and a `vec0` virtual table (`Table+"_vec"`) that provides indexed KNN search. `Migrate` creates both.
+
+Two distance metrics are available via `WithDistanceMetric`:
+
+| Constant | Algorithm | Score | Notes |
+|----------|-----------|-------|-------|
+| `sqlitevec.L2` (default) | Euclidean KNN via MATCH | `1 / (1 + distance)` ∈ (0, 1] | Index-accelerated |
+| `sqlitevec.Cosine` | `vec_distance_cosine` full scan | `1 − distance` ∈ [0, 1] | Full scan — use for small datasets or normalise vectors and use L2 |
+
+When not using `Open`, call `sqlitevec.Register()` before `sql.Open` to load the extension.
 
 ### RAG (Retrieval-Augmented Generation)
 

@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-04-06
+
+### Added
+
+**PostgreSQL vector store (`goagent/memory/vector/pgvector`)**
+- New sub-module `github.com/Germanblandin1/goagent/memory/vector/pgvector` implementing `goagent.VectorStore` over PostgreSQL with the pgvector extension
+- `TableConfig` — caller-supplied schema descriptor; fields: `Table`, `IDColumn`, `VectorColumn`, `TextColumn`, `MetadataColumn` (optional JSONB); no default values, the caller must be explicit
+- `New(db Querier, cfg TableConfig, opts ...StoreOption) (*Store, error)` — constructs a store; validates all required fields and rejects identifiers with unsafe characters; accepts a `Querier` so queries can run inside a caller-managed `*sql.Tx` as well as a `*sql.DB`
+- `Querier` interface — minimal interface satisfied by `*sql.DB`, `*sql.Tx`, and any pgx adapter; allows transactional upserts without coupling to a specific driver
+- `Store.Upsert(ctx, id, vec, msg)` — idempotent INSERT … ON CONFLICT DO UPDATE; serialises text content and optional JSONB metadata; vector passed as a pgvector literal
+- `Store.Search(ctx, vec, topK, opts ...SearchOption)` — ORDER BY distance LIMIT topK; returns `[]goagent.ScoredMessage` with `RoleDocument`; `SearchOption` is variadic for forward-compatible future options (score threshold, metadata filters)
+- `Store.Delete(ctx, id)` — no-op when id does not exist
+- `DistanceFunc` — distance operator + HNSW operator class pair; three built-ins: `Cosine` (`<=>`, `vector_cosine_ops`), `L2` (`<->`, `vector_l2_ops`), `InnerProduct` (`<#>`, `vector_ip_ops`); custom operators supported via `NewDistanceFunc(operator, opsClass)`; scores normalised so higher always means more similar across all operators
+- `WithDistanceFunc(d DistanceFunc) StoreOption` — selects the distance operator; must match the HNSW index operator class used at migration time; default: `Cosine`
+- `MigrateConfig` — configures `Migrate`; fields: `TableName` (default: `"goagent_embeddings"`), `Dims` (required), `DistanceFunc` (default: `Cosine`), `HNSWm` (default: 16), `HNSWefConstruction` (default: 64)
+- `Migrate(ctx, db, cfg MigrateConfig) error` — idempotent; creates the `vector` extension, the embeddings table (`id TEXT PK`, `embedding vector(Dims)`, `content TEXT`, `metadata JSONB`, `created_at TIMESTAMPTZ`), and an HNSW index; safe to call on every application start
+
+**SQLite vector store (`goagent/memory/vector/sqlitevec`)**
+- New sub-module `github.com/Germanblandin1/goagent/memory/vector/sqlitevec` implementing `goagent.VectorStore` over SQLite with the sqlite-vec extension (CGO required)
+- `TableConfig` — schema descriptor with the same fields as the pgvector counterpart; `MetadataColumn` is a `TEXT`/JSON column (not JSONB); schema-qualified names are not supported (SQLite has no schemas)
+- `Open(dsn string) (*sql.DB, error)` — registers the sqlite-vec extension and opens the database; recommended entry point
+- `Register()` — registers the extension for all subsequent `sql.Open` calls; idempotent; use when managing the `*sql.DB` externally
+- `New(db *sql.DB, cfg TableConfig, opts ...StoreOption) (*Store, error)` — constructs a store; same validation as pgvector
+- `Store.Upsert(ctx, id, vec, msg)` — runs in a transaction: upserts the data table row, retrieves its rowid, deletes the old vec0 entry, inserts the updated vector blob; `vec0` virtual tables do not support `INSERT OR REPLACE`
+- `Store.Search(ctx, vec, topK)` — L2 uses the sqlite-vec KNN index (`MATCH … AND k = ?`, index-accelerated); Cosine uses `vec_distance_cosine` with a full scan; scores normalised so higher = more similar
+- `Store.Delete(ctx, id)` — transactional; removes both the data row and the vec0 entry; no-op if id does not exist
+- `DistanceMetric` — string enum: `L2` (default, index-accelerated Euclidean KNN) and `Cosine` (full-scan cosine via `vec_distance_cosine`); for large datasets with cosine similarity, normalise vectors before inserting and use `L2` (equivalent on unit vectors)
+- `WithDistanceMetric(m DistanceMetric) StoreOption` — selects the distance metric; default: `L2`
+- `MigrateConfig` — fields: `TableName` (default: `"goagent_embeddings"`), `Dims` (required), `Metric` (documentation only, no schema effect)
+- `Migrate(ctx, db, cfg MigrateConfig) error` — idempotent; creates the data table (`id TEXT PK`, `content TEXT`, `metadata TEXT`, `created_at INTEGER`) and the `vec0` virtual table (`TableName+"_vec"` with `embedding float[Dims]`); safe to call on every application start
+
 ## [0.5.0] - 2026-04-05
 
 ### Added
