@@ -1,6 +1,6 @@
 module github.com/Germanblandin1/goagent/memory/vector/tiktoken
 
-go 1.23.2
+go 1.25.0
 
 require (
 	github.com/Germanblandin1/goagent v0.0.0

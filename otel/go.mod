@@ -1,8 +1,6 @@
 module github.com/Germanblandin1/goagent/otel
 
-go 1.24.0
-
-toolchain go1.24.1
+go 1.25.0
 
 require (
 	github.com/Germanblandin1/goagent v0.0.0
