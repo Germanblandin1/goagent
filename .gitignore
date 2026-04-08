@@ -11,3 +11,4 @@ check.bat
 chatbot-memory.jsonl
 coverage.out
 .env.test
+memory/vector/qdrant/Dockerfile
