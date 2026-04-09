@@ -227,7 +227,18 @@ func (s *Store) Upsert(ctx context.Context, id string, vec []float32, msg goagen
 //
 // L2 search uses sqlite-vec's indexed KNN (MATCH … AND k = ?).
 // Cosine search uses vec_distance_cosine and performs a full scan.
-func (s *Store) Search(ctx context.Context, vec []float32, topK int) ([]goagent.ScoredMessage, error) {
+//
+// WithScoreThreshold and WithFilter are both applied post-query in Go.
+// topK is applied by the database first, so fewer than topK results may be
+// returned when either option is active. WithFilter requires MetadataColumn
+// to be set; silently ignored otherwise. All key-value pairs in the filter
+// must match (AND semantics); values are compared with reflect.DeepEqual.
+func (s *Store) Search(ctx context.Context, vec []float32, topK int, opts ...goagent.SearchOption) ([]goagent.ScoredMessage, error) {
+	cfg := &goagent.SearchOptions{}
+	for _, o := range opts {
+		o(cfg)
+	}
+
 	vecBlob := serializeVec(vec)
 	rows, err := s.db.QueryContext(ctx, s.searchSQL, vecBlob, topK)
 	if err != nil {
@@ -273,6 +284,22 @@ func (s *Store) Search(ctx context.Context, vec []float32, topK int) ([]goagent.
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sqlitevec: search: %w", err)
 	}
+
+	if cfg.ScoreThreshold != nil {
+		threshold := *cfg.ScoreThreshold
+		filtered := results[:0]
+		for _, r := range results {
+			if r.Score >= threshold {
+				filtered = append(filtered, r)
+			}
+		}
+		results = filtered
+	}
+
+	if len(cfg.Filter) > 0 && s.cfg.MetadataColumn != "" {
+		results = filterByMetadata(results, cfg.Filter)
+	}
+
 	return results, nil
 }
 

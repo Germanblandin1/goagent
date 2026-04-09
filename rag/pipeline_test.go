@@ -69,9 +69,11 @@ func (s *errStore) Upsert(_ context.Context, _ string, _ []float32, _ goagent.Me
 	return s.err
 }
 
-func (s *errStore) Search(_ context.Context, _ []float32, _ int) ([]goagent.ScoredMessage, error) {
+func (s *errStore) Search(_ context.Context, _ []float32, _ int, _ ...goagent.SearchOption) ([]goagent.ScoredMessage, error) {
 	return nil, nil
 }
+
+func (s *errStore) Delete(_ context.Context, _ string) error { return nil }
 
 // basicStore is a minimal VectorStore that returns Score 0.0 for all results.
 type basicStore struct {
@@ -99,7 +101,7 @@ func (s *basicStore) Upsert(_ context.Context, id string, vec []float32, msg goa
 	return nil
 }
 
-func (s *basicStore) Search(_ context.Context, _ []float32, topK int) ([]goagent.ScoredMessage, error) {
+func (s *basicStore) Search(_ context.Context, _ []float32, topK int, _ ...goagent.SearchOption) ([]goagent.ScoredMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var results []goagent.ScoredMessage
@@ -111,6 +113,8 @@ func (s *basicStore) Search(_ context.Context, _ []float32, topK int) ([]goagent
 	}
 	return results, nil
 }
+
+func (s *basicStore) Delete(_ context.Context, _ string) error { return nil }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

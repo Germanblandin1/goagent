@@ -37,7 +37,9 @@ type LongTermMemory interface {
 	//
 	// Score in each ScoredMessage is the cosine similarity in [0.0, 1.0]
 	// as computed by the underlying VectorStore.
-	Retrieve(ctx context.Context, query []ContentBlock, topK int) ([]ScoredMessage, error)
+	//
+	// opts are forwarded to the underlying VectorStore.Search call.
+	Retrieve(ctx context.Context, query []ContentBlock, topK int, opts ...SearchOption) ([]ScoredMessage, error)
 }
 
 // WritePolicy decides what to persist after a completed turn. It is called
@@ -77,6 +79,38 @@ func MinLength(n int) WritePolicy {
 	}
 }
 
+// SearchOptions holds the resolved configuration for a single Search call.
+// Fields at their zero value impose no constraint.
+// Implementations that do not support a given field must silently ignore it.
+type SearchOptions struct {
+	// ScoreThreshold, when non-nil, causes Search to discard results whose
+	// similarity score is strictly below this value. The score convention
+	// follows ScoredMessage.Score for the underlying store.
+	ScoreThreshold *float64
+
+	// Filter restricts results to entries whose metadata contains all the
+	// key–value pairs in this map. Support is implementation-defined:
+	// implementations that do not support metadata filtering silently ignore it.
+	Filter map[string]any
+}
+
+// SearchOption configures an individual Search call.
+type SearchOption func(*SearchOptions)
+
+// WithScoreThreshold returns a SearchOption that discards results whose
+// similarity score is strictly below min.
+func WithScoreThreshold(min float64) SearchOption {
+	return func(o *SearchOptions) { o.ScoreThreshold = &min }
+}
+
+// WithFilter returns a SearchOption that restricts search results to entries
+// whose metadata contains all key–value pairs in f.
+// Support is implementation-defined; implementations that do not support
+// metadata filtering silently ignore this option.
+func WithFilter(f map[string]any) SearchOption {
+	return func(o *SearchOptions) { o.Filter = f }
+}
+
 // VectorStore stores (message, embedding) pairs and supports similarity search.
 // This module does not ship a VectorStore implementation; the caller must
 // supply one (e.g. a pgvector client, a Chroma adapter, or an in-process
@@ -89,7 +123,12 @@ type VectorStore interface {
 	// Search returns the topK messages most similar to the given vector,
 	// each paired with its similarity score. Score is in [0.0, 1.0] for
 	// stores that use cosine similarity with normalised vectors.
-	Search(ctx context.Context, vector []float32, topK int) ([]ScoredMessage, error)
+	// opts may constrain results (e.g. WithScoreThreshold, WithFilter).
+	Search(ctx context.Context, vector []float32, topK int, opts ...SearchOption) ([]ScoredMessage, error)
+
+	// Delete removes the entry with the given id from the store.
+	// It is a no-op if id does not exist.
+	Delete(ctx context.Context, id string) error
 }
 
 // Embedder converts message content into a dense vector representation

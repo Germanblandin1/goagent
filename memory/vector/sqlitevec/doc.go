@@ -31,4 +31,20 @@
 // Or use the convenience wrapper:
 //
 //	db, err := sqlitevec.Open("path/to/db.sqlite")
+//
+// # Metadata filtering
+//
+// Search supports [goagent.WithFilter] when MetadataColumn is set. Filtering
+// is applied in Go after the database returns results (post-query). topK is
+// applied by sqlite-vec first, so a selective filter may yield fewer than topK
+// results. All key-value pairs in the filter map must match (AND semantics);
+// values are compared with reflect.DeepEqual.
+//
+// This is appropriate for sqlitevec's typical scale (< 100k entries) where
+// the overhead of post-filtering a small result set is negligible.
+//
+// # Score threshold
+//
+// [goagent.WithScoreThreshold] is also applied post-query in Go, after the
+// score conversion from distance. Both options can be combined.
 package sqlitevec

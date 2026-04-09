@@ -5,7 +5,20 @@
 // this package does not manage connection lifecycle. For a quick start without
 // an existing collection, use CreateCollection.
 //
-// *Store does not directly satisfy goagent.VectorStore: its Search method
-// accepts an optional ...SearchOption parameter that is not part of the
-// interface. Wrap it with an adapter when a goagent.VectorStore is required.
+// # Metadata filtering
+//
+// Search supports [goagent.WithFilter] via Qdrant's native filter API.
+// Each key-value pair in the filter map becomes a Must condition on the
+// "metadata.<key>" payload field. Filtering happens server-side before
+// distance scoring, so it does not affect query latency for large collections.
+//
+// Supported value types: string, bool, int64, and float64 whole numbers
+// (JSON numbers always unmarshal as float64). Fractional floats and nested
+// maps are silently skipped.
+//
+// # Score threshold
+//
+// [goagent.WithScoreThreshold] is forwarded to Qdrant's native
+// score_threshold field, so filtering also happens server-side.
+// Both options can be combined in a single query.
 package qdrant

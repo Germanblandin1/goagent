@@ -64,6 +64,62 @@ func anyToValue(v any) *qdrant.Value {
 	}
 }
 
+// filterToConditions converts a map[string]any filter to qdrant Must conditions.
+// Each key-value pair becomes an equality condition on "metadata.<key>" in the
+// point payload. All conditions are combined with AND (Must).
+//
+// Supported value types: string, bool, float64 (whole numbers treated as int64),
+// int64. Float values with a fractional part are skipped — qdrant has no native
+// float equality condition. Unsupported or nil values are silently ignored.
+func filterToConditions(filter map[string]any) []*qdrant.Condition {
+	if len(filter) == 0 {
+		return nil
+	}
+	conditions := make([]*qdrant.Condition, 0, len(filter))
+	for k, v := range filter {
+		key := "metadata." + k
+		var cond *qdrant.Condition
+		switch val := v.(type) {
+		case string:
+			cond = qdrant.NewMatchKeyword(key, val)
+		case bool:
+			cond = &qdrant.Condition{
+				ConditionOneOf: &qdrant.Condition_Field{
+					Field: &qdrant.FieldCondition{
+						Key:   key,
+						Match: &qdrant.Match{MatchValue: &qdrant.Match_Boolean{Boolean: val}},
+					},
+				},
+			}
+		case float64:
+			// JSON numbers unmarshal as float64; treat whole numbers as integers.
+			if i := int64(val); float64(i) == val {
+				cond = &qdrant.Condition{
+					ConditionOneOf: &qdrant.Condition_Field{
+						Field: &qdrant.FieldCondition{
+							Key:   key,
+							Match: &qdrant.Match{MatchValue: &qdrant.Match_Integer{Integer: i}},
+						},
+					},
+				}
+			}
+		case int64:
+			cond = &qdrant.Condition{
+				ConditionOneOf: &qdrant.Condition_Field{
+					Field: &qdrant.FieldCondition{
+						Key:   key,
+						Match: &qdrant.Match{MatchValue: &qdrant.Match_Integer{Integer: val}},
+					},
+				},
+			}
+		}
+		if cond != nil {
+			conditions = append(conditions, cond)
+		}
+	}
+	return conditions
+}
+
 // extractPayload reads "id", "content", and "metadata" keys from a Qdrant
 // point payload and returns them as typed Go values. Returns an error if
 // "content" is missing.

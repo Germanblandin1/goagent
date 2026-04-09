@@ -22,9 +22,11 @@ func (s *recordingVectorStore) Upsert(_ context.Context, id string, _ []float32,
 	return nil
 }
 
-func (s *recordingVectorStore) Search(_ context.Context, _ []float32, _ int) ([]goagent.ScoredMessage, error) {
+func (s *recordingVectorStore) Search(_ context.Context, _ []float32, _ int, _ ...goagent.SearchOption) ([]goagent.ScoredMessage, error) {
 	return nil, nil
 }
+
+func (s *recordingVectorStore) Delete(_ context.Context, _ string) error { return nil }
 
 // errEmbedder always returns an error from Embed.
 type errEmbedder struct{ err error }
@@ -172,10 +174,12 @@ func (s *searchableVectorStore) Upsert(_ context.Context, _ string, _ []float32,
 	return nil
 }
 
-func (s *searchableVectorStore) Search(_ context.Context, _ []float32, topK int) ([]goagent.ScoredMessage, error) {
+func (s *searchableVectorStore) Search(_ context.Context, _ []float32, topK int, _ ...goagent.SearchOption) ([]goagent.ScoredMessage, error) {
 	s.lastTopK = topK
 	return s.results, nil
 }
+
+func (s *searchableVectorStore) Delete(_ context.Context, _ string) error { return nil }
 
 func TestLongTerm_Retrieve(t *testing.T) {
 	t.Parallel()

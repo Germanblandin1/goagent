@@ -52,7 +52,15 @@ func (s *InMemoryStore) Upsert(_ context.Context, id string, vec []float32, msg 
 // WithSessionID), only entries whose id starts with "sessionID:" are
 // considered. Returns fewer than topK results when the store contains
 // fewer matching entries.
-func (s *InMemoryStore) Search(ctx context.Context, query []float32, topK int) ([]goagent.ScoredMessage, error) {
+//
+// WithScoreThreshold is applied before topK truncation.
+// WithFilter is not supported and silently ignored.
+func (s *InMemoryStore) Search(ctx context.Context, query []float32, topK int, opts ...goagent.SearchOption) ([]goagent.ScoredMessage, error) {
+	cfg := &goagent.SearchOptions{}
+	for _, o := range opts {
+		o(cfg)
+	}
+
 	sessionID, hasSession := session.IDFromContext(ctx)
 
 	s.mu.RLock()
@@ -61,9 +69,13 @@ func (s *InMemoryStore) Search(ctx context.Context, query []float32, topK int) (
 		if hasSession && !strings.HasPrefix(id, sessionID+":") {
 			continue
 		}
+		score := CosineSimilarity(query, e.vector)
+		if cfg.ScoreThreshold != nil && score < *cfg.ScoreThreshold {
+			continue
+		}
 		results = append(results, goagent.ScoredMessage{
 			Message: e.msg,
-			Score:   CosineSimilarity(query, e.vector),
+			Score:   score,
 		})
 	}
 	s.mu.RUnlock()
@@ -76,4 +88,13 @@ func (s *InMemoryStore) Search(ctx context.Context, query []float32, topK int) (
 		results = results[:topK]
 	}
 	return results, nil
+}
+
+// Delete removes the entry with the given id from the store.
+// It is a no-op if id does not exist.
+func (s *InMemoryStore) Delete(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.entries, id)
+	return nil
 }

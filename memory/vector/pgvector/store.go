@@ -3,6 +3,7 @@ package pgvector
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"regexp"
 
@@ -16,10 +17,8 @@ type Querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-// Note: *Store does not satisfy goagent.VectorStore directly — its Search
-// method accepts an optional ...SearchOption parameter which is not part of
-// the interface. Wrap it with an adapter if you need to pass *Store where a
-// goagent.VectorStore is required.
+// Compile-time check.
+var _ goagent.VectorStore = (*Store)(nil)
 
 // validIdentifier matches safe SQL identifiers: letters, digits, underscores,
 // and dots (for schema-qualified names like "public.embeddings").
@@ -65,11 +64,12 @@ func WithDistanceFunc(d DistanceFunc) StoreOption {
 
 // Store implements goagent.VectorStore over PostgreSQL with the pgvector extension.
 type Store struct {
-	db        Querier
-	cfg       TableConfig
-	upsertSQL string
-	searchSQL string
-	deleteSQL string
+	db              Querier
+	cfg             TableConfig
+	upsertSQL       string
+	searchSQL       string
+	searchFilterSQL string // non-empty only when MetadataColumn is set
+	deleteSQL       string
 }
 
 // New creates a Store backed by db using the given TableConfig and options.
@@ -107,6 +107,7 @@ func New(db Querier, cfg TableConfig, opts ...StoreOption) (*Store, error) {
 	s := &Store{db: db, cfg: cfg}
 	s.upsertSQL = s.buildUpsertSQL()
 	s.searchSQL = s.buildSearchSQL(o.distanceFunc)
+	s.searchFilterSQL = s.buildSearchFilterSQL(o.distanceFunc)
 	s.deleteSQL = fmt.Sprintf(`DELETE FROM %s WHERE %s = $1`, cfg.Table, cfg.IDColumn)
 	return s, nil
 }
@@ -170,6 +171,33 @@ LIMIT $2`,
 	)
 }
 
+// buildSearchFilterSQL returns a SQL variant that applies a JSONB containment
+// filter on MetadataColumn. Returns an empty string when MetadataColumn is not
+// configured — callers must check before using.
+//
+// Parameters: $1 = vector literal, $2 = LIMIT, $3 = filter JSON.
+// The database applies the filter before scoring, so topK is applied to the
+// already-filtered set.
+func (s *Store) buildSearchFilterSQL(df DistanceFunc) string {
+	cfg := s.cfg
+	if cfg.MetadataColumn == "" {
+		return ""
+	}
+	orderE := df.orderExpr(cfg.VectorColumn, "$1")
+	scoreE := df.scoreExpr(cfg.VectorColumn, "$1")
+	return fmt.Sprintf(`
+SELECT %s, %s, %s AS score
+FROM %s
+WHERE %s @> $3::jsonb
+ORDER BY %s
+LIMIT $2`,
+		cfg.TextColumn, cfg.MetadataColumn, scoreE,
+		cfg.Table,
+		cfg.MetadataColumn,
+		orderE,
+	)
+}
+
 // Upsert stores or updates the message and its embedding vector under id.
 // The operation is idempotent: calling Upsert twice with the same id replaces
 // the first entry with the second. Only the text content and metadata from msg
@@ -198,16 +226,30 @@ func (s *Store) Upsert(ctx context.Context, id string, vec []float32, msg goagen
 // descending. Each returned Message has RoleDocument so it is never forwarded
 // to a provider.
 //
-// opts is reserved for future use (score threshold, metadata filters, etc.).
-// Passing no options is equivalent to the default behaviour.
-func (s *Store) Search(ctx context.Context, vec []float32, topK int, opts ...SearchOption) ([]goagent.ScoredMessage, error) {
-	cfg := &searchConfig{}
+// WithFilter applies a JSONB containment filter (metadata @> filter::jsonb)
+// server-side. Requires MetadataColumn to be set in TableConfig; silently
+// ignored otherwise. topK is applied after the filter by the database, so
+// fewer than topK results may be returned when the filter is selective.
+// WithScoreThreshold is applied post-query in Go.
+func (s *Store) Search(ctx context.Context, vec []float32, topK int, opts ...goagent.SearchOption) ([]goagent.ScoredMessage, error) {
+	cfg := &goagent.SearchOptions{}
 	for _, o := range opts {
 		o(cfg)
 	}
 
 	vecLit := float32SliceToLiteral(vec)
-	rows, err := s.db.QueryContext(ctx, s.searchSQL, vecLit, topK)
+
+	var rows *sql.Rows
+	var err error
+	if len(cfg.Filter) > 0 && s.searchFilterSQL != "" {
+		filterJSON, jerr := json.Marshal(cfg.Filter)
+		if jerr != nil {
+			return nil, fmt.Errorf("pgvector: search: marshal filter: %w", jerr)
+		}
+		rows, err = s.db.QueryContext(ctx, s.searchFilterSQL, vecLit, topK, string(filterJSON))
+	} else {
+		rows, err = s.db.QueryContext(ctx, s.searchSQL, vecLit, topK)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("pgvector: search: %w", err)
 	}
@@ -251,6 +293,18 @@ func (s *Store) Search(ctx context.Context, vec []float32, topK int, opts ...Sea
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("pgvector: search: %w", err)
 	}
+
+	if cfg.ScoreThreshold != nil {
+		threshold := *cfg.ScoreThreshold
+		filtered := results[:0]
+		for _, r := range results {
+			if r.Score >= threshold {
+				filtered = append(filtered, r)
+			}
+		}
+		results = filtered
+	}
+
 	return results, nil
 }
 

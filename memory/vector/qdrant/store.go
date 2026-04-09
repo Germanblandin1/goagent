@@ -8,10 +8,8 @@ import (
 	"github.com/qdrant/go-client/qdrant"
 )
 
-// Note: *Store does not satisfy goagent.VectorStore directly — its Search
-// method accepts an optional ...SearchOption parameter which is not part of
-// the interface. Wrap it with an adapter if you need to pass *Store where a
-// goagent.VectorStore is required.
+// Compile-time check.
+var _ goagent.VectorStore = (*Store)(nil)
 
 // Config describes the Qdrant collection to use.
 // CollectionName is the only required field.
@@ -105,21 +103,32 @@ func (s *Store) Upsert(ctx context.Context, id string, vec []float32, msg goagen
 // descending. Each returned Message has RoleDocument so it is never forwarded
 // to a provider.
 //
-// opts is reserved for future use (score threshold, metadata filters, etc.).
-// Passing no options is equivalent to the default behaviour.
-func (s *Store) Search(ctx context.Context, vec []float32, topK int, opts ...SearchOption) ([]goagent.ScoredMessage, error) {
-	cfg := &searchConfig{}
+// WithScoreThreshold is forwarded to Qdrant's native score_threshold field,
+// so filtering happens server-side before topK is applied.
+// WithFilter converts each key-value pair to a Qdrant Must condition on
+// "metadata.<key>". Supported value types: string, bool, int64, and float64
+// whole numbers. Fractional floats and unsupported types are silently skipped.
+func (s *Store) Search(ctx context.Context, vec []float32, topK int, opts ...goagent.SearchOption) ([]goagent.ScoredMessage, error) {
+	cfg := &goagent.SearchOptions{}
 	for _, o := range opts {
 		o(cfg)
 	}
 
 	limit := uint64(topK)
-	results, err := s.client.Query(ctx, &qdrant.QueryPoints{
+	req := &qdrant.QueryPoints{
 		CollectionName: s.cfg.CollectionName,
 		Query:          qdrant.NewQuery(vec...),
 		Limit:          &limit,
 		WithPayload:    qdrant.NewWithPayloadInclude("id", "content", "metadata"),
-	})
+	}
+	if cfg.ScoreThreshold != nil {
+		t := float32(*cfg.ScoreThreshold)
+		req.ScoreThreshold = &t
+	}
+	if conditions := filterToConditions(cfg.Filter); len(conditions) > 0 {
+		req.Filter = &qdrant.Filter{Must: conditions}
+	}
+	results, err := s.client.Query(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("qdrant: search: %w", err)
 	}

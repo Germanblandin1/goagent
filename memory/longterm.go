@@ -155,7 +155,7 @@ func (m *longTermMemory) Store(ctx context.Context, msgs ...goagent.Message) err
 	return nil
 }
 
-func (m *longTermMemory) Retrieve(ctx context.Context, query []goagent.ContentBlock, topK int) ([]goagent.ScoredMessage, error) {
+func (m *longTermMemory) Retrieve(ctx context.Context, query []goagent.ContentBlock, topK int, opts ...goagent.SearchOption) ([]goagent.ScoredMessage, error) {
 	k := topK
 	if k <= 0 {
 		k = m.topK
@@ -164,7 +164,7 @@ func (m *longTermMemory) Retrieve(ctx context.Context, query []goagent.ContentBl
 	if err != nil {
 		return nil, fmt.Errorf("embedding query: %w", err)
 	}
-	return m.store.Search(ctx, vec, k)
+	return m.store.Search(ctx, vec, k, opts...)
 }
 
 // messageID returns a stable content-based identifier for a message.

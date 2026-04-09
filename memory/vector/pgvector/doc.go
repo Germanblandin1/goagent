@@ -4,11 +4,23 @@
 // The caller describes their existing table via TableConfig — this package does
 // not impose any schema. For a quick start without an existing table, use Migrate.
 //
-// If you need filtering by custom columns or JOINs with other tables,
-// implement goagent.VectorStore directly or use a PostgreSQL view:
+// # Metadata filtering
 //
-//	CREATE VIEW my_filtered_docs AS
-//	    SELECT * FROM my_table WHERE category = 'technical';
+// When MetadataColumn is set to a JSONB column, Search supports
+// [goagent.WithFilter] to restrict results server-side using PostgreSQL's JSONB
+// containment operator (@>). All key-value pairs in the filter map must be
+// present in the stored metadata (AND semantics).
 //
-// and pass that view as TableConfig.Table.
+// For best performance on large tables, create a GIN index on the metadata column:
+//
+//	CREATE INDEX ON embeddings USING gin(metadata jsonb_path_ops);
+//
+// Without the index, PostgreSQL falls back to a sequential scan. For tables
+// under ~100k rows, the sequential scan is typically fast enough.
+//
+// # Score threshold
+//
+// [goagent.WithScoreThreshold] is applied in Go after the database returns
+// results. topK is applied by the database first, so a selective threshold may
+// yield fewer than topK results.
 package pgvector

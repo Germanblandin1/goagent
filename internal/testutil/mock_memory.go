@@ -114,7 +114,7 @@ func (m *MockLongTermMemory) Store(_ context.Context, msgs ...goagent.Message) e
 }
 
 // Retrieve returns the fixed retrieved slice. Returns retrieveErr if configured.
-func (m *MockLongTermMemory) Retrieve(_ context.Context, _ []goagent.ContentBlock, _ int) ([]goagent.ScoredMessage, error) {
+func (m *MockLongTermMemory) Retrieve(_ context.Context, _ []goagent.ContentBlock, _ int, _ ...goagent.SearchOption) ([]goagent.ScoredMessage, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.retrieveErr != nil {

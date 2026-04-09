@@ -85,9 +85,11 @@ func (stubVectorStore) Upsert(_ context.Context, _ string, _ []float32, _ goagen
 	return nil
 }
 
-func (stubVectorStore) Search(_ context.Context, _ []float32, _ int) ([]goagent.ScoredMessage, error) {
+func (stubVectorStore) Search(_ context.Context, _ []float32, _ int, _ ...goagent.SearchOption) ([]goagent.ScoredMessage, error) {
 	return nil, nil
 }
+
+func (stubVectorStore) Delete(_ context.Context, _ string) error { return nil }
 
 type stubEmbedder struct{}
 
