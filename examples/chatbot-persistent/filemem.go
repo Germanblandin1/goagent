@@ -91,7 +91,7 @@ func (m *fileLongTermMemory) Store(_ context.Context, msgs ...goagent.Message) e
 // Retrieve returns all persisted messages regardless of query or topK.
 // Scores are always 0.0 — this store does not compute similarity.
 // See the type-level doc comment for an explanation of this design choice.
-func (m *fileLongTermMemory) Retrieve(_ context.Context, _ []goagent.ContentBlock, _ int) ([]goagent.ScoredMessage, error) {
+func (m *fileLongTermMemory) Retrieve(_ context.Context, _ []goagent.ContentBlock, _ int, _ ...goagent.SearchOption) ([]goagent.ScoredMessage, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
