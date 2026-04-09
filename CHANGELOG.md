@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] - 2026-04-09
+
+### Added
+
+**Search options (`goagent`)**
+- `SearchOptions` — struct holding optional search parameters: `ScoreThreshold *float64` and `Filter map[string]any`
+- `SearchOption` — functional option type `func(*SearchOptions)`, consistent with the rest of the library's configuration pattern
+- `WithScoreThreshold(min float64) SearchOption` — discards results whose score falls below `min`; applied after the store returns results
+- `WithFilter(f map[string]any) SearchOption` — restricts results to entries whose metadata contains all key-value pairs in `f` (AND semantics); filter strategy varies by backend (see below)
+
+**VectorStore interface changes (`goagent`)**
+- `Search` now accepts variadic `opts ...SearchOption`; callers that pass no options retain identical behaviour
+- `Delete(ctx context.Context, id string) error` — removes a single entry by ID; no-op when the ID does not exist; all three persistent stores implement this
+
+**LongTermMemory interface changes (`goagent`)**
+- `Retrieve` now accepts variadic `opts ...SearchOption`; options are forwarded to the underlying `VectorStore.Search` call unchanged; `fileLongTermMemory` (chatbot-persistent example) updated to match
+
+**pgvector metadata filtering (`goagent/memory/vector/pgvector`)**
+- `WithFilter` is applied server-side using PostgreSQL's JSONB containment operator (`metadata @> $filter::jsonb`); only rows whose metadata JSONB contains all specified key-value pairs are candidates for similarity ranking; the filter SQL is pre-built at `New()` time (zero allocation per query)
+- For large tables, a GIN index on `metadata` makes the JSONB filter index-assisted: `CREATE INDEX ON goagent_embeddings USING gin(metadata jsonb_path_ops)`
+- Requires `MetadataColumn` to be set in `TableConfig`
+
+**Qdrant metadata filtering (`goagent/memory/vector/qdrant`)**
+- `WithFilter` is translated to Qdrant `Must` conditions on `"metadata.<key>"` payload fields; filtering happens server-side before distance scoring — Qdrant never computes similarity for points that do not match the filter
+- Supported value types: `string` → `MatchKeyword`, `bool` → `MatchBoolean`, `int64` / whole-number `float64` → `MatchInteger`; unrecognised types are silently skipped
+- `WithScoreThreshold` sets `QueryPoints.ScoreThreshold` — evaluated server-side after filtering and before results are sent over the wire
+- Compile-time interface check `var _ goagent.VectorStore = (*Store)(nil)` added
+
+**SQLite/sqlite-vec metadata filtering (`goagent/memory/vector/sqlitevec`)**
+- `WithFilter` is applied in Go after sqlite-vec returns the topK nearest neighbours; all key-value pairs must match (`reflect.DeepEqual`); appropriate for sqlitevec's typical scale (< 100k entries) where post-filter overhead is negligible
+- `WithScoreThreshold` is also applied post-query in Go; both options can be combined
+- Requires `MetadataColumn` to be set in `TableConfig`
+
+**Examples and documentation**
+- `ExampleStore_Search_withFilter` and `ExampleStore_Search_withScoreThresholdAndFilter` added to pgvector, qdrant, and sqlitevec packages, each demonstrating a realistic multi-tenant isolation scenario
+- `doc.go` updated for qdrant and sqlitevec to describe filter/threshold behaviour, supported value types, and scale context
+
+### Fixed
+
+- `fileLongTermMemory.Retrieve` in `examples/chatbot-persistent` updated to match the new `LongTermMemory` interface signature (`_ ...goagent.SearchOption` added)
+
+---
+
 ## [0.5.2] - 2026-04-06
 
 ### Added

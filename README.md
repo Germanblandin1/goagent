@@ -27,6 +27,7 @@ Each sub-module is versioned and installed independently.
 | [otel](otel/README.md) | OpenTelemetry spans and metrics |
 | [ratelimit](ratelimit/README.md) | Token-bucket rate limiters for tool dispatch |
 | [memory/vector/pgvector](memory/vector/pgvector/README.md) | Persistent VectorStore — PostgreSQL + pgvector |
+| [memory/vector/qdrant](memory/vector/qdrant/README.md) | Persistent VectorStore — Qdrant |
 | [memory/vector/sqlitevec](memory/vector/sqlitevec/README.md) | Persistent VectorStore — SQLite + sqlite-vec (CGO) |
 | [memory/vector/tiktoken](memory/vector/tiktoken/README.md) | Exact token-count SizeEstimator via tiktoken |
 
@@ -263,7 +264,7 @@ store, err := pgvector.New(db, pgvector.TableConfig{
 })
 ```
 
-`TableConfig` describes the caller's existing table — the package imposes no schema. Pass your own table or a PostgreSQL view when you need metadata filters or JOINs with other tables.
+`TableConfig` describes the caller's existing table — the package imposes no schema. Metadata filtering is supported natively via `goagent.WithFilter`, which translates to a JSONB containment query (`metadata @> filter::jsonb`) applied server-side before similarity ranking. For large tables, add a GIN index: `CREATE INDEX ON goagent_embeddings USING gin(metadata jsonb_path_ops)`.
 
 Three distance functions are available via `WithDistanceFunc`:
 
@@ -276,6 +277,33 @@ Three distance functions are available via `WithDistanceFunc`:
 The `DistanceFunc` passed to `New` and the HNSW operator class used by `Migrate` must match — a mismatch causes pgvector to fall back to a sequential scan.
 
 `pgvector.New` accepts a `Querier` — the minimal interface satisfied by both `*sql.DB` and `*sql.Tx` — so queries can run inside a caller-managed transaction.
+
+#### Qdrant
+
+```bash
+go get github.com/Germanblandin1/goagent/memory/vector/qdrant
+```
+
+```go
+import (
+    "github.com/qdrant/go-client/qdrant"
+    goagent_qdrant "github.com/Germanblandin1/goagent/memory/vector/qdrant"
+)
+
+client, _ := qdrant.NewClient(&qdrant.Config{Host: "localhost", Port: 6334})
+
+// Optional: create the collection automatically.
+goagent_qdrant.CreateCollection(ctx, client, goagent_qdrant.CollectionConfig{
+    CollectionName: "goagent_embeddings",
+    Dims:           1536,
+})
+
+store, err := goagent_qdrant.New(client, goagent_qdrant.Config{
+    CollectionName: "goagent_embeddings",
+})
+```
+
+Metadata filtering via `goagent.WithFilter` is translated to Qdrant `Must` conditions and evaluated server-side — Qdrant never scores points that do not pass the filter. `goagent.WithScoreThreshold` maps to Qdrant's native `score_threshold` field, also server-side.
 
 #### SQLite + sqlite-vec
 
