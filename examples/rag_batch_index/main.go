@@ -26,8 +26,10 @@ import (
 
 	"github.com/Germanblandin1/goagent"
 	"github.com/Germanblandin1/goagent/memory/vector"
+	goqdrant "github.com/Germanblandin1/goagent/memory/vector/qdrant"
 	"github.com/Germanblandin1/goagent/providers/ollama"
 	"github.com/Germanblandin1/goagent/rag"
+	qdrantclient "github.com/qdrant/go-client/qdrant"
 )
 
 func main() {
@@ -45,9 +47,31 @@ func main() {
 		vector.WithMaxSize(400),
 		vector.WithOverlap(40),
 	)
-	store := vector.NewInMemoryStore()
 
-	// 3. Pipeline — same API as rag_docs, but indexOne now takes the
+	// 3. Qdrant vector store — gRPC port 6334.
+	//    Run: docker run -d --name qdrant-goagent -p 6333:6333 -p 6334:6334 qdrant/qdrant:latest
+	qclient, err := qdrantclient.NewClient(&qdrantclient.Config{
+		Host: "localhost",
+		Port: 6334,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer qclient.Close()
+
+	const collectionName = "rag_batch_index"
+	if err := goqdrant.CreateCollection(ctx, qclient, goqdrant.CollectionConfig{
+		CollectionName: collectionName,
+		Dims:           768, // nomic-embed-text
+	}); err != nil {
+		log.Fatal(err)
+	}
+	store, err := goqdrant.New(qclient, goqdrant.Config{CollectionName: collectionName})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// 4. Pipeline — same API as rag_docs, but indexOne now takes the
 	//    BatchEmbedder fast path: one BatchEmbed call per document.
 	pipeline, err := rag.NewPipeline(chunker, embedder, store,
 		rag.WithIndexObserver(func(
@@ -99,7 +123,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// 4. Index markdown docs from documentacion/ directory (if it exists).
+	// 5. Index markdown docs from documentacion/ directory (if it exists).
 	docs, err := loadMarkdownDocs("documentacion/")
 	if err != nil {
 		log.Fatal(err)
@@ -122,7 +146,7 @@ func main() {
 	}
 	slog.Info("indexed documents", "count", len(docs), "dur", time.Since(start))
 
-	// 5. Tool
+	// 6. Tool
 	searchTool := rag.NewTool(pipeline,
 		rag.WithToolName("search_docs"),
 		rag.WithToolDescription(
@@ -133,7 +157,7 @@ func main() {
 		rag.WithTopK(3),
 	)
 
-	// 6. Agent — shares the same OllamaClient as the embedder.
+	// 7. Agent — shares the same OllamaClient as the embedder.
 	provider := ollama.NewWithClient(client)
 	agent, err := goagent.New(
 		goagent.WithModel("qwen3.5:cloud"),
