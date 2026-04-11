@@ -1,8 +1,8 @@
-// Command rag_docs_embedder is the same RAG demo as rag_docs but shows the
+// Command rag_batch_index is the same RAG demo as rag_docs but shows the
 // BatchEmbedder optimization in action. Because OllamaEmbedder implements
-// goagent.BatchEmbedder, rag.Pipeline.Index now embeds all chunks of a
-// document in a single batch of concurrent HTTP calls to Ollama — replacing
-// K serial round trips with ~max(embed_latency) per document.
+// goagent.BatchEmbedder, rag.Pipeline.Index embeds all chunks of a document
+// in a single batch of concurrent HTTP calls to Ollama — replacing K serial
+// round trips with ~max(embed_latency) per document.
 //
 // Prerequisites:
 //
@@ -11,7 +11,7 @@
 //
 // Usage:
 //
-//	go run ./examples/rag_docs_embedder
+//	go run ./examples/rag_batch_index
 package main
 
 import (
