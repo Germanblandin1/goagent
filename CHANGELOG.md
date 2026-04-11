@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.4] - 2026-04-11
+
+### Added
+
+**BatchEmbedder interface (`goagent`)**
+- `BatchEmbedder` — new optional interface extending `Embedder` with `BatchEmbed(ctx, [][]ContentBlock) ([][]float32, error)`; mirrors the `BulkVectorStore` pattern — callers type-assert at runtime, no breaking change for existing embedders
+- A `nil` vector at index `i` in the returned slice signals "no embeddable content" for that input (equivalent to `ErrNoEmbeddeableContent` in the single-embed path)
+
+**BulkVectorStore interface (`goagent`)**
+- `BulkVectorStore` — new optional interface extending `VectorStore` with `BulkUpsert(ctx, []UpsertEntry) error` and `BulkDelete(ctx, []string) error`; stores that implement it receive all chunks in a single RPC call instead of N serial upserts
+- `UpsertEntry` — struct grouping `ID`, `Vector`, and `Message` for batch operations
+- All three persistent stores (`pgvector`, `qdrant`, `sqlitevec`) implement `BulkVectorStore`
+
+**Parallel embedding in `LongTermMemory.Store()` (`goagent/memory`)**
+- `BatchEmbedder` fast path: when the configured embedder implements `BatchEmbedder`, all chunks from all messages are collected and embedded in a single `BatchEmbed` call followed by a single `BulkUpsert` — reduces N×K round-trips to 1 for embedders with native batch support
+- Parallel fallback: when `BatchEmbedder` is not available, chunks within each message are embedded concurrently with `sync.WaitGroup` (fan-out / fan-in), reducing per-message latency from K×embed_latency to ~max(embed_latency)
+- `BulkVectorStore` fast path: when the store implements `BulkVectorStore`, all entries are written in a single call; the serial `Upsert` loop is the fallback
+
+**Parallel embedding in `rag.Pipeline.Index()` (`goagent/rag`)**
+- Same two-path strategy as `LongTermMemory.Store()`: `BatchEmbedder` fast path (one `BatchEmbed` per document) and concurrent parallel path (one goroutine per chunk via `sync.WaitGroup`)
+- `IndexObserver` counters (`chunked`, `embedded`, `skipped`) are maintained accurately in both paths
+
+**`BatchEmbedder` on `OllamaEmbedder` (`goagent/providers/ollama`)**
+- `OllamaEmbedder` now implements `goagent.BatchEmbedder`; `BatchEmbed` fans out one goroutine per input, each calling `Embed` concurrently; a `nil` result at index `i` signals no-text input (not an error)
+- Compile-time assertions: `var _ goagent.Embedder = (*OllamaEmbedder)(nil)` and `var _ goagent.BatchEmbedder = (*OllamaEmbedder)(nil)`
+
+**`BulkUpsert` / `BulkDelete` on Qdrant store (`goagent/memory/vector/qdrant`)**
+- `Store.BulkUpsert(ctx, entries)` — all points submitted in a single `UpsertPoints` gRPC call
+- `Store.BulkDelete(ctx, ids)` — all point IDs removed in a single `DeletePoints` gRPC call
+- Compile-time assertion `var _ goagent.BulkVectorStore = (*Store)(nil)` added
+- `go-client` dependency upgraded from `v1.13.0` to `v1.17.1` to match Qdrant server `v1.17.x` and eliminate the minor-version compatibility warning
+
+**Examples**
+- `examples/rag_batch_index` — new interactive RAG chatbot (replaces `rag_docs`); uses `OllamaEmbedder` (BatchEmbedder fast path), `RecursiveChunker`, Qdrant as the vector store, and a `bufio.Scanner` chat loop with `signal.NotifyContext` for clean Ctrl-C handling; indexes Markdown files from `documentacion/` on startup; vectors persist in Qdrant between runs
+
+---
+
 ## [0.5.3] - 2026-04-09
 
 ### Added

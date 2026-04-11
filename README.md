@@ -66,7 +66,7 @@ goagent/              Core — Agent, ReAct loop, interfaces
 │   ├── chatbot/              Multi-turn conversation
 │   ├── chatbot-persistent/   Persistent memory across sessions
 │   ├── chatbot-mcp-fs/       Filesystem access via MCP stdio
-│   └── rag_docs/             RAG over local Markdown files with Ollama
+│   └── rag_batch_index/      Interactive RAG chatbot — BatchEmbedder + Qdrant
 └── internal/testutil/        Shared mocks
 ```
 
@@ -404,6 +404,23 @@ pipeline, _ := rag.NewPipeline(chunker, embedder, store,
 ```
 
 Both observers receive the caller's `ctx`, so active OTel spans are accessible via `trace.SpanFromContext(ctx)` without the `rag` package importing the OTel SDK.
+
+#### BatchEmbedder fast path
+
+When the configured embedder implements `goagent.BatchEmbedder`, `Pipeline.Index` embeds all chunks of a document in a single `BatchEmbed` call instead of K serial round-trips. `OllamaEmbedder` implements this interface out of the box:
+
+```go
+embedder := ollama.NewEmbedder(ollama.WithEmbedModel("nomic-embed-text"))
+// OllamaEmbedder implements goagent.BatchEmbedder — Pipeline picks the fast path automatically.
+
+pipeline, _ := rag.NewPipeline(
+    vector.NewRecursiveChunker(vector.WithRCMaxSize(400)),
+    embedder,
+    store,
+)
+```
+
+The same optimization applies to `LongTermMemory.Store()` — when `BatchEmbedder` is available, all chunks from a turn are embedded in one call.
 
 ### Extended thinking & effort
 
