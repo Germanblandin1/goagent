@@ -52,9 +52,9 @@ func main() {
 	embedder := ollama.NewEmbedderWithClient(client,
 		ollama.WithEmbedModel("nomic-embed-text"),
 	)
-	chunker := vector.NewTextChunker(
-		vector.WithMaxSize(400),
-		vector.WithOverlap(40),
+	chunker := vector.NewRecursiveChunker(
+		vector.WithRCMaxSize(400),
+		vector.WithRCOverlap(40),
 	)
 
 	// 3. Qdrant vector store — gRPC port 6334.
