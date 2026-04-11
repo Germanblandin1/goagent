@@ -1,8 +1,8 @@
-// Command rag_docs_embedder is the same RAG demo as rag_docs but stores
-// documents via LongTermMemory instead of rag.Pipeline. Because
-// OllamaEmbedder implements goagent.BatchEmbedder, LongTermMemory.Store
-// embeds all chunks in a single batch of concurrent HTTP calls to Ollama —
-// replacing N×K serial round trips with ~max(embed_latency).
+// Command rag_docs_embedder is the same RAG demo as rag_docs but shows the
+// BatchEmbedder optimization in action. Because OllamaEmbedder implements
+// goagent.BatchEmbedder, rag.Pipeline.Index now embeds all chunks of a
+// document in a single batch of concurrent HTTP calls to Ollama — replacing
+// K serial round trips with ~max(embed_latency) per document.
 //
 // Prerequisites:
 //
@@ -25,9 +25,9 @@ import (
 	"time"
 
 	"github.com/Germanblandin1/goagent"
-	"github.com/Germanblandin1/goagent/memory"
 	"github.com/Germanblandin1/goagent/memory/vector"
 	"github.com/Germanblandin1/goagent/providers/ollama"
+	"github.com/Germanblandin1/goagent/rag"
 )
 
 func main() {
@@ -37,78 +37,100 @@ func main() {
 	client := ollama.NewClient()
 
 	// 2. Embedder — OllamaEmbedder implements goagent.BatchEmbedder, so
-	//    LongTermMemory.Store will call BatchEmbed instead of individual Embed.
+	//    Pipeline.Index will call BatchEmbed instead of Embed per chunk.
 	embedder := ollama.NewEmbedderWithClient(client,
 		ollama.WithEmbedModel("nomic-embed-text"),
 	)
-
-	// 3. Long-term memory backed by an in-memory vector store.
-	//    Store() detects BatchEmbedder at runtime via type assertion and uses
-	//    the fast path automatically — no extra configuration needed.
+	chunker := vector.NewTextChunker(
+		vector.WithMaxSize(400),
+		vector.WithOverlap(40),
+	)
 	store := vector.NewInMemoryStore()
-	ltm, err := memory.NewLongTerm(
-		memory.WithVectorStore(store),
-		memory.WithEmbedder(embedder),
-		memory.WithChunker(vector.NewTextChunker(
-			vector.WithMaxSize(400),
-			vector.WithOverlap(40),
-		)),
+
+	// 3. Pipeline — same API as rag_docs, but indexOne now takes the
+	//    BatchEmbedder fast path: one BatchEmbed call per document.
+	pipeline, err := rag.NewPipeline(chunker, embedder, store,
+		rag.WithIndexObserver(func(
+			_ context.Context,
+			source string,
+			chunked, embedded, skipped int,
+			dur time.Duration,
+			err error,
+		) {
+			if err != nil {
+				slog.Error("rag index failed", "source", source, "err", err)
+				return
+			}
+			slog.Debug("rag indexed (batch embed)",
+				"source", source,
+				"chunks", chunked,
+				"embedded", embedded,
+				"skipped", skipped,
+				"dur", dur,
+			)
+		}),
+		rag.WithSearchObserver(func(
+			_ context.Context,
+			query string,
+			results []rag.SearchResult,
+			dur time.Duration,
+			err error,
+		) {
+			if err != nil {
+				slog.Error("rag search failed", "query", query, "err", err)
+				return
+			}
+			topScore := 0.0
+			if len(results) > 0 {
+				topScore = results[0].Score
+			}
+			slog.Debug("rag search",
+				"query", query,
+				"results", len(results),
+				"top_score", topScore,
+				"dur", dur,
+			)
+			if topScore < 0.5 {
+				slog.Warn("low quality retrieval", "query", query, "top_score", topScore)
+			}
+		}),
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// 4. Load markdown docs (falls back to a built-in snippet when absent).
+	// 4. Index markdown docs from documentacion/ directory (if it exists).
 	docs, err := loadMarkdownDocs("documentacion/")
 	if err != nil {
 		log.Fatal(err)
 	}
 	if len(docs) == 0 {
-		docs = []goagent.Message{
-			goagent.UserMessage(
-				"goagent is a Go-idiomatic framework for building AI agents with Claude. " +
-					"Use WithTool to register tools. Use WithLongTermMemory for persistent context. " +
-					"The ReAct loop handles tool calls automatically.",
-			),
+		docs = []rag.Document{
+			{
+				Source: "goagent-overview.md",
+				Content: []goagent.ContentBlock{goagent.TextBlock(
+					"goagent is a Go-idiomatic framework for building AI agents with Claude. " +
+						"Use WithTool to register tools. Use WithLongTermMemory for persistent context. " +
+						"The ReAct loop handles tool calls automatically.",
+				)},
+			},
 		}
 	}
-
-	// Store triggers the BatchEmbedder path: all chunks across all messages
-	// are collected, embedded in a single concurrent batch, and BulkUpserted.
 	start := time.Now()
-	if err := ltm.Store(ctx, docs...); err != nil {
+	if err := pipeline.Index(ctx, docs...); err != nil {
 		log.Fatal(err)
 	}
-	slog.Info("indexed via BatchEmbedder", "docs", len(docs), "dur", time.Since(start))
+	slog.Info("indexed documents", "count", len(docs), "dur", time.Since(start))
 
-	// 5. Search tool backed by LongTermMemory.Retrieve.
-	searchTool := goagent.ToolFunc(
-		"search_docs",
-		"Search goagent's documentation and design documents. "+
-			"Use this when asked about how goagent works, its architecture, "+
-			"its API design, or implementation details.",
-		goagent.SchemaFrom(struct {
-			Query string `json:"query" jsonschema_description:"The search query."`
-		}{}),
-		func(ctx context.Context, args map[string]any) (string, error) {
-			query, _ := args["query"].(string)
-			results, err := ltm.Retrieve(ctx,
-				[]goagent.ContentBlock{goagent.TextBlock(query)},
-				3,
-			)
-			if err != nil {
-				return "", fmt.Errorf("search failed: %w", err)
-			}
-			if len(results) == 0 {
-				return "No relevant documents found.", nil
-			}
-			var sb strings.Builder
-			for i, r := range results {
-				fmt.Fprintf(&sb, "[%d] (score=%.2f) %s\n",
-					i+1, r.Score, r.Message.TextContent())
-			}
-			return sb.String(), nil
-		},
+	// 5. Tool
+	searchTool := rag.NewTool(pipeline,
+		rag.WithToolName("search_docs"),
+		rag.WithToolDescription(
+			"Search goagent's internal documentation and design documents. "+
+				"Use this when asked about how goagent works, its architecture, "+
+				"its API design, or implementation details.",
+		),
+		rag.WithTopK(3),
 	)
 
 	// 6. Agent — shares the same OllamaClient as the embedder.
@@ -119,7 +141,7 @@ func main() {
 		goagent.WithTool(searchTool),
 		goagent.WithMaxIterations(40),
 		goagent.WithSystemPrompt(
-			"You are a helpful assistant for the goagent library. " +
+			"You are a helpful assistant for the goagent library. "+
 				"Use search_docs to answer questions about the library's design and API.",
 		),
 	)
@@ -134,9 +156,9 @@ func main() {
 	fmt.Println(resp)
 }
 
-// loadMarkdownDocs reads all .md files from dir and returns them as Messages.
+// loadMarkdownDocs reads all .md files from dir and returns them as Documents.
 // Returns nil, nil when the directory does not exist.
-func loadMarkdownDocs(dir string) ([]goagent.Message, error) {
+func loadMarkdownDocs(dir string) ([]rag.Document, error) {
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -144,7 +166,7 @@ func loadMarkdownDocs(dir string) ([]goagent.Message, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", dir, err)
 	}
-	var msgs []goagent.Message
+	var docs []rag.Document
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 			continue
@@ -154,7 +176,10 @@ func loadMarkdownDocs(dir string) ([]goagent.Message, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading %s: %w", path, err)
 		}
-		msgs = append(msgs, goagent.UserMessage(string(data)))
+		docs = append(docs, rag.Document{
+			Source:  path,
+			Content: []goagent.ContentBlock{goagent.TextBlock(string(data))},
+		})
 	}
-	return msgs, nil
+	return docs, nil
 }

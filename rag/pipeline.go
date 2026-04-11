@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/Germanblandin1/goagent"
@@ -226,6 +227,14 @@ func (p *Pipeline) Index(ctx context.Context, docs ...Document) error {
 
 // indexOne runs the chunk → embed → upsert pipeline for a single document and
 // notifies the IndexObserver (if set) with the outcome.
+//
+// It selects between two embedding strategies at runtime:
+//
+//   - BatchEmbedder path: if the configured Embedder also implements
+//     [goagent.BatchEmbedder], all chunks are embedded in a single API call.
+//   - Parallel path (default): chunks are embedded concurrently (fan-out /
+//     fan-in), reducing per-document latency from K×embed_latency to
+//     ~max(embed_latency).
 func (p *Pipeline) indexOne(ctx context.Context, doc Document) error {
 	start := time.Now()
 	chunked, embedded, skipped := 0, 0, 0
@@ -250,25 +259,78 @@ func (p *Pipeline) indexOne(ctx context.Context, doc Document) error {
 
 	var pending []goagent.UpsertEntry
 
-	for i, chunk := range chunks {
-		vec, err := p.embedder.Embed(ctx, chunk.Blocks)
+	if batcher, ok := p.embedder.(goagent.BatchEmbedder); ok {
+		// BatchEmbedder fast path: one API call for all chunks.
+		inputs := make([][]goagent.ContentBlock, len(chunks))
+		for i, ch := range chunks {
+			inputs[i] = ch.Blocks
+		}
+		vecs, err := batcher.BatchEmbed(ctx, inputs)
 		if err != nil {
-			if errors.Is(err, vector.ErrNoEmbeddeableContent) {
-				skipped++
-				continue
-			}
-			wrapErr := fmt.Errorf("rag: embedding chunk %d of %q: %w", i, doc.Source, err)
+			wrapErr := fmt.Errorf("rag: batch embedding %q: %w", doc.Source, err)
 			notify(wrapErr)
 			return wrapErr
 		}
-		pending = append(pending, goagent.UpsertEntry{
-			ID:      fmt.Sprintf("%s:%d", doc.Source, i),
-			Vector:  vec,
-			Message: chunkToMessage(doc.Source, chunk),
-		})
-		embedded++
+		for i, ch := range chunks {
+			if vecs[i] == nil { // nil = no embeddable content in this chunk
+				skipped++
+				continue
+			}
+			pending = append(pending, goagent.UpsertEntry{
+				ID:      fmt.Sprintf("%s:%d", doc.Source, i),
+				Vector:  vecs[i],
+				Message: chunkToMessage(doc.Source, ch),
+			})
+			embedded++
+		}
+	} else {
+		// Default path: embed chunks concurrently (fan-out / fan-in).
+		// Each goroutine writes to its own index — no mutex needed.
+		type embedResult struct {
+			entry goagent.UpsertEntry
+			err   error
+			skip  bool
+		}
+		results := make([]embedResult, len(chunks))
+		var wg sync.WaitGroup
+		for i, chunk := range chunks {
+			wg.Add(1)
+			go func(idx int, ch vector.ChunkResult) {
+				defer wg.Done()
+				vec, embedErr := p.embedder.Embed(ctx, ch.Blocks)
+				if embedErr != nil {
+					if errors.Is(embedErr, vector.ErrNoEmbeddeableContent) {
+						results[idx].skip = true
+						return
+					}
+					results[idx].err = embedErr
+					return
+				}
+				results[idx].entry = goagent.UpsertEntry{
+					ID:      fmt.Sprintf("%s:%d", doc.Source, idx),
+					Vector:  vec,
+					Message: chunkToMessage(doc.Source, ch),
+				}
+			}(i, chunk)
+		}
+		wg.Wait()
+
+		for i, r := range results {
+			if r.skip {
+				skipped++
+				continue
+			}
+			if r.err != nil {
+				wrapErr := fmt.Errorf("rag: embedding chunk %d of %q: %w", i, doc.Source, r.err)
+				notify(wrapErr)
+				return wrapErr
+			}
+			pending = append(pending, r.entry)
+			embedded++
+		}
 	}
 
+	// Upsert — shared by both embedding paths.
 	if bulk, ok := p.store.(goagent.BulkVectorStore); ok {
 		if err := bulk.BulkUpsert(ctx, pending); err != nil {
 			wrapErr := fmt.Errorf("rag: bulk upserting %q: %w", doc.Source, err)

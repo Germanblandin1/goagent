@@ -3,6 +3,7 @@ package rag_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +12,85 @@ import (
 	"github.com/Germanblandin1/goagent/memory/vector"
 	"github.com/Germanblandin1/goagent/rag"
 )
+
+// concurrentEmbedder tracks peak concurrency across concurrent Embed calls.
+type concurrentEmbedder struct {
+	mu     sync.Mutex
+	active int
+	peak   int
+	delay  time.Duration
+}
+
+func (e *concurrentEmbedder) Embed(_ context.Context, blocks []goagent.ContentBlock) ([]float32, error) {
+	for _, b := range blocks {
+		if b.Type != goagent.ContentText {
+			continue
+		}
+		e.mu.Lock()
+		e.active++
+		if e.active > e.peak {
+			e.peak = e.active
+		}
+		e.mu.Unlock()
+
+		time.Sleep(e.delay)
+
+		e.mu.Lock()
+		e.active--
+		e.mu.Unlock()
+		return []float32{0.1, 0.2}, nil
+	}
+	return nil, vector.ErrNoEmbeddeableContent
+}
+
+// batchRecordingEmbedder implements BatchEmbedder and records calls.
+// skipIndex >= 0 causes a nil vector at that position.
+type batchRecordingEmbedder struct {
+	mu             sync.Mutex
+	batchCallCount int
+	batchInputLen  int
+	embedCallCount int
+	skipIndex      int
+}
+
+func (e *batchRecordingEmbedder) Embed(_ context.Context, blocks []goagent.ContentBlock) ([]float32, error) {
+	for _, b := range blocks {
+		if b.Type == goagent.ContentText {
+			e.mu.Lock()
+			e.embedCallCount++
+			e.mu.Unlock()
+			return []float32{0.1, 0.2}, nil
+		}
+	}
+	return nil, vector.ErrNoEmbeddeableContent
+}
+
+func (e *batchRecordingEmbedder) BatchEmbed(_ context.Context, inputs [][]goagent.ContentBlock) ([][]float32, error) {
+	e.mu.Lock()
+	e.batchCallCount++
+	e.batchInputLen = len(inputs)
+	e.mu.Unlock()
+
+	vecs := make([][]float32, len(inputs))
+	for i := range vecs {
+		if e.skipIndex >= 0 && i == e.skipIndex {
+			vecs[i] = nil
+			continue
+		}
+		vecs[i] = []float32{float32(i)*0.1 + 0.1, float32(i)*0.1 + 0.2}
+	}
+	return vecs, nil
+}
+
+// batchErrEmbedder implements BatchEmbedder and always fails BatchEmbed.
+type batchErrEmbedder struct{ err error }
+
+func (e *batchErrEmbedder) Embed(_ context.Context, _ []goagent.ContentBlock) ([]float32, error) {
+	return []float32{0.1}, nil
+}
+func (e *batchErrEmbedder) BatchEmbed(_ context.Context, _ [][]goagent.ContentBlock) ([][]float32, error) {
+	return nil, e.err
+}
 
 // ── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -621,6 +701,298 @@ func TestPipeline_IndexObserverUpsertError(t *testing.T) {
 	if !errors.Is(observerErr, upsertErr) {
 		t.Errorf("observer error = %v, want to wrap %v", observerErr, upsertErr)
 	}
+}
+
+// ── Parallel embed tests ──────────────────────────────────────────────────────
+
+// TestPipeline_ParallelEmbedsChunks verifies that chunks of a single document
+// are embedded concurrently when using the default (non-BatchEmbedder) path.
+func TestPipeline_ParallelEmbedsChunks(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	embedder := &concurrentEmbedder{delay: 10 * time.Millisecond}
+	store := newBulkStore()
+
+	// TextChunker splits the message into multiple chunks.
+	longText := repeatWords("word", 30)
+	p, err := rag.NewPipeline(
+		vector.NewTextChunker(vector.WithMaxSize(12), vector.WithOverlap(0)),
+		embedder,
+		store,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc := rag.Document{
+		Source:  "long.md",
+		Content: []goagent.ContentBlock{goagent.TextBlock(longText)},
+	}
+	if err := p.Index(ctx, doc); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	embedder.mu.Lock()
+	peak := embedder.peak
+	embedder.mu.Unlock()
+
+	if peak < 2 {
+		t.Errorf("expected concurrent embedding (peak > 1), got peak=%d", peak)
+	}
+}
+
+// TestPipeline_ParallelEmbedsErrorPropagation verifies that an embed error in
+// the parallel path is returned and the IndexObserver is notified.
+func TestPipeline_ParallelEmbedsErrorPropagation(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	embedErr := errors.New("embed failed")
+	var observerErr error
+
+	longText := repeatWords("word", 30)
+	p, err := rag.NewPipeline(
+		vector.NewTextChunker(vector.WithMaxSize(12), vector.WithOverlap(0)),
+		&errEmbedder{err: embedErr},
+		vector.NewInMemoryStore(),
+		rag.WithIndexObserver(func(_ context.Context, _ string, _, _, _ int, _ time.Duration, err error) {
+			observerErr = err
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	indexErr := p.Index(ctx, rag.Document{
+		Source:  "long.md",
+		Content: []goagent.ContentBlock{goagent.TextBlock(longText)},
+	})
+	if indexErr == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(indexErr, embedErr) {
+		t.Errorf("want embedErr in chain, got: %v", indexErr)
+	}
+	if observerErr == nil {
+		t.Error("observer was not called with error")
+	}
+}
+
+// ── BatchEmbedder tests ───────────────────────────────────────────────────────
+
+// TestPipeline_BatchEmbedderPath verifies that when the embedder implements
+// BatchEmbedder, Index calls BatchEmbed once instead of Embed per chunk.
+func TestPipeline_BatchEmbedderPath(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	embedder := &batchRecordingEmbedder{skipIndex: -1}
+	store := newBulkStore()
+
+	longText := repeatWords("word", 30)
+	p, err := rag.NewPipeline(
+		vector.NewTextChunker(vector.WithMaxSize(12), vector.WithOverlap(0)),
+		embedder,
+		store,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.Index(ctx, rag.Document{
+		Source:  "doc.md",
+		Content: []goagent.ContentBlock{goagent.TextBlock(longText)},
+	}); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	embedder.mu.Lock()
+	batchCalls := embedder.batchCallCount
+	embedCalls := embedder.embedCallCount
+	totalChunks := embedder.batchInputLen
+	embedder.mu.Unlock()
+
+	if batchCalls != 1 {
+		t.Errorf("BatchEmbed called %d times, want 1", batchCalls)
+	}
+	if embedCalls != 0 {
+		t.Errorf("Embed called %d times, want 0", embedCalls)
+	}
+	if len(store.bulkEntries) != totalChunks {
+		t.Errorf("BulkUpsert got %d entries, want %d", len(store.bulkEntries), totalChunks)
+	}
+}
+
+// TestPipeline_BatchEmbedderSkipsNilVectors verifies that nil vectors from
+// BatchEmbed increment the skipped count and are not upserted.
+func TestPipeline_BatchEmbedderSkipsNilVectors(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// skipIndex=0 → first chunk gets a nil vector.
+	embedder := &batchRecordingEmbedder{skipIndex: 0}
+	store := newBulkStore()
+
+	var gotSkipped int
+	longText := repeatWords("word", 30)
+	p, err := rag.NewPipeline(
+		vector.NewTextChunker(vector.WithMaxSize(12), vector.WithOverlap(0)),
+		embedder,
+		store,
+		rag.WithIndexObserver(func(_ context.Context, _ string, _, _, skipped int, _ time.Duration, _ error) {
+			gotSkipped = skipped
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.Index(ctx, rag.Document{
+		Source:  "doc.md",
+		Content: []goagent.ContentBlock{goagent.TextBlock(longText)},
+	}); err != nil {
+		t.Fatalf("Index must not fail for nil vector: %v", err)
+	}
+
+	embedder.mu.Lock()
+	totalChunks := embedder.batchInputLen
+	embedder.mu.Unlock()
+
+	if gotSkipped != 1 {
+		t.Errorf("skipped = %d, want 1", gotSkipped)
+	}
+	if len(store.bulkEntries) != totalChunks-1 {
+		t.Errorf("expected %d upserted entries (%d chunks − 1 skipped), got %d",
+			totalChunks-1, totalChunks, len(store.bulkEntries))
+	}
+}
+
+// TestPipeline_BatchEmbedderError verifies that a BatchEmbed failure is
+// returned and the IndexObserver is notified.
+func TestPipeline_BatchEmbedderError(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	batchErr := errors.New("batch embed failed")
+	var observerErr error
+
+	p, err := rag.NewPipeline(
+		vector.NewNoOpChunker(),
+		&batchErrEmbedder{err: batchErr},
+		vector.NewInMemoryStore(),
+		rag.WithIndexObserver(func(_ context.Context, _ string, _, _, _ int, _ time.Duration, err error) {
+			observerErr = err
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	indexErr := p.Index(ctx, rag.Document{
+		Source:  "doc.md",
+		Content: []goagent.ContentBlock{goagent.TextBlock("hello")},
+	})
+	if indexErr == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(indexErr, batchErr) {
+		t.Errorf("want batchErr in chain, got: %v", indexErr)
+	}
+	if observerErr == nil {
+		t.Error("observer was not called with error")
+	}
+}
+
+// TestPipeline_BatchEmbedderObserverCounts verifies that embedded and skipped
+// counts in the observer are correct for the BatchEmbedder path.
+func TestPipeline_BatchEmbedderObserverCounts(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// Mix text + image in one document — image chunk will get nil vector.
+	embedder := &batchRecordingEmbedder{skipIndex: 1} // chunk 1 = image chunk
+	var gotEmbedded, gotSkipped int
+
+	p, err := rag.NewPipeline(
+		vector.NewNoOpChunker(),
+		embedder,
+		vector.NewInMemoryStore(),
+		rag.WithIndexObserver(func(_ context.Context, _ string, _, embedded, skipped int, _ time.Duration, _ error) {
+			gotEmbedded = embedded
+			gotSkipped = skipped
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Two-block document: one text + one image.
+	// NoOpChunker produces one chunk = one call to BatchEmbed with 1 input.
+	// Use separate documents so each produces its own chunk.
+	docs := []rag.Document{
+		{Source: "text.md", Content: []goagent.ContentBlock{goagent.TextBlock("hello")}},
+		{Source: "img.png", Content: []goagent.ContentBlock{goagent.ImageBlock([]byte("data"), "image/png")}},
+	}
+	// Index text doc first (not skipped), then image doc (gets nil at index 0
+	// of its own batch call — but since skipIndex is global per embedder, we
+	// test the counts doc-by-doc instead).
+	_ = docs
+
+	// Simpler: one doc, BatchEmbed returns nil for the single chunk → 1 skipped.
+	embedder2 := &batchRecordingEmbedder{skipIndex: 0}
+	var gotSkipped2 int
+	p2, _ := rag.NewPipeline(
+		vector.NewNoOpChunker(),
+		embedder2,
+		vector.NewInMemoryStore(),
+		rag.WithIndexObserver(func(_ context.Context, _ string, _, _, skipped int, _ time.Duration, _ error) {
+			gotSkipped2 = skipped
+		}),
+	)
+	if err := p2.Index(ctx, rag.Document{
+		Source:  "doc.md",
+		Content: []goagent.ContentBlock{goagent.TextBlock("hello")},
+	}); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	if gotSkipped2 != 1 {
+		t.Errorf("skipped = %d, want 1", gotSkipped2)
+	}
+
+	// Normal doc: embedder returns vector for the chunk → 1 embedded.
+	embedder3 := &batchRecordingEmbedder{skipIndex: -1}
+	var gotEmbedded3 int
+	p3, _ := rag.NewPipeline(
+		vector.NewNoOpChunker(),
+		embedder3,
+		vector.NewInMemoryStore(),
+		rag.WithIndexObserver(func(_ context.Context, _ string, _, embedded, _ int, _ time.Duration, _ error) {
+			gotEmbedded3 = embedded
+		}),
+	)
+	if err := p3.Index(ctx, rag.Document{
+		Source:  "doc.md",
+		Content: []goagent.ContentBlock{goagent.TextBlock("hello")},
+	}); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	if gotEmbedded3 != 1 {
+		t.Errorf("embedded = %d, want 1", gotEmbedded3)
+	}
+
+	_ = p
+	_ = gotEmbedded
+	_ = gotSkipped
+}
+
+// repeatWords returns n copies of word joined by spaces.
+func repeatWords(word string, n int) string {
+	words := make([]string, n)
+	for i := range words {
+		words[i] = word
+	}
+	return strings.Join(words, " ")
 }
 
 // TestPipeline_UsesBulkUpsertWhenAvailable verifies that Index delegates to
