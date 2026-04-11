@@ -51,6 +51,10 @@ func WithDistanceMetric(m DistanceMetric) StoreOption {
 	return func(o *storeOptions) { o.metric = m }
 }
 
+// Compile-time checks.
+var _ goagent.VectorStore = (*Store)(nil)
+var _ goagent.BulkVectorStore = (*Store)(nil)
+
 // Store implements goagent.VectorStore over SQLite with the sqlite-vec extension.
 // It satisfies the goagent.VectorStore interface directly.
 type Store struct {
@@ -341,6 +345,92 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("sqlitevec: delete: %w", err)
+	}
+	return nil
+}
+
+// BulkUpsert stores or updates all entries within a single SQLite transaction,
+// reducing round-trips compared to N individual Upsert calls. Each entry
+// follows the same multi-step upsert logic as [Store.Upsert].
+func (s *Store) BulkUpsert(ctx context.Context, entries []goagent.UpsertEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlitevec: bulk upsert: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	for _, e := range entries {
+		text := goagent.TextFrom(e.Message.Content)
+		vecBlob := serializeVec(e.Vector)
+
+		if s.cfg.MetadataColumn != "" {
+			metaJSON, merr := metadataToJSON(e.Message.Metadata)
+			if merr != nil {
+				return fmt.Errorf("sqlitevec: bulk upsert: %w", merr)
+			}
+			if _, err := tx.ExecContext(ctx, s.upsertMainSQL, e.ID, text, metaJSON); err != nil {
+				return fmt.Errorf("sqlitevec: bulk upsert: %w", err)
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx, s.upsertMainSQL, e.ID, text); err != nil {
+				return fmt.Errorf("sqlitevec: bulk upsert: %w", err)
+			}
+		}
+
+		var rowid int64
+		if err := tx.QueryRowContext(ctx, s.getRowidSQL, e.ID).Scan(&rowid); err != nil {
+			return fmt.Errorf("sqlitevec: bulk upsert: get rowid: %w", err)
+		}
+
+		if _, err := tx.ExecContext(ctx, s.deleteVecSQL, rowid); err != nil {
+			return fmt.Errorf("sqlitevec: bulk upsert: delete vec: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, s.insertVecSQL, rowid, vecBlob); err != nil {
+			return fmt.Errorf("sqlitevec: bulk upsert: insert vec: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlitevec: bulk upsert: %w", err)
+	}
+	return nil
+}
+
+// BulkDelete removes all entries with the given ids within a single SQLite
+// transaction. IDs that do not exist are silently ignored.
+func (s *Store) BulkDelete(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlitevec: bulk delete: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	for _, id := range ids {
+		var rowid int64
+		if err := tx.QueryRowContext(ctx, s.getRowidSQL, id).Scan(&rowid); err != nil {
+			if err == sql.ErrNoRows {
+				continue
+			}
+			return fmt.Errorf("sqlitevec: bulk delete: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, s.deleteVecSQL, rowid); err != nil {
+			return fmt.Errorf("sqlitevec: bulk delete: vec: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, s.deleteSQL, id); err != nil {
+			return fmt.Errorf("sqlitevec: bulk delete: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlitevec: bulk delete: %w", err)
 	}
 	return nil
 }

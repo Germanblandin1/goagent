@@ -131,6 +131,13 @@ func (m *longTermMemory) Store(ctx context.Context, msgs ...goagent.Message) err
 
 		baseID := messageID(msg)
 
+		// Embed all chunks first, then batch-upsert when the store supports it.
+		type pendingEntry struct {
+			idx   int
+			entry goagent.UpsertEntry
+		}
+		var pending []pendingEntry
+
 		for i, chunk := range chunks {
 			vec, err := m.embedder.Embed(ctx, chunk.Blocks)
 			if err != nil {
@@ -147,8 +154,25 @@ func (m *longTermMemory) Store(ctx context.Context, msgs ...goagent.Message) err
 				id = fmt.Sprintf("%s:%d", baseID, i)
 			}
 
-			if err := m.store.Upsert(ctx, id, vec, vector.ChunkToMessage(msg, chunk)); err != nil {
-				return fmt.Errorf("upserting chunk %d (role=%s): %w", i, msg.Role, err)
+			pending = append(pending, pendingEntry{
+				idx:   i,
+				entry: goagent.UpsertEntry{ID: id, Vector: vec, Message: vector.ChunkToMessage(msg, chunk)},
+			})
+		}
+
+		if bulk, ok := m.store.(goagent.BulkVectorStore); ok {
+			entries := make([]goagent.UpsertEntry, len(pending))
+			for i, p := range pending {
+				entries[i] = p.entry
+			}
+			if err := bulk.BulkUpsert(ctx, entries); err != nil {
+				return fmt.Errorf("bulk upserting chunks (role=%s): %w", msg.Role, err)
+			}
+		} else {
+			for _, p := range pending {
+				if err := m.store.Upsert(ctx, p.entry.ID, p.entry.Vector, p.entry.Message); err != nil {
+					return fmt.Errorf("upserting chunk %d (role=%s): %w", p.idx, msg.Role, err)
+				}
 			}
 		}
 	}

@@ -248,6 +248,8 @@ func (p *Pipeline) indexOne(ctx context.Context, doc Document) error {
 	}
 	chunked = len(chunks)
 
+	var pending []goagent.UpsertEntry
+
 	for i, chunk := range chunks {
 		vec, err := p.embedder.Embed(ctx, chunk.Blocks)
 		if err != nil {
@@ -259,14 +261,28 @@ func (p *Pipeline) indexOne(ctx context.Context, doc Document) error {
 			notify(wrapErr)
 			return wrapErr
 		}
-		id := fmt.Sprintf("%s:%d", doc.Source, i)
-		payload := chunkToMessage(doc.Source, chunk)
-		if err := p.store.Upsert(ctx, id, vec, payload); err != nil {
-			wrapErr := fmt.Errorf("rag: upserting chunk %d of %q: %w", i, doc.Source, err)
+		pending = append(pending, goagent.UpsertEntry{
+			ID:      fmt.Sprintf("%s:%d", doc.Source, i),
+			Vector:  vec,
+			Message: chunkToMessage(doc.Source, chunk),
+		})
+		embedded++
+	}
+
+	if bulk, ok := p.store.(goagent.BulkVectorStore); ok {
+		if err := bulk.BulkUpsert(ctx, pending); err != nil {
+			wrapErr := fmt.Errorf("rag: bulk upserting %q: %w", doc.Source, err)
 			notify(wrapErr)
 			return wrapErr
 		}
-		embedded++
+	} else {
+		for _, e := range pending {
+			if err := p.store.Upsert(ctx, e.ID, e.Vector, e.Message); err != nil {
+				wrapErr := fmt.Errorf("rag: upserting %q: %w", doc.Source, err)
+				notify(wrapErr)
+				return wrapErr
+			}
+		}
 	}
 
 	notify(nil)

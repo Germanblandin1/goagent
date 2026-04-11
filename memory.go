@@ -131,6 +131,35 @@ type VectorStore interface {
 	Delete(ctx context.Context, id string) error
 }
 
+// UpsertEntry holds the data for a single [BulkVectorStore.BulkUpsert] element.
+type UpsertEntry struct {
+	ID      string
+	Vector  []float32
+	Message Message
+}
+
+// BulkVectorStore extends [VectorStore] with batch operations for stores that
+// support efficient multi-row writes. Callers type-assert to BulkVectorStore
+// and fall back to individual [VectorStore.Upsert] / [VectorStore.Delete]
+// calls when the store does not implement it.
+//
+// Implementations that do implement BulkVectorStore should ensure that a single
+// BulkUpsert or BulkDelete call is cheaper than an equivalent number of
+// individual Upsert / Delete calls (e.g. by using a database transaction or a
+// native batch RPC).
+type BulkVectorStore interface {
+	VectorStore
+
+	// BulkUpsert stores or updates all entries in a single batch.
+	// The operation is idempotent; when entries contains duplicate IDs the
+	// last occurrence wins (same behaviour as repeated Upsert calls).
+	BulkUpsert(ctx context.Context, entries []UpsertEntry) error
+
+	// BulkDelete removes all entries with the given ids in a single batch.
+	// IDs that do not exist are silently ignored.
+	BulkDelete(ctx context.Context, ids []string) error
+}
+
 // Embedder converts message content into a dense vector representation
 // suitable for semantic similarity search. Implementations receive the full
 // []ContentBlock so they can handle text, image, and document blocks natively

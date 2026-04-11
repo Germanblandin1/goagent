@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/Germanblandin1/goagent"
 )
@@ -17,8 +18,17 @@ type Querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-// Compile-time check.
+// Compile-time checks.
 var _ goagent.VectorStore = (*Store)(nil)
+var _ goagent.BulkVectorStore = (*Store)(nil)
+
+// pgTransactor is a private interface satisfied by *sql.DB and *sql.Tx (and
+// compatible pgx wrappers) that exposes BeginTx. Used by BulkUpsert to wrap
+// multiple writes in a single transaction when the underlying connection
+// supports it.
+type pgTransactor interface {
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
+}
 
 // validIdentifier matches safe SQL identifiers: letters, digits, underscores,
 // and dots (for schema-qualified names like "public.embeddings").
@@ -314,6 +324,84 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, s.deleteSQL, id)
 	if err != nil {
 		return fmt.Errorf("pgvector: delete: %w", err)
+	}
+	return nil
+}
+
+// BulkUpsert stores or updates all entries in a single database transaction
+// when the underlying connection supports BeginTx (e.g. *sql.DB). Otherwise
+// entries are upserted sequentially with individual calls. The operation is
+// idempotent; duplicate IDs within entries follow last-write-wins semantics.
+func (s *Store) BulkUpsert(ctx context.Context, entries []goagent.UpsertEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	upsertOne := func(q Querier, e goagent.UpsertEntry) error {
+		text := goagent.TextFrom(e.Message.Content)
+		vecLit := float32SliceToLiteral(e.Vector)
+		var err error
+		if s.cfg.MetadataColumn != "" {
+			metaJSON, merr := metadataToJSON(e.Message.Metadata)
+			if merr != nil {
+				return fmt.Errorf("pgvector: bulk upsert: %w", merr)
+			}
+			_, err = q.ExecContext(ctx, s.upsertSQL, e.ID, vecLit, text, metaJSON)
+		} else {
+			_, err = q.ExecContext(ctx, s.upsertSQL, e.ID, vecLit, text)
+		}
+		if err != nil {
+			return fmt.Errorf("pgvector: bulk upsert: %w", err)
+		}
+		return nil
+	}
+
+	if tr, ok := s.db.(pgTransactor); ok {
+		tx, err := tr.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("pgvector: bulk upsert: %w", err)
+		}
+		defer tx.Rollback() //nolint:errcheck
+		for _, e := range entries {
+			if err := upsertOne(tx, e); err != nil {
+				return err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("pgvector: bulk upsert: %w", err)
+		}
+		return nil
+	}
+
+	for _, e := range entries {
+		if err := upsertOne(s.db, e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// BulkDelete removes all entries with the given ids in a single query using a
+// parameterized IN clause. IDs that do not exist are silently ignored.
+func (s *Store) BulkDelete(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	// Build: DELETE FROM table WHERE id_col IN ($1, $2, ..., $N)
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+	query := fmt.Sprintf(
+		`DELETE FROM %s WHERE %s IN (%s)`,
+		s.cfg.Table, s.cfg.IDColumn,
+		strings.Join(placeholders, ", "),
+	)
+	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("pgvector: bulk delete: %w", err)
 	}
 	return nil
 }

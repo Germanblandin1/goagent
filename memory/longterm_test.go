@@ -435,3 +435,72 @@ type errChunker struct{ err error }
 func (c *errChunker) Chunk(_ context.Context, _ vector.ChunkContent) ([]vector.ChunkResult, error) {
 	return nil, c.err
 }
+
+// bulkRecordingVectorStore records BulkUpsert calls and also satisfies VectorStore.
+type bulkRecordingVectorStore struct {
+	bulkEntries []goagent.UpsertEntry
+	upsertIDs   []string
+}
+
+func (s *bulkRecordingVectorStore) Upsert(_ context.Context, id string, _ []float32, _ goagent.Message) error {
+	s.upsertIDs = append(s.upsertIDs, id)
+	return nil
+}
+
+func (s *bulkRecordingVectorStore) Search(_ context.Context, _ []float32, _ int, _ ...goagent.SearchOption) ([]goagent.ScoredMessage, error) {
+	return nil, nil
+}
+
+func (s *bulkRecordingVectorStore) Delete(_ context.Context, _ string) error { return nil }
+
+func (s *bulkRecordingVectorStore) BulkUpsert(_ context.Context, entries []goagent.UpsertEntry) error {
+	s.bulkEntries = append(s.bulkEntries, entries...)
+	return nil
+}
+
+func (s *bulkRecordingVectorStore) BulkDelete(_ context.Context, _ []string) error { return nil }
+
+// TestLongTerm_UsesBulkUpsertWhenAvailable verifies that Store delegates to
+// BulkUpsert when the underlying VectorStore implements BulkVectorStore.
+func TestLongTerm_UsesBulkUpsertWhenAvailable(t *testing.T) {
+	store := &bulkRecordingVectorStore{}
+	m, err := memory.NewLongTerm(
+		memory.WithVectorStore(store),
+		memory.WithEmbedder(stubEmbedder{}),
+	)
+	if err != nil {
+		t.Fatalf("NewLongTerm: %v", err)
+	}
+
+	if err := m.Store(context.Background(), goagent.UserMessage("hello")); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+
+	if len(store.upsertIDs) != 0 {
+		t.Errorf("expected Upsert not to be called, but got %d calls", len(store.upsertIDs))
+	}
+	if len(store.bulkEntries) != 1 {
+		t.Errorf("expected 1 BulkUpsert entry, got %d", len(store.bulkEntries))
+	}
+}
+
+// TestLongTerm_BulkFallbackWhenNotSupported verifies that when the store does
+// not implement BulkVectorStore, individual Upsert calls are made.
+func TestLongTerm_BulkFallbackWhenNotSupported(t *testing.T) {
+	store := &recordingVectorStore{}
+	m, err := memory.NewLongTerm(
+		memory.WithVectorStore(store),
+		memory.WithEmbedder(stubEmbedder{}),
+	)
+	if err != nil {
+		t.Fatalf("NewLongTerm: %v", err)
+	}
+
+	if err := m.Store(context.Background(), goagent.UserMessage("hello")); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+
+	if len(store.ids) != 1 {
+		t.Errorf("expected 1 individual Upsert call, got %d", len(store.ids))
+	}
+}

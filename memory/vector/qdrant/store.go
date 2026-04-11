@@ -8,8 +8,9 @@ import (
 	"github.com/qdrant/go-client/qdrant"
 )
 
-// Compile-time check.
+// Compile-time checks.
 var _ goagent.VectorStore = (*Store)(nil)
+var _ goagent.BulkVectorStore = (*Store)(nil)
 
 // Config describes the Qdrant collection to use.
 // CollectionName is the only required field.
@@ -161,6 +162,65 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	})
 	if err != nil {
 		return fmt.Errorf("qdrant: delete: %w", err)
+	}
+	return nil
+}
+
+// BulkUpsert stores or updates all entries in a single Qdrant UpsertPoints
+// RPC call. This is the native Qdrant batch operation and is significantly
+// more efficient than N individual Upsert calls.
+func (s *Store) BulkUpsert(ctx context.Context, entries []goagent.UpsertEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	points := make([]*qdrant.PointStruct, len(entries))
+	for i, e := range entries {
+		text := goagent.TextFrom(e.Message.Content)
+		pointID := stringToPointID(e.ID)
+
+		payload := map[string]any{
+			"id":      e.ID,
+			"content": text,
+		}
+		if len(e.Message.Metadata) > 0 {
+			payload["metadata"] = e.Message.Metadata
+		}
+
+		points[i] = &qdrant.PointStruct{
+			Id:      qdrant.NewIDNum(pointID),
+			Vectors: qdrant.NewVectorsDense(e.Vector),
+			Payload: payloadToQdrant(payload),
+		}
+	}
+
+	_, err := s.client.Upsert(ctx, &qdrant.UpsertPoints{
+		CollectionName: s.cfg.CollectionName,
+		Points:         points,
+	})
+	if err != nil {
+		return fmt.Errorf("qdrant: bulk upsert: %w", err)
+	}
+	return nil
+}
+
+// BulkDelete removes all entries with the given ids in a single Qdrant
+// DeletePoints RPC call. IDs that do not exist are silently ignored.
+func (s *Store) BulkDelete(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	pointIDs := make([]*qdrant.PointId, len(ids))
+	for i, id := range ids {
+		pointIDs[i] = qdrant.NewIDNum(stringToPointID(id))
+	}
+	_, err := s.client.Delete(ctx, &qdrant.DeletePoints{
+		CollectionName: s.cfg.CollectionName,
+		Points:         qdrant.NewPointsSelector(pointIDs...),
+	})
+	if err != nil {
+		return fmt.Errorf("qdrant: bulk delete: %w", err)
 	}
 	return nil
 }

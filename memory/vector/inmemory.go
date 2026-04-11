@@ -10,8 +10,9 @@ import (
 	"github.com/Germanblandin1/goagent/internal/session"
 )
 
-// Compile-time check.
+// Compile-time checks.
 var _ goagent.VectorStore = (*InMemoryStore)(nil)
+var _ goagent.BulkVectorStore = (*InMemoryStore)(nil)
 
 type entry struct {
 	vector []float32
@@ -96,5 +97,30 @@ func (s *InMemoryStore) Delete(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.entries, id)
+	return nil
+}
+
+// BulkUpsert stores or replaces all entries under their respective ids in a
+// single lock acquisition. A copy of each vector is made to protect against
+// caller mutation.
+func (s *InMemoryStore) BulkUpsert(_ context.Context, entries []goagent.UpsertEntry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range entries {
+		cp := make([]float32, len(e.Vector))
+		copy(cp, e.Vector)
+		s.entries[e.ID] = entry{vector: cp, msg: e.Message}
+	}
+	return nil
+}
+
+// BulkDelete removes all entries with the given ids in a single lock
+// acquisition. IDs that do not exist are silently ignored.
+func (s *InMemoryStore) BulkDelete(_ context.Context, ids []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range ids {
+		delete(s.entries, id)
+	}
 	return nil
 }

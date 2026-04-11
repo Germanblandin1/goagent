@@ -116,6 +116,35 @@ func (s *basicStore) Search(_ context.Context, _ []float32, topK int, _ ...goage
 
 func (s *basicStore) Delete(_ context.Context, _ string) error { return nil }
 
+// bulkStore is a VectorStore that also implements BulkVectorStore, recording
+// which path was taken so tests can assert delegation behaviour.
+type bulkStore struct {
+	basicStore
+	bulkEntries []goagent.UpsertEntry
+	upsertCalls int
+}
+
+func newBulkStore() *bulkStore {
+	return &bulkStore{
+		basicStore: basicStore{entries: make(map[string]struct {
+			vec []float32
+			msg goagent.Message
+		})},
+	}
+}
+
+func (s *bulkStore) Upsert(ctx context.Context, id string, vec []float32, msg goagent.Message) error {
+	s.upsertCalls++
+	return s.basicStore.Upsert(ctx, id, vec, msg)
+}
+
+func (s *bulkStore) BulkUpsert(_ context.Context, entries []goagent.UpsertEntry) error {
+	s.bulkEntries = append(s.bulkEntries, entries...)
+	return nil
+}
+
+func (s *bulkStore) BulkDelete(_ context.Context, _ []string) error { return nil }
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 func TestPipeline_IndexAndSearch(t *testing.T) {
@@ -593,3 +622,62 @@ func TestPipeline_IndexObserverUpsertError(t *testing.T) {
 		t.Errorf("observer error = %v, want to wrap %v", observerErr, upsertErr)
 	}
 }
+
+// TestPipeline_UsesBulkUpsertWhenAvailable verifies that Index delegates to
+// BulkUpsert when the store implements BulkVectorStore.
+func TestPipeline_UsesBulkUpsertWhenAvailable(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	store := newBulkStore()
+	p, err := rag.NewPipeline(
+		vector.NewNoOpChunker(),
+		&stubEmbedder{vec: []float32{1, 0}},
+		store,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc := rag.Document{Source: "doc.txt", Content: []goagent.ContentBlock{goagent.TextBlock("hello")}}
+	if err := p.Index(ctx, doc); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	if store.upsertCalls != 0 {
+		t.Errorf("expected Upsert not to be called, got %d calls", store.upsertCalls)
+	}
+	if len(store.bulkEntries) != 1 {
+		t.Errorf("expected 1 BulkUpsert entry, got %d", len(store.bulkEntries))
+	}
+}
+
+// TestPipeline_BulkFallbackWhenNotSupported verifies that when the store does
+// not implement BulkVectorStore, Index falls back to individual Upsert calls.
+func TestPipeline_BulkFallbackWhenNotSupported(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	store := newBasicStore()
+	p, err := rag.NewPipeline(
+		vector.NewNoOpChunker(),
+		&stubEmbedder{vec: []float32{1, 0}},
+		store,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc := rag.Document{Source: "doc.txt", Content: []goagent.ContentBlock{goagent.TextBlock("hello")}}
+	if err := p.Index(ctx, doc); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	store.mu.Lock()
+	count := len(store.entries)
+	store.mu.Unlock()
+	if count != 1 {
+		t.Errorf("expected 1 entry via individual Upsert, got %d", count)
+	}
+}
+

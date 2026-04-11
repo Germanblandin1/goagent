@@ -161,3 +161,159 @@ func TestInMemoryStore_RaceCondition(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestInMemoryStore_BulkUpsert(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("inserts all entries", func(t *testing.T) {
+		s := vector.NewInMemoryStore()
+		entries := []goagent.UpsertEntry{
+			{ID: "a", Vector: []float32{1, 0}, Message: goagent.UserMessage("A")},
+			{ID: "b", Vector: []float32{0, 1}, Message: goagent.UserMessage("B")},
+			{ID: "c", Vector: []float32{1, 1}, Message: goagent.UserMessage("C")},
+		}
+		if err := s.BulkUpsert(ctx, entries); err != nil {
+			t.Fatal(err)
+		}
+		results, err := s.Search(ctx, []float32{1, 0}, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 3 {
+			t.Errorf("expected 3 results, got %d", len(results))
+		}
+	})
+
+	t.Run("idempotent on duplicate id", func(t *testing.T) {
+		s := vector.NewInMemoryStore()
+		first := goagent.UpsertEntry{ID: "x", Vector: []float32{1, 0}, Message: goagent.UserMessage("first")}
+		if err := s.BulkUpsert(ctx, []goagent.UpsertEntry{first}); err != nil {
+			t.Fatal(err)
+		}
+		second := goagent.UpsertEntry{ID: "x", Vector: []float32{1, 0}, Message: goagent.UserMessage("second")}
+		if err := s.BulkUpsert(ctx, []goagent.UpsertEntry{second}); err != nil {
+			t.Fatal(err)
+		}
+		results, err := s.Search(ctx, []float32{1, 0}, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Message.TextContent() != "second" {
+			t.Errorf("expected last-write-wins, got %q", results[0].Message.TextContent())
+		}
+	})
+
+	t.Run("empty slice is a no-op", func(t *testing.T) {
+		s := vector.NewInMemoryStore()
+		if err := s.BulkUpsert(ctx, nil); err != nil {
+			t.Fatal(err)
+		}
+		results, err := s.Search(ctx, []float32{1, 0}, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 0 {
+			t.Errorf("expected 0 results, got %d", len(results))
+		}
+	})
+
+	t.Run("vector copy protects against mutation", func(t *testing.T) {
+		s := vector.NewInMemoryStore()
+		vec := []float32{1, 0}
+		entries := []goagent.UpsertEntry{{ID: "m", Vector: vec, Message: goagent.UserMessage("M")}}
+		if err := s.BulkUpsert(ctx, entries); err != nil {
+			t.Fatal(err)
+		}
+		vec[0] = 999 // mutate after upsert
+		results, err := s.Search(ctx, []float32{1, 0}, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) == 0 {
+			t.Fatal("expected 1 result")
+		}
+		if results[0].Score < 0.99 {
+			t.Errorf("expected high similarity after vector copy, got %.4f", results[0].Score)
+		}
+	})
+}
+
+func TestInMemoryStore_BulkDelete(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("removes existing ids", func(t *testing.T) {
+		s := vector.NewInMemoryStore()
+		vec := []float32{1, 0}
+		for _, id := range []string{"a", "b", "c"} {
+			if err := s.Upsert(ctx, id, vec, goagent.UserMessage(id)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := s.BulkDelete(ctx, []string{"a", "b"}); err != nil {
+			t.Fatal(err)
+		}
+		results, err := s.Search(ctx, vec, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 1 {
+			t.Errorf("expected 1 result after bulk delete, got %d", len(results))
+		}
+		if results[0].Message.TextContent() != "c" {
+			t.Errorf("expected remaining entry %q, got %q", "c", results[0].Message.TextContent())
+		}
+	})
+
+	t.Run("nonexistent ids are no-ops", func(t *testing.T) {
+		s := vector.NewInMemoryStore()
+		if err := s.BulkDelete(ctx, []string{"ghost1", "ghost2"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("empty slice is a no-op", func(t *testing.T) {
+		s := vector.NewInMemoryStore()
+		vec := []float32{1, 0}
+		if err := s.Upsert(ctx, "keep", vec, goagent.UserMessage("keep")); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.BulkDelete(ctx, nil); err != nil {
+			t.Fatal(err)
+		}
+		results, err := s.Search(ctx, vec, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 1 {
+			t.Errorf("expected 1 result, got %d", len(results))
+		}
+	})
+}
+
+func TestInMemoryStore_BulkUpsert_RaceCondition(t *testing.T) {
+	s := vector.NewInMemoryStore()
+	vec := []float32{1, 0}
+	ctx := context.Background()
+
+	const goroutines = 10
+	var wg sync.WaitGroup
+	wg.Add(goroutines * 2)
+
+	for i := range goroutines {
+		entries := []goagent.UpsertEntry{
+			{ID: string(rune('a' + i)), Vector: vec, Message: goagent.UserMessage("msg")},
+		}
+		go func() {
+			defer wg.Done()
+			_ = s.BulkUpsert(ctx, entries)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = s.BulkDelete(ctx, []string{string(rune('a' + i))})
+		}()
+	}
+	wg.Wait()
+}
