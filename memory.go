@@ -174,6 +174,24 @@ type Embedder interface {
 	Embed(ctx context.Context, content []ContentBlock) ([]float32, error)
 }
 
+// BatchEmbedder is an optional extension of Embedder that converts multiple
+// content slices to vectors in a single API call. Store uses it when available
+// to collapse N×K individual Embed calls into one round trip — a significant
+// win for remote embedding APIs (OpenAI, Voyage, Cohere) where HTTP overhead
+// dominates latency.
+//
+// Implementations must return a slice of exactly len(inputs) vectors.
+// A nil vector at index i signals that the input had no embeddable content
+// (equivalent to a single Embed returning ErrNoEmbeddeableContent for that slot).
+// A non-nil error aborts the entire batch.
+//
+// This mirrors the BulkVectorStore pattern: declare the interface, and
+// longTermMemory.Store will detect it at runtime via a type assertion.
+type BatchEmbedder interface {
+	Embedder
+	BatchEmbed(ctx context.Context, inputs [][]ContentBlock) ([][]float32, error)
+}
+
 // TextFrom extracts and concatenates the text from a slice of ContentBlocks.
 // Non-text blocks are ignored. Adjacent text values are separated by a space.
 //

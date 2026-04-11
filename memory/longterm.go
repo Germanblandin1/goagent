@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/Germanblandin1/goagent"
 	"github.com/Germanblandin1/goagent/internal/session"
@@ -104,8 +105,8 @@ type longTermMemory struct {
 }
 
 // Store persists msgs via the configured chunking and embedding pipeline.
-// Each message is first split into chunks by the Chunker, then each chunk is
-// embedded and upserted into the VectorStore with a stable ID.
+// Each message is first split into chunks by the Chunker, then the chunks are
+// embedded and upserted into the VectorStore with stable IDs.
 //
 // ID format: "sessionID:sha256(msg):chunkIndex" when a session ID is present
 // in the context (via vector.WithSessionID), or "sha256(msg):chunkIndex" otherwise.
@@ -113,12 +114,55 @@ type longTermMemory struct {
 //
 // When a chunk contains no embeddeable content (e.g. an image chunk with a
 // text-only embedder), the chunk is silently skipped — this is not an error.
+//
+// Store selects between two embedding strategies at runtime:
+//
+//   - BatchEmbedder path: if the configured Embedder also implements
+//     [goagent.BatchEmbedder], all chunks from all messages are collected and
+//     embedded in a single API call, then upserted in one pass.
+//   - Parallel path (default): chunks within each message are embedded
+//     concurrently (fan-out / fan-in), reducing per-message latency from
+//     K×embed_latency to ~max(embed_latency).
 func (m *longTermMemory) Store(ctx context.Context, msgs ...goagent.Message) error {
 	// session.IDFromContext guarantees that sessionID never contains ":".
 	// See session.NewContext — IDs with ":" are rejected at injection time,
 	// so the first ":" in "sessionID:baseID:chunkIndex" is always the boundary.
 	sessionID, hasSession := session.IDFromContext(ctx)
 
+	// BatchEmbedder fast path: collect all chunks across all messages, embed in
+	// one API call, and upsert in a single pass. For remote embedding APIs this
+	// trades N×K HTTP round trips for one.
+	if batcher, ok := m.embedder.(goagent.BatchEmbedder); ok {
+		return m.storeBatch(ctx, batcher, sessionID, hasSession, msgs)
+	}
+
+	// Default path: embed chunks of each message concurrently (fan-out / fan-in),
+	// then batch-upsert per message when the store supports it.
+	for _, msg := range msgs {
+		if err := m.storeOne(ctx, sessionID, hasSession, msg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// storeBatch implements the BatchEmbedder fast path for Store.
+// It chunks all messages, calls BatchEmbed once, then upserts all entries.
+func (m *longTermMemory) storeBatch(
+	ctx context.Context,
+	batcher goagent.BatchEmbedder,
+	sessionID string,
+	hasSession bool,
+	msgs []goagent.Message,
+) error {
+	// First pass: chunk all messages and collect (msg, chunk, baseID, chunkIdx).
+	type item struct {
+		msg      goagent.Message
+		chunk    vector.ChunkResult
+		baseID   string
+		chunkIdx int
+	}
+	var items []item
 	for _, msg := range msgs {
 		content := vector.ChunkContent{
 			Blocks:   msg.Content,
@@ -128,51 +172,139 @@ func (m *longTermMemory) Store(ctx context.Context, msgs ...goagent.Message) err
 		if err != nil {
 			return fmt.Errorf("chunking message (role=%s): %w", msg.Role, err)
 		}
-
 		baseID := messageID(msg)
-
-		// Embed all chunks first, then batch-upsert when the store supports it.
-		type pendingEntry struct {
-			idx   int
-			entry goagent.UpsertEntry
-		}
-		var pending []pendingEntry
-
 		for i, chunk := range chunks {
-			vec, err := m.embedder.Embed(ctx, chunk.Blocks)
-			if err != nil {
-				if errors.Is(err, vector.ErrNoEmbeddeableContent) {
-					continue // image/doc chunk with text-only embedder — skip silently
-				}
-				return fmt.Errorf("embedding chunk %d (role=%s): %w", i, msg.Role, err)
-			}
+			items = append(items, item{msg, chunk, baseID, i})
+		}
+	}
+	if len(items) == 0 {
+		return nil
+	}
 
+	// Second pass: single BatchEmbed call.
+	inputs := make([][]goagent.ContentBlock, len(items))
+	for i, it := range items {
+		inputs[i] = it.chunk.Blocks
+	}
+	vecs, err := batcher.BatchEmbed(ctx, inputs)
+	if err != nil {
+		return fmt.Errorf("batch embedding: %w", err)
+	}
+
+	// Third pass: build UpsertEntry slice, skipping nil vectors (no embeddable content).
+	entries := make([]goagent.UpsertEntry, 0, len(items))
+	for i, it := range items {
+		if vecs[i] == nil {
+			continue
+		}
+		var id string
+		if hasSession {
+			id = fmt.Sprintf("%s:%s:%d", sessionID, it.baseID, it.chunkIdx)
+		} else {
+			id = fmt.Sprintf("%s:%d", it.baseID, it.chunkIdx)
+		}
+		entries = append(entries, goagent.UpsertEntry{
+			ID:      id,
+			Vector:  vecs[i],
+			Message: vector.ChunkToMessage(it.msg, it.chunk),
+		})
+	}
+
+	if bulk, ok := m.store.(goagent.BulkVectorStore); ok {
+		if err := bulk.BulkUpsert(ctx, entries); err != nil {
+			return fmt.Errorf("bulk upserting: %w", err)
+		}
+	} else {
+		for _, e := range entries {
+			if err := m.store.Upsert(ctx, e.ID, e.Vector, e.Message); err != nil {
+				return fmt.Errorf("upserting %s: %w", e.ID, err)
+			}
+		}
+	}
+	return nil
+}
+
+// storeOne embeds a single message's chunks concurrently and upserts them.
+// Chunks are embedded in parallel (fan-out / fan-in); all goroutines run to
+// completion even if one fails — the first error found after wg.Wait is returned.
+// Context cancellation propagates to all Embed calls naturally.
+func (m *longTermMemory) storeOne(ctx context.Context, sessionID string, hasSession bool, msg goagent.Message) error {
+	content := vector.ChunkContent{
+		Blocks:   msg.Content,
+		Metadata: map[string]any{"role": string(msg.Role)},
+	}
+	chunks, err := m.chunker.Chunk(ctx, content)
+	if err != nil {
+		return fmt.Errorf("chunking message (role=%s): %w", msg.Role, err)
+	}
+
+	baseID := messageID(msg)
+
+	// Embed all chunks concurrently. Each goroutine writes to its own index
+	// in results — no mutex needed (same pattern as dispatcher.dispatch).
+	type embedResult struct {
+		entry goagent.UpsertEntry
+		err   error
+		skip  bool
+	}
+	results := make([]embedResult, len(chunks))
+	var wg sync.WaitGroup
+	for i, chunk := range chunks {
+		wg.Add(1)
+		go func(idx int, ch vector.ChunkResult) {
+			defer wg.Done()
+			vec, embedErr := m.embedder.Embed(ctx, ch.Blocks)
+			if embedErr != nil {
+				if errors.Is(embedErr, vector.ErrNoEmbeddeableContent) {
+					results[idx].skip = true // image/doc with text-only embedder — skip silently
+					return
+				}
+				results[idx].err = embedErr
+				return
+			}
 			var id string
 			if hasSession {
-				id = fmt.Sprintf("%s:%s:%d", sessionID, baseID, i)
+				id = fmt.Sprintf("%s:%s:%d", sessionID, baseID, idx)
 			} else {
-				id = fmt.Sprintf("%s:%d", baseID, i)
+				id = fmt.Sprintf("%s:%d", baseID, idx)
 			}
+			results[idx].entry = goagent.UpsertEntry{
+				ID:      id,
+				Vector:  vec,
+				Message: vector.ChunkToMessage(msg, ch),
+			}
+		}(i, chunk)
+	}
+	wg.Wait()
 
-			pending = append(pending, pendingEntry{
-				idx:   i,
-				entry: goagent.UpsertEntry{ID: id, Vector: vec, Message: vector.ChunkToMessage(msg, chunk)},
-			})
+	// Collect results; return the first embedding error encountered.
+	type pendingItem struct {
+		chunkIdx int
+		entry    goagent.UpsertEntry
+	}
+	var pending []pendingItem
+	for i, r := range results {
+		if r.skip {
+			continue
 		}
+		if r.err != nil {
+			return fmt.Errorf("embedding chunk %d (role=%s): %w", i, msg.Role, r.err)
+		}
+		pending = append(pending, pendingItem{chunkIdx: i, entry: r.entry})
+	}
 
-		if bulk, ok := m.store.(goagent.BulkVectorStore); ok {
-			entries := make([]goagent.UpsertEntry, len(pending))
-			for i, p := range pending {
-				entries[i] = p.entry
-			}
-			if err := bulk.BulkUpsert(ctx, entries); err != nil {
-				return fmt.Errorf("bulk upserting chunks (role=%s): %w", msg.Role, err)
-			}
-		} else {
-			for _, p := range pending {
-				if err := m.store.Upsert(ctx, p.entry.ID, p.entry.Vector, p.entry.Message); err != nil {
-					return fmt.Errorf("upserting chunk %d (role=%s): %w", p.idx, msg.Role, err)
-				}
+	if bulk, ok := m.store.(goagent.BulkVectorStore); ok {
+		entries := make([]goagent.UpsertEntry, len(pending))
+		for i, p := range pending {
+			entries[i] = p.entry
+		}
+		if err := bulk.BulkUpsert(ctx, entries); err != nil {
+			return fmt.Errorf("bulk upserting chunks (role=%s): %w", msg.Role, err)
+		}
+	} else {
+		for _, p := range pending {
+			if err := m.store.Upsert(ctx, p.entry.ID, p.entry.Vector, p.entry.Message); err != nil {
+				return fmt.Errorf("upserting chunk %d (role=%s): %w", p.chunkIdx, msg.Role, err)
 			}
 		}
 	}

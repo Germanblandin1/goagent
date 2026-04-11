@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Germanblandin1/goagent"
 	"github.com/Germanblandin1/goagent/internal/session"
@@ -426,6 +428,350 @@ func TestLongTerm_SessionIDPrefixedIDs(t *testing.T) {
 	}
 	if !strings.HasPrefix(store.ids[0], "sess-42:") {
 		t.Errorf("ID %q does not start with 'sess-42:'", store.ids[0])
+	}
+}
+
+// ── Parallel embed tests ──────────────────────────────────────────────────────
+
+// concurrentEmbedder tracks peak concurrency across concurrent Embed calls.
+// A small delay forces goroutines to overlap, making the peak observable.
+type concurrentEmbedder struct {
+	mu    sync.Mutex
+	active int
+	peak   int
+	delay  time.Duration
+}
+
+func (e *concurrentEmbedder) Embed(_ context.Context, _ []goagent.ContentBlock) ([]float32, error) {
+	e.mu.Lock()
+	e.active++
+	if e.active > e.peak {
+		e.peak = e.active
+	}
+	e.mu.Unlock()
+
+	time.Sleep(e.delay)
+
+	e.mu.Lock()
+	e.active--
+	e.mu.Unlock()
+	return []float32{0.1, 0.2}, nil
+}
+
+// TestLongTerm_StoreParallelEmbeds verifies that chunks within a message are
+// embedded concurrently when using the default (non-BatchEmbedder) path.
+func TestLongTerm_StoreParallelEmbeds(t *testing.T) {
+	t.Parallel()
+
+	embedder := &concurrentEmbedder{delay: 10 * time.Millisecond}
+	store := &recordingVectorStore{}
+
+	words := make([]string, 30)
+	for i := range words {
+		words[i] = "word"
+	}
+	longText := strings.Join(words, " ")
+
+	m, err := memory.NewLongTerm(
+		memory.WithVectorStore(store),
+		memory.WithEmbedder(embedder),
+		memory.WithChunker(vector.NewTextChunker(
+			vector.WithMaxSize(12),
+			vector.WithOverlap(0),
+		)),
+	)
+	if err != nil {
+		t.Fatalf("NewLongTerm: %v", err)
+	}
+
+	if err := m.Store(context.Background(), goagent.UserMessage(longText)); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+
+	embedder.mu.Lock()
+	peak := embedder.peak
+	embedder.mu.Unlock()
+
+	if peak < 2 {
+		t.Errorf("expected concurrent embedding (peak > 1), got peak=%d; upserts=%d", peak, len(store.ids))
+	}
+}
+
+// TestLongTerm_StoreParallelEmbedsErrorPropagation verifies that when a chunk
+// embed fails in the parallel path, the error is propagated by Store.
+func TestLongTerm_StoreParallelEmbedsErrorPropagation(t *testing.T) {
+	t.Parallel()
+
+	errEmbed := errors.New("embed failed")
+	words := make([]string, 30)
+	for i := range words {
+		words[i] = "word"
+	}
+
+	m, err := memory.NewLongTerm(
+		memory.WithVectorStore(&recordingVectorStore{}),
+		memory.WithEmbedder(&errEmbedder{err: errEmbed}),
+		memory.WithChunker(vector.NewTextChunker(
+			vector.WithMaxSize(12),
+			vector.WithOverlap(0),
+		)),
+	)
+	if err != nil {
+		t.Fatalf("NewLongTerm: %v", err)
+	}
+
+	err = m.Store(context.Background(), goagent.UserMessage(strings.Join(words, " ")))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, errEmbed) {
+		t.Errorf("want errEmbed in chain, got: %v", err)
+	}
+}
+
+// ── BatchEmbedder tests ───────────────────────────────────────────────────────
+
+// batchRecordingEmbedder implements BatchEmbedder and records each call.
+// skipIndex, when >= 0, causes a nil vector at that position to simulate
+// a chunk with no embeddable content.
+type batchRecordingEmbedder struct {
+	mu             sync.Mutex
+	batchCallCount int
+	batchInputLen  int
+	embedCallCount int
+	skipIndex      int
+}
+
+func (e *batchRecordingEmbedder) Embed(_ context.Context, _ []goagent.ContentBlock) ([]float32, error) {
+	e.mu.Lock()
+	e.embedCallCount++
+	e.mu.Unlock()
+	return []float32{0.1, 0.2}, nil
+}
+
+func (e *batchRecordingEmbedder) BatchEmbed(_ context.Context, inputs [][]goagent.ContentBlock) ([][]float32, error) {
+	e.mu.Lock()
+	e.batchCallCount++
+	e.batchInputLen = len(inputs)
+	e.mu.Unlock()
+
+	vecs := make([][]float32, len(inputs))
+	for i := range vecs {
+		if e.skipIndex >= 0 && i == e.skipIndex {
+			vecs[i] = nil // nil signals no embeddable content for this chunk
+			continue
+		}
+		vecs[i] = []float32{float32(i)*0.1 + 0.1, float32(i)*0.1 + 0.2}
+	}
+	return vecs, nil
+}
+
+// TestLongTerm_BatchEmbedderPath verifies that when the embedder implements
+// BatchEmbedder, Store calls BatchEmbed once instead of Embed per chunk.
+func TestLongTerm_BatchEmbedderPath(t *testing.T) {
+	t.Parallel()
+
+	embedder := &batchRecordingEmbedder{skipIndex: -1}
+	store := &bulkRecordingVectorStore{}
+
+	m, err := memory.NewLongTerm(
+		memory.WithVectorStore(store),
+		memory.WithEmbedder(embedder),
+	)
+	if err != nil {
+		t.Fatalf("NewLongTerm: %v", err)
+	}
+
+	msgs := []goagent.Message{
+		goagent.UserMessage("first"),
+		goagent.AssistantMessage("second"),
+	}
+	if err := m.Store(context.Background(), msgs...); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+
+	embedder.mu.Lock()
+	batchCalls := embedder.batchCallCount
+	embedCalls := embedder.embedCallCount
+	inputLen := embedder.batchInputLen
+	embedder.mu.Unlock()
+
+	if batchCalls != 1 {
+		t.Errorf("BatchEmbed called %d times, want 1", batchCalls)
+	}
+	if embedCalls != 0 {
+		t.Errorf("Embed called %d times, want 0", embedCalls)
+	}
+	if inputLen != 2 {
+		t.Errorf("BatchEmbed received %d inputs, want 2 (one per message)", inputLen)
+	}
+	if len(store.bulkEntries) != 2 {
+		t.Errorf("BulkUpsert got %d entries, want 2", len(store.bulkEntries))
+	}
+}
+
+// TestLongTerm_BatchEmbedderSkipsNilVectors verifies that nil vectors returned
+// by BatchEmbed are silently skipped, matching the ErrNoEmbeddeableContent
+// behaviour of the per-chunk path.
+func TestLongTerm_BatchEmbedderSkipsNilVectors(t *testing.T) {
+	t.Parallel()
+
+	// skipIndex=0 → first chunk gets a nil vector.
+	embedder := &batchRecordingEmbedder{skipIndex: 0}
+	store := &bulkRecordingVectorStore{}
+
+	words := make([]string, 30)
+	for i := range words {
+		words[i] = "word"
+	}
+	longText := strings.Join(words, " ")
+
+	m, err := memory.NewLongTerm(
+		memory.WithVectorStore(store),
+		memory.WithEmbedder(embedder),
+		memory.WithChunker(vector.NewTextChunker(
+			vector.WithMaxSize(12),
+			vector.WithOverlap(0),
+		)),
+	)
+	if err != nil {
+		t.Fatalf("NewLongTerm: %v", err)
+	}
+
+	if err := m.Store(context.Background(), goagent.UserMessage(longText)); err != nil {
+		t.Fatalf("Store must not fail for nil vector: %v", err)
+	}
+
+	embedder.mu.Lock()
+	totalChunks := embedder.batchInputLen
+	embedder.mu.Unlock()
+
+	// One chunk was skipped (nil vector at index 0).
+	wantEntries := totalChunks - 1
+	if len(store.bulkEntries) != wantEntries {
+		t.Errorf("expected %d upserted entries (%d chunks − 1 skipped), got %d",
+			wantEntries, totalChunks, len(store.bulkEntries))
+	}
+}
+
+// batchErrEmbedder implements BatchEmbedder and always fails BatchEmbed.
+type batchErrEmbedder struct{ err error }
+
+func (e *batchErrEmbedder) Embed(_ context.Context, _ []goagent.ContentBlock) ([]float32, error) {
+	return []float32{0.1}, nil
+}
+
+func (e *batchErrEmbedder) BatchEmbed(_ context.Context, _ [][]goagent.ContentBlock) ([][]float32, error) {
+	return nil, e.err
+}
+
+// TestLongTerm_BatchEmbedderError verifies that a BatchEmbed failure is
+// propagated as an error from Store.
+func TestLongTerm_BatchEmbedderError(t *testing.T) {
+	t.Parallel()
+
+	errBatch := errors.New("batch embed failed")
+	m, err := memory.NewLongTerm(
+		memory.WithVectorStore(&recordingVectorStore{}),
+		memory.WithEmbedder(&batchErrEmbedder{err: errBatch}),
+	)
+	if err != nil {
+		t.Fatalf("NewLongTerm: %v", err)
+	}
+
+	err = m.Store(context.Background(), goagent.UserMessage("hi"))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, errBatch) {
+		t.Errorf("want errBatch in chain, got: %v", err)
+	}
+}
+
+// ── Benchmarks ────────────────────────────────────────────────────────────────
+
+// sleepEmbedder simulates a remote embed API with fixed per-call latency.
+type sleepEmbedder struct{ delay time.Duration }
+
+func (e *sleepEmbedder) Embed(_ context.Context, _ []goagent.ContentBlock) ([]float32, error) {
+	time.Sleep(e.delay)
+	return []float32{0.1, 0.2}, nil
+}
+
+// batchSleepEmbedder simulates a batch embed API: one call regardless of N.
+type batchSleepEmbedder struct{ delay time.Duration }
+
+func (e *batchSleepEmbedder) Embed(_ context.Context, _ []goagent.ContentBlock) ([]float32, error) {
+	time.Sleep(e.delay)
+	return []float32{0.1, 0.2}, nil
+}
+
+func (e *batchSleepEmbedder) BatchEmbed(_ context.Context, inputs [][]goagent.ContentBlock) ([][]float32, error) {
+	time.Sleep(e.delay) // single call regardless of chunk count
+	vecs := make([][]float32, len(inputs))
+	for i := range vecs {
+		vecs[i] = []float32{float32(i)*0.01, float32(i)*0.02 + 0.1}
+	}
+	return vecs, nil
+}
+
+// makeLongMessage returns a message long enough to produce ~10 chunks with
+// TextChunker(maxSize=12).
+func makeLongMessage() goagent.Message {
+	words := make([]string, 120)
+	for i := range words {
+		words[i] = "word"
+	}
+	return goagent.UserMessage(strings.Join(words, " "))
+}
+
+// BenchmarkStore_Parallel measures Store throughput using the parallel embed
+// path with a simulated 5 ms per-call latency.
+func BenchmarkStore_Parallel(b *testing.B) {
+	msg := makeLongMessage()
+	store := &bulkRecordingVectorStore{}
+	m, err := memory.NewLongTerm(
+		memory.WithVectorStore(store),
+		memory.WithEmbedder(&sleepEmbedder{delay: 5 * time.Millisecond}),
+		memory.WithChunker(vector.NewTextChunker(
+			vector.WithMaxSize(12),
+			vector.WithOverlap(0),
+		)),
+	)
+	if err != nil {
+		b.Fatalf("NewLongTerm: %v", err)
+	}
+
+	for b.Loop() {
+		store.bulkEntries = store.bulkEntries[:0]
+		if err := m.Store(context.Background(), msg); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkStore_BatchEmbedder measures Store throughput using the BatchEmbedder
+// fast path with a simulated 5 ms single-call latency (one call per iteration).
+func BenchmarkStore_BatchEmbedder(b *testing.B) {
+	msg := makeLongMessage()
+	store := &bulkRecordingVectorStore{}
+	m, err := memory.NewLongTerm(
+		memory.WithVectorStore(store),
+		memory.WithEmbedder(&batchSleepEmbedder{delay: 5 * time.Millisecond}),
+		memory.WithChunker(vector.NewTextChunker(
+			vector.WithMaxSize(12),
+			vector.WithOverlap(0),
+		)),
+	)
+	if err != nil {
+		b.Fatalf("NewLongTerm: %v", err)
+	}
+
+	for b.Loop() {
+		store.bulkEntries = store.bulkEntries[:0]
+		if err := m.Store(context.Background(), msg); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
