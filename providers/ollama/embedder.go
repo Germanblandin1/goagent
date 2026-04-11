@@ -2,15 +2,20 @@ package ollama
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/Germanblandin1/goagent"
 	"github.com/Germanblandin1/goagent/memory/vector"
 )
 
-// Compile-time check: OllamaEmbedder implements goagent.Embedder.
-var _ goagent.Embedder = (*OllamaEmbedder)(nil)
+// Compile-time checks: OllamaEmbedder implements both Embedder and BatchEmbedder.
+var (
+	_ goagent.Embedder      = (*OllamaEmbedder)(nil)
+	_ goagent.BatchEmbedder = (*OllamaEmbedder)(nil)
+)
 
 // EmbedderOption configures an OllamaEmbedder.
 type EmbedderOption func(*OllamaEmbedder)
@@ -85,6 +90,41 @@ func (e *OllamaEmbedder) Embed(ctx context.Context, blocks []goagent.ContentBloc
 		return nil, fmt.Errorf("ollama embedder: %w", err)
 	}
 	return result.Embedding, nil
+}
+
+// BatchEmbed embeds multiple content slices concurrently, sending each to
+// Ollama in a separate goroutine. This reduces total latency from
+// N×embed_latency to ~max(embed_latency) when the inputs are independent.
+//
+// A nil vector at position i means that the input at that position contained
+// no text blocks (equivalent to Embed returning ErrNoEmbeddeableContent).
+// A non-nil error means at least one Ollama call failed; the batch is aborted.
+func (e *OllamaEmbedder) BatchEmbed(ctx context.Context, inputs [][]goagent.ContentBlock) ([][]float32, error) {
+	vecs := make([][]float32, len(inputs))
+	errs := make([]error, len(inputs))
+	var wg sync.WaitGroup
+	for i, blocks := range inputs {
+		wg.Add(1)
+		go func(idx int, blks []goagent.ContentBlock) {
+			defer wg.Done()
+			vec, err := e.Embed(ctx, blks)
+			if err != nil {
+				if errors.Is(err, vector.ErrNoEmbeddeableContent) {
+					return // vecs[idx] stays nil — signal to caller to skip
+				}
+				errs[idx] = err
+				return
+			}
+			vecs[idx] = vec
+		}(i, blocks)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
+	return vecs, nil
 }
 
 // embedExtractText concatenates all ContentText blocks separated by a single
