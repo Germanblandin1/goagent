@@ -1,13 +1,18 @@
-// Command rag_batch_index is the same RAG demo as rag_docs but shows the
-// BatchEmbedder optimization in action. Because OllamaEmbedder implements
+// Command rag_batch_index is an interactive RAG chatbot that indexes Markdown
+// documents from a local directory and answers questions about them. It shows
+// the BatchEmbedder optimization in action: because OllamaEmbedder implements
 // goagent.BatchEmbedder, rag.Pipeline.Index embeds all chunks of a document
 // in a single batch of concurrent HTTP calls to Ollama — replacing K serial
 // round trips with ~max(embed_latency) per document.
+//
+// The conversation is multi-turn: the agent remembers previous exchanges
+// within a session. Type "exit" or "quit" to leave.
 //
 // Prerequisites:
 //
 //	ollama pull nomic-embed-text   # embedding model
 //	ollama pull llama3.2           # chat model (or any tool-capable model)
+//	docker run -d --name qdrant-goagent -p 6333:6333 -p 6334:6334 qdrant/qdrant:latest
 //
 // Usage:
 //
@@ -15,13 +20,16 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log"
 	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Germanblandin1/goagent"
@@ -33,7 +41,8 @@ import (
 )
 
 func main() {
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	// 1. Shared HTTP client — one connection pool for provider and embedder.
 	client := ollama.NewClient()
@@ -173,11 +182,38 @@ func main() {
 		log.Fatal(err)
 	}
 
-	resp, err := agent.Run(ctx, "¿Cómo implemento una tool personalizada en goagent?")
-	if err != nil {
-		log.Fatal(err)
+	scanner := bufio.NewScanner(os.Stdin)
+
+	fmt.Printf("RAG chatbot ready (%d docs indexed). Type your question, or \"exit\" to quit.\n\n", len(docs))
+
+	for {
+		fmt.Print("You: ")
+
+		if !scanner.Scan() {
+			break
+		}
+
+		input := strings.TrimSpace(scanner.Text())
+		if input == "" {
+			continue
+		}
+		if input == "exit" || input == "quit" {
+			break
+		}
+
+		reply, err := agent.Run(ctx, input)
+		if err != nil {
+			if ctx.Err() != nil {
+				break
+			}
+			log.Printf("error: %v\n", err)
+			continue
+		}
+
+		fmt.Printf("Bot: %s\n\n", reply)
 	}
-	fmt.Println(resp)
+
+	fmt.Println("Goodbye!")
 }
 
 // loadMarkdownDocs reads all .md files from dir and returns them as Documents.
