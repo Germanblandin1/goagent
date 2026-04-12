@@ -14,6 +14,7 @@ import (
 // Compile-time checks.
 var _ goagent.VectorStore = (*InMemoryStore)(nil)
 var _ goagent.BulkVectorStore = (*InMemoryStore)(nil)
+var _ goagent.CountableStore = (*InMemoryStore)(nil)
 
 type entry struct {
 	vector []float32
@@ -137,6 +138,32 @@ func (s *InMemoryStore) BulkUpsert(_ context.Context, entries []goagent.UpsertEn
 		s.entries[e.ID] = entry{vector: cp, msg: e.Message}
 	}
 	return nil
+}
+
+// Count returns the number of entries in the store that satisfy the given
+// options. Session scope and metadata filter follow the same rules as Search.
+// WithScoreThreshold is ignored because there is no query vector.
+func (s *InMemoryStore) Count(ctx context.Context, opts ...goagent.SearchOption) (int64, error) {
+	cfg := &goagent.SearchOptions{}
+	for _, o := range opts {
+		o(cfg)
+	}
+	sessionID, hasSession := session.IDFromContext(ctx)
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var n int64
+	for id, e := range s.entries {
+		if hasSession && !strings.HasPrefix(id, sessionID+":") {
+			continue
+		}
+		if len(cfg.Filter) > 0 && !matchesFilter(e.msg.Metadata, cfg.Filter) {
+			continue
+		}
+		n++
+	}
+	return n, nil
 }
 
 // BulkDelete removes all entries with the given ids in a single lock

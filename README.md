@@ -348,6 +348,26 @@ Two distance metrics are available via `WithDistanceMetric`:
 
 When not using `Open`, call `sqlitevec.Register()` before `sql.Open` to load the extension.
 
+#### Optional store capabilities
+
+All three persistent backends (and `InMemoryStore`) implement optional interfaces beyond `VectorStore`. Check for support with a type assertion — stores that do not implement the interface simply fail the assertion cleanly.
+
+**`CountableStore`** — count entries without a vector query:
+
+```go
+if cs, ok := store.(goagent.CountableStore); ok {
+    // Total entries in the store.
+    n, err := cs.Count(ctx)
+
+    // Entries whose metadata matches the filter.
+    n, err = cs.Count(ctx, goagent.WithFilter(map[string]any{"env": "prod"}))
+}
+```
+
+`WithFilter` applies the same metadata matching as `Search`. `WithScoreThreshold` is silently ignored — there is no query vector to score against.
+
+Useful for health checks, monitoring store growth, or debugging index state without querying the underlying database directly.
+
 ### RAG (Retrieval-Augmented Generation)
 
 The `rag` sub-module provides a standalone pipeline for indexing documents and exposing them as an agent tool. It is decoupled from long-term memory — use it when you want to index a corpus offline and let the agent search it on demand.

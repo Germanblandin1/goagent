@@ -54,6 +54,7 @@ func WithDistanceMetric(m DistanceMetric) StoreOption {
 // Compile-time checks.
 var _ goagent.VectorStore = (*Store)(nil)
 var _ goagent.BulkVectorStore = (*Store)(nil)
+var _ goagent.CountableStore = (*Store)(nil)
 
 // Store implements goagent.VectorStore over SQLite with the sqlite-vec extension.
 // It satisfies the goagent.VectorStore interface directly.
@@ -433,4 +434,50 @@ func (s *Store) BulkDelete(ctx context.Context, ids []string) error {
 		return fmt.Errorf("sqlitevec: bulk delete: %w", err)
 	}
 	return nil
+}
+
+// Count returns the number of entries in the store that satisfy opts.
+// [WithFilter] applies the same metadata matching as Search when
+// MetadataColumn is configured; when MetadataColumn is empty the filter is
+// silently ignored and the total row count is returned.
+// [WithScoreThreshold] is ignored because there is no query vector.
+func (s *Store) Count(ctx context.Context, opts ...goagent.SearchOption) (int64, error) {
+	cfg := &goagent.SearchOptions{}
+	for _, o := range opts {
+		o(cfg)
+	}
+
+	if len(cfg.Filter) == 0 || s.cfg.MetadataColumn == "" {
+		var n int64
+		q := fmt.Sprintf("SELECT COUNT(*) FROM %s", s.cfg.Table)
+		if err := s.db.QueryRowContext(ctx, q).Scan(&n); err != nil {
+			return 0, fmt.Errorf("sqlitevec: count: %w", err)
+		}
+		return n, nil
+	}
+
+	// Metadata filter: fetch all metadata values and apply Go-side matching,
+	// consistent with how Search applies metadata filtering for this backend.
+	q := fmt.Sprintf("SELECT %s FROM %s", s.cfg.MetadataColumn, s.cfg.Table)
+	rows, err := s.db.QueryContext(ctx, q)
+	if err != nil {
+		return 0, fmt.Errorf("sqlitevec: count: %w", err)
+	}
+	defer rows.Close()
+
+	var n int64
+	for rows.Next() {
+		var metaJSON string
+		if err := rows.Scan(&metaJSON); err != nil {
+			return 0, fmt.Errorf("sqlitevec: count: scan: %w", err)
+		}
+		meta, err := jsonToMetadata(metaJSON)
+		if err != nil {
+			return 0, fmt.Errorf("sqlitevec: count: parse metadata: %w", err)
+		}
+		if matchesFilter(meta, cfg.Filter) {
+			n++
+		}
+	}
+	return n, rows.Err()
 }

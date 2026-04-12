@@ -194,6 +194,21 @@ type BulkVectorStore interface {
 	BulkDelete(ctx context.Context, ids []string) error
 }
 
+// CountableStore is implemented by VectorStore backends that support counting
+// stored entries without a vector query. Use a type assertion to check support:
+//
+//	if cs, ok := store.(goagent.CountableStore); ok {
+//	    n, err := cs.Count(ctx)
+//	}
+//
+// Accepts the same [SearchOption] variadic as Search for consistency; only
+// [WithFilter] is meaningful — [WithScoreThreshold] is silently ignored
+// because there is no query vector to score against.
+// Session scope follows the context (set via [WithSessionID]).
+type CountableStore interface {
+	Count(ctx context.Context, opts ...SearchOption) (int64, error)
+}
+
 // Embedder converts message content into a dense vector representation
 // suitable for semantic similarity search. Implementations receive the full
 // []ContentBlock so they can handle text, image, and document blocks natively

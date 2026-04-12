@@ -434,6 +434,138 @@ func TestInMemoryStore_WithFilter_CombinedWithScoreThreshold(t *testing.T) {
 	}
 }
 
+func TestInMemoryStore_Count(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("empty store returns zero", func(t *testing.T) {
+		s := vector.NewInMemoryStore()
+		n, err := s.Count(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Errorf("want 0, got %d", n)
+		}
+	})
+
+	t.Run("counts all entries after upsert", func(t *testing.T) {
+		s := vector.NewInMemoryStore()
+		for _, id := range []string{"a", "b", "c"} {
+			if err := s.Upsert(ctx, id, []float32{1, 0}, goagent.UserMessage(id)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		n, err := s.Count(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 3 {
+			t.Errorf("want 3, got %d", n)
+		}
+	})
+
+	t.Run("idempotent upsert does not increase count", func(t *testing.T) {
+		s := vector.NewInMemoryStore()
+		if err := s.Upsert(ctx, "x", []float32{1, 0}, goagent.UserMessage("first")); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Upsert(ctx, "x", []float32{1, 0}, goagent.UserMessage("second")); err != nil {
+			t.Fatal(err)
+		}
+		n, err := s.Count(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 {
+			t.Errorf("want 1, got %d", n)
+		}
+	})
+
+	t.Run("session filter counts only session entries", func(t *testing.T) {
+		s := vector.NewInMemoryStore()
+		if err := s.Upsert(context.Background(), "sess-A:doc:0", []float32{1, 0}, goagent.UserMessage("A")); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Upsert(context.Background(), "sess-B:doc:0", []float32{1, 0}, goagent.UserMessage("B")); err != nil {
+			t.Fatal(err)
+		}
+
+		sessCtx, err := session.NewContext(context.Background(), "sess-A")
+		if err != nil {
+			t.Fatal(err)
+		}
+		n, err := s.Count(sessCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 {
+			t.Errorf("want 1 for sess-A, got %d", n)
+		}
+	})
+
+	t.Run("WithFilter counts only matching entries", func(t *testing.T) {
+		s := vector.NewInMemoryStore()
+		msgs := []struct {
+			id   string
+			meta map[string]any
+		}{
+			{"a", map[string]any{"env": "prod"}},
+			{"b", map[string]any{"env": "dev"}},
+			{"c", map[string]any{"env": "prod"}},
+		}
+		for _, m := range msgs {
+			msg := goagent.Message{
+				Role:     goagent.RoleUser,
+				Content:  []goagent.ContentBlock{goagent.TextBlock(m.id)},
+				Metadata: m.meta,
+			}
+			if err := s.Upsert(ctx, m.id, []float32{1, 0}, msg); err != nil {
+				t.Fatal(err)
+			}
+		}
+		n, err := s.Count(ctx, goagent.WithFilter(map[string]any{"env": "prod"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 2 {
+			t.Errorf("want 2, got %d", n)
+		}
+	})
+
+	t.Run("session and filter combined", func(t *testing.T) {
+		s := vector.NewInMemoryStore()
+		entries := []struct {
+			id   string
+			meta map[string]any
+		}{
+			{"sess-A:1:0", map[string]any{"env": "prod"}},
+			{"sess-A:2:0", map[string]any{"env": "dev"}},
+			{"sess-B:3:0", map[string]any{"env": "prod"}},
+		}
+		for _, e := range entries {
+			msg := goagent.Message{
+				Role:     goagent.RoleUser,
+				Content:  []goagent.ContentBlock{goagent.TextBlock(e.id)},
+				Metadata: e.meta,
+			}
+			if err := s.Upsert(context.Background(), e.id, []float32{1, 0}, msg); err != nil {
+				t.Fatal(err)
+			}
+		}
+		sessCtx, err := session.NewContext(context.Background(), "sess-A")
+		if err != nil {
+			t.Fatal(err)
+		}
+		n, err := s.Count(sessCtx, goagent.WithFilter(map[string]any{"env": "prod"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 {
+			t.Errorf("want 1 (sess-A + prod), got %d", n)
+		}
+	})
+}
+
 func TestInMemoryStore_BulkUpsert_RaceCondition(t *testing.T) {
 	s := vector.NewInMemoryStore()
 	vec := []float32{1, 0}

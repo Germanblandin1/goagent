@@ -21,6 +21,7 @@ type Querier interface {
 // Compile-time checks.
 var _ goagent.VectorStore = (*Store)(nil)
 var _ goagent.BulkVectorStore = (*Store)(nil)
+var _ goagent.CountableStore = (*Store)(nil)
 
 // pgTransactor is a private interface satisfied by *sql.DB and *sql.Tx (and
 // compatible pgx wrappers) that exposes BeginTx. Used by BulkUpsert to wrap
@@ -379,6 +380,50 @@ func (s *Store) BulkUpsert(ctx context.Context, entries []goagent.UpsertEntry) e
 		}
 	}
 	return nil
+}
+
+// Count returns the number of entries in the store that satisfy opts.
+// [WithFilter] uses JSONB containment (metadata @> filter) when
+// MetadataColumn is configured; when MetadataColumn is empty the filter is
+// silently ignored and the total row count is returned.
+// [WithScoreThreshold] is ignored because there is no query vector.
+func (s *Store) Count(ctx context.Context, opts ...goagent.SearchOption) (int64, error) {
+	cfg := &goagent.SearchOptions{}
+	for _, o := range opts {
+		o(cfg)
+	}
+
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if len(cfg.Filter) > 0 && s.cfg.MetadataColumn != "" {
+		filterJSON, merr := json.Marshal(cfg.Filter)
+		if merr != nil {
+			return 0, fmt.Errorf("pgvector: count: marshal filter: %w", merr)
+		}
+		q := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s @> $1::jsonb",
+			s.cfg.Table, s.cfg.MetadataColumn)
+		rows, err = s.db.QueryContext(ctx, q, string(filterJSON))
+	} else {
+		q := fmt.Sprintf("SELECT COUNT(*) FROM %s", s.cfg.Table)
+		rows, err = s.db.QueryContext(ctx, q)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("pgvector: count: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return 0, fmt.Errorf("pgvector: count: %w", err)
+		}
+		return 0, nil
+	}
+	var n int64
+	if err := rows.Scan(&n); err != nil {
+		return 0, fmt.Errorf("pgvector: count: scan: %w", err)
+	}
+	return n, rows.Err()
 }
 
 // BulkDelete removes all entries with the given ids in a single query using a

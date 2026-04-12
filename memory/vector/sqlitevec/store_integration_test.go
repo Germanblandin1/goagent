@@ -325,3 +325,106 @@ func TestFullRoundtrip(t *testing.T) {
 		t.Errorf("want RoleDocument, got %v", results[0].Message.Role)
 	}
 }
+
+func TestCount_EmptyStore(t *testing.T) {
+	db := openDB(t)
+	tcfg := migrateAndConfig(t, db, 3)
+	store, err := sqlitevec.New(db, tcfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	n, err := store.Count(context.Background())
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("want 0, got %d", n)
+	}
+}
+
+func TestCount_AfterUpserts(t *testing.T) {
+	db := openDB(t)
+	tcfg := migrateAndConfig(t, db, 3)
+	store, err := sqlitevec.New(db, tcfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx := context.Background()
+	for _, id := range []string{"a", "b", "c"} {
+		if err := store.Upsert(ctx, id, vec(1, 0, 0), goagent.UserMessage(id)); err != nil {
+			t.Fatalf("Upsert %s: %v", id, err)
+		}
+	}
+	n, err := store.Count(ctx)
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("want 3, got %d", n)
+	}
+}
+
+func TestCount_WithFilter_MetadataColumn(t *testing.T) {
+	db := openDB(t)
+	tcfg := migrateAndConfig(t, db, 3)
+	store, err := sqlitevec.New(db, tcfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx := context.Background()
+	data := []struct {
+		id   string
+		meta map[string]any
+	}{
+		{"a", map[string]any{"env": "prod"}},
+		{"b", map[string]any{"env": "dev"}},
+		{"c", map[string]any{"env": "prod"}},
+	}
+	for _, d := range data {
+		msg := goagent.Message{
+			Role:     goagent.RoleUser,
+			Content:  []goagent.ContentBlock{goagent.TextBlock(d.id)},
+			Metadata: d.meta,
+		}
+		if err := store.Upsert(ctx, d.id, vec(1, 0, 0), msg); err != nil {
+			t.Fatalf("Upsert %s: %v", d.id, err)
+		}
+	}
+
+	n, err := store.Count(ctx, goagent.WithFilter(map[string]any{"env": "prod"}))
+	if err != nil {
+		t.Fatalf("Count with filter: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("want 2, got %d", n)
+	}
+}
+
+func TestCount_WithFilter_NoMetadataColumn(t *testing.T) {
+	db := openDB(t)
+	tcfg := migrateAndConfig(t, db, 3)
+	tcfg.MetadataColumn = "" // disable metadata column
+	store, err := sqlitevec.New(db, tcfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx := context.Background()
+	for _, id := range []string{"a", "b"} {
+		if err := store.Upsert(ctx, id, vec(1, 0, 0), goagent.UserMessage(id)); err != nil {
+			t.Fatalf("Upsert %s: %v", id, err)
+		}
+	}
+
+	// Filter is silently ignored when MetadataColumn is not configured.
+	n, err := store.Count(ctx, goagent.WithFilter(map[string]any{"env": "prod"}))
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("want 2 (filter ignored), got %d", n)
+	}
+}

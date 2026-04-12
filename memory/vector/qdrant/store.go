@@ -11,6 +11,7 @@ import (
 // Compile-time checks.
 var _ goagent.VectorStore = (*Store)(nil)
 var _ goagent.BulkVectorStore = (*Store)(nil)
+var _ goagent.CountableStore = (*Store)(nil)
 
 // Config describes the Qdrant collection to use.
 // CollectionName is the only required field.
@@ -202,6 +203,31 @@ func (s *Store) BulkUpsert(ctx context.Context, entries []goagent.UpsertEntry) e
 		return fmt.Errorf("qdrant: bulk upsert: %w", err)
 	}
 	return nil
+}
+
+// Count returns the number of points in the Qdrant collection that satisfy
+// opts. [WithFilter] applies the same metadata conditions as Search.
+// [WithScoreThreshold] is ignored because there is no query vector.
+func (s *Store) Count(ctx context.Context, opts ...goagent.SearchOption) (int64, error) {
+	cfg := &goagent.SearchOptions{}
+	for _, o := range opts {
+		o(cfg)
+	}
+
+	exact := true
+	req := &qdrant.CountPoints{
+		CollectionName: s.cfg.CollectionName,
+		Exact:          &exact,
+	}
+	if conditions := filterToConditions(cfg.Filter); len(conditions) > 0 {
+		req.Filter = &qdrant.Filter{Must: conditions}
+	}
+
+	n, err := s.client.Count(ctx, req)
+	if err != nil {
+		return 0, fmt.Errorf("qdrant: count: %w", err)
+	}
+	return int64(n), nil
 }
 
 // BulkDelete removes all entries with the given ids in a single Qdrant
