@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.5] - 2026-04-12
+
+### Added
+
+**`VectorStoreObserver` decorator (`goagent`)**
+- `NewObservableStore(store, observer)` — wraps any `VectorStore` (including `BulkVectorStore`) and fires optional callbacks after each operation (`AfterUpsert`, `AfterSearch`, `AfterDelete`, `AfterCount`, `AfterBulkUpsert`, `AfterBulkDelete`) with elapsed duration and error
+- `VectorStoreObserver` — struct of optional callbacks; unset fields are no-ops
+- `MergeVectorStoreObservers(a, b, ...)` — composes multiple observer sets in order; each callback fires sequentially
+
+**`CountableStore` optional interface (`goagent`)**
+- `CountableStore` — optional interface implemented by all four stores (`InMemoryStore`, `pgvector`, `qdrant`, `sqlitevec`); exposes `Count(ctx, opts ...SearchOption) (int64, error)` to return the number of stored entries without a vector query
+- Supports `WithFilter` for metadata-scoped counts (same semantics as `Search`); `WithScoreThreshold` is silently ignored
+- Useful for health checks, monitoring store growth, or debugging index state
+
+**`WithTokenBudget` search option (`goagent`)**
+- `WithTokenBudget(budget int, estimator func(ctx context.Context, text string) int) SearchOption` — caps the token cost of `LongTermMemory.Retrieve`; walks results in score-descending order and stops before the first result that would exceed the budget
+- The estimator is a plain `func(ctx, text) int` — decoupled from any tokeniser package to avoid circular imports; plug in tiktoken, word count, or character count
+- Applied after `store.Search` returns; the `VectorStore` interface and all backends are unchanged
+
+**`WithFilter` on `InMemoryStore` (`goagent`)**
+- `InMemoryStore.Search` now applies `WithFilter` using deep equality (`reflect.DeepEqual`), matching the semantics of `pgvector` and `sqlitevec`; eliminates a silent dev/prod divergence where filters were ignored in tests but active in production stores
+
+**OTel vector store instrumentation (`goagent/otel`)**
+- `otel.NewVectorStoreObserver(tracer, meter)` — returns a `VectorStoreObserver` that records retroactive spans and RED metrics for every `VectorStore` and `BulkVectorStore` operation; plug it into any store via `goagent.NewObservableStore`
+- New metrics: `goagent.vector.upsert.duration`, `goagent.vector.search.duration`, `goagent.vector.search.results`, `goagent.vector.delete.duration`, `goagent.vector.bulk_upsert.duration`, `goagent.vector.bulk_upsert.batch_size`, `goagent.vector.errors` (by `operation`)
+- Complements the existing `otel.NewHooks` agent instrumentation without requiring changes to the agent or store implementations
+
+**Examples**
+- `examples/rag_sqlite_observable` — interactive RAG chatbot wiring together `sqlite-vec` (in-process, no server), `RecursiveChunker`, `BatchEmbedder` fast path, `VectorStoreObserver` with structured logging, and `otel.NewVectorStoreObserver`; demonstrates full observability without Qdrant or PostgreSQL
+
+**CI / tooling**
+- `.github/workflows/ci.yml` — five-job pipeline (lint, security, test, coverage, integration) triggered on push to `main` and pull requests; jobs: `go vet` + `staticcheck`, `govulncheck`, race-detector tests with coverage artefacts, coverage threshold enforcement (≥80 % core / ≥70 % sub-packages), integration tests via `testcontainers-go` for `pgvector` and `qdrant`
+- `.golangci.yml` — local lint configuration for `golangci-lint`
+
+### Fixed
+
+- **qdrant**: whole-number `float64` values in `WithFilter` are now stored as `IntegerValue` (matching the existing Qdrant payload type), so `MatchInteger` conditions fire correctly — previously filters on integer-valued float fields silently returned no results
+- **examples**: `rag_sqlite_observable` uses the correct model `qwen3.5:cloud`, consistent with `rag_batch_index`
+
+### Tests
+
+- `testcontainers-go` wired into `pgvector` and `qdrant` integration tests; `sqlitevec` tests run fully in-memory — no external infrastructure needed to run the full test suite
+- `BulkUpsert` / `BulkDelete` / filter / distance integration tests added to reach coverage targets across all three persistent backends
+- Fuzz tests, benchmarks, and unit tests added to reach the ≥80 % coverage threshold in core packages
+- Focused benchmarks for `Dispatcher`, vector store operations, all chunkers, and `TokenWindow`
+
+---
+
 ## [0.5.4] - 2026-04-11
 
 ### Added

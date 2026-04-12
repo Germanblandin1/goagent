@@ -368,6 +368,35 @@ if cs, ok := store.(goagent.CountableStore); ok {
 
 Useful for health checks, monitoring store growth, or debugging index state without querying the underlying database directly.
 
+**`VectorStoreObserver`** — observe every store operation with elapsed duration and error:
+
+```go
+observed := goagent.NewObservableStore(store,
+    goagent.VectorStoreObserver{
+        AfterUpsert: func(ctx context.Context, d time.Duration, err error) { /* ... */ },
+        AfterSearch: func(ctx context.Context, results int, d time.Duration, err error) { /* ... */ },
+        AfterDelete: func(ctx context.Context, d time.Duration, err error) { /* ... */ },
+        AfterCount:  func(ctx context.Context, n int, d time.Duration, err error) { /* ... */ },
+    },
+)
+```
+
+`NewObservableStore` wraps any `VectorStore` (including `BulkVectorStore`) and forwards all calls transparently. Compose multiple observer sets with `MergeVectorStoreObservers`. For OpenTelemetry instrumentation, use `otel.NewVectorStoreObserver` (see [OpenTelemetry](#opentelemetry) section).
+
+#### Token budget on retrieval
+
+Cap the token cost of long-term memory retrieval with `WithTokenBudget`:
+
+```go
+results, err := ltm.Retrieve(ctx, query,
+    goagent.WithTokenBudget(2000, func(ctx context.Context, text string) int {
+        return len(strings.Fields(text)) // rough word-count estimate
+    }),
+)
+```
+
+`WithTokenBudget` walks the results (score-descending) and stops before the first result that would push the running total over the budget. The estimator is a plain `func(ctx, text) int` — plug in a tiktoken counter, a word counter, or a character counter.
+
 ### RAG (Retrieval-Augmented Generation)
 
 The `rag` sub-module provides a standalone pipeline for indexing documents and exposing them as an agent tool. It is decoupled from long-term memory — use it when you want to index a corpus offline and let the agent search it on demand.
@@ -596,6 +625,29 @@ goagent.run
 | `goagent.memory.append.duration` | Histogram | s | Memory write latency |
 
 `tool.duration` and `tool.errors` carry the `tool.name` attribute, so you can break down latency and error rates per tool in Grafana or any OTel-compatible backend.
+
+To instrument a `VectorStore` independently of the agent, use `otel.NewVectorStoreObserver`:
+
+```go
+observer, err := agentotel.NewVectorStoreObserver(tracer, meter)
+if err != nil {
+    log.Fatal(err)
+}
+
+store = goagent.NewObservableStore(store, observer)
+```
+
+This records spans and RED metrics for every `Upsert`, `Search`, `Delete`, `Count`, `BulkUpsert`, and `BulkDelete` call. Additional metrics recorded:
+
+| Metric | Instrument | Unit | Useful for |
+|---|---|---|---|
+| `goagent.vector.upsert.duration` | Histogram | s | Write latency per backend |
+| `goagent.vector.search.duration` | Histogram | s | Query latency per backend |
+| `goagent.vector.search.results` | Histogram | {result} | Result set size distribution |
+| `goagent.vector.delete.duration` | Histogram | s | Delete latency |
+| `goagent.vector.bulk_upsert.duration` | Histogram | s | Bulk write latency |
+| `goagent.vector.bulk_upsert.batch_size` | Histogram | {entry} | Entries per bulk call |
+| `goagent.vector.errors` | Counter | {error} | Error rate by `operation` |
 
 ### Multimodal input
 
