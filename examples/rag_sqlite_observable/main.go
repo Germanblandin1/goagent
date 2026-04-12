@@ -18,7 +18,7 @@
 // Prerequisites:
 //
 //	ollama pull nomic-embed-text   # embedding model (768-dim)
-//	ollama pull llama3.2           # chat model (or any tool-capable model)
+//	ollama pull qwen3.5:cloud      # chat model — same as rag_batch_index
 //
 // Usage:
 //
@@ -297,7 +297,7 @@ func main() {
 
 	provider := ollama.NewWithClient(client)
 	agent, err := goagent.New(
-		goagent.WithModel("llama3.2"),
+		goagent.WithModel("qwen3.5:cloud"),
 		goagent.WithProvider(provider),
 		goagent.WithTool(searchTool),
 		goagent.WithHooks(hooks),
