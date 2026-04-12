@@ -3,6 +3,7 @@ package goagent
 import (
 	"context"
 	"strings"
+	"time"
 )
 
 // ShortTermMemory manages the active conversation history for an Agent.
@@ -190,6 +191,192 @@ type Embedder interface {
 type BatchEmbedder interface {
 	Embedder
 	BatchEmbed(ctx context.Context, inputs [][]ContentBlock) ([][]float32, error)
+}
+
+// VectorStoreObserver holds optional callbacks fired after each [VectorStore]
+// operation completes. All fields are optional; nil callbacks are silently
+// skipped. Callbacks are invoked synchronously after the operation returns, so
+// heavy work (e.g. writing to an external metrics system) should spawn a
+// goroutine.
+//
+// Use [NewObservableStore] to wrap a [VectorStore] with these callbacks.
+// Use [MergeVectorStoreObservers] to compose multiple observers.
+type VectorStoreObserver struct {
+	// OnUpsert is called after every [VectorStore.Upsert] with the entry id,
+	// elapsed duration, and any error returned by the inner store.
+	OnUpsert func(ctx context.Context, id string, dur time.Duration, err error)
+
+	// OnSearch is called after every [VectorStore.Search] with the requested
+	// topK, the number of results actually returned, elapsed duration, and
+	// any error.
+	OnSearch func(ctx context.Context, topK int, results int, dur time.Duration, err error)
+
+	// OnDelete is called after every [VectorStore.Delete] with the entry id,
+	// elapsed duration, and any error.
+	OnDelete func(ctx context.Context, id string, dur time.Duration, err error)
+
+	// OnBulkUpsert is called after every [BulkVectorStore.BulkUpsert] with the
+	// number of entries in the batch, elapsed duration, and any error.
+	// It is only invoked when the inner store implements [BulkVectorStore].
+	OnBulkUpsert func(ctx context.Context, count int, dur time.Duration, err error)
+
+	// OnBulkDelete is called after every [BulkVectorStore.BulkDelete] with the
+	// number of ids in the batch, elapsed duration, and any error.
+	// It is only invoked when the inner store implements [BulkVectorStore].
+	OnBulkDelete func(ctx context.Context, count int, dur time.Duration, err error)
+}
+
+// NewObservableStore wraps inner with the provided observer callbacks.
+// Every [VectorStore] method fires the corresponding callback after the inner
+// call returns, passing the elapsed duration and any error.
+//
+// If inner also implements [BulkVectorStore], the returned value implements it
+// too: [BulkVectorStore.BulkUpsert] and [BulkVectorStore.BulkDelete] each fire
+// their respective callbacks. The RAG pipeline detects [BulkVectorStore] via a
+// type assertion, so the wrapper is transparent to it.
+func NewObservableStore(inner VectorStore, obs VectorStoreObserver) VectorStore {
+	base := &observableStore{inner: inner, obs: obs}
+	if bulk, ok := inner.(BulkVectorStore); ok {
+		return &observableBulkStore{observableStore: base, bulk: bulk}
+	}
+	return base
+}
+
+// MergeVectorStoreObservers returns a [VectorStoreObserver] that calls each
+// provided observer in order. Nil-field observers in the input are silently
+// ignored; when no input has a callback for a field, that field remains nil,
+// preserving zero-value semantics.
+//
+//	obs := goagent.MergeVectorStoreObservers(logObserver, otelObserver)
+//	store := goagent.NewObservableStore(rawStore, obs)
+func MergeVectorStoreObservers(observers ...VectorStoreObserver) VectorStoreObserver {
+	if len(observers) == 0 {
+		return VectorStoreObserver{}
+	}
+	if len(observers) == 1 {
+		return observers[0]
+	}
+
+	anyObsHas := func(check func(*VectorStoreObserver) bool) bool {
+		for i := range observers {
+			if check(&observers[i]) {
+				return true
+			}
+		}
+		return false
+	}
+
+	var merged VectorStoreObserver
+
+	if anyObsHas(func(o *VectorStoreObserver) bool { return o.OnUpsert != nil }) {
+		merged.OnUpsert = func(ctx context.Context, id string, dur time.Duration, err error) {
+			for i := range observers {
+				if fn := observers[i].OnUpsert; fn != nil {
+					fn(ctx, id, dur, err)
+				}
+			}
+		}
+	}
+
+	if anyObsHas(func(o *VectorStoreObserver) bool { return o.OnSearch != nil }) {
+		merged.OnSearch = func(ctx context.Context, topK int, results int, dur time.Duration, err error) {
+			for i := range observers {
+				if fn := observers[i].OnSearch; fn != nil {
+					fn(ctx, topK, results, dur, err)
+				}
+			}
+		}
+	}
+
+	if anyObsHas(func(o *VectorStoreObserver) bool { return o.OnDelete != nil }) {
+		merged.OnDelete = func(ctx context.Context, id string, dur time.Duration, err error) {
+			for i := range observers {
+				if fn := observers[i].OnDelete; fn != nil {
+					fn(ctx, id, dur, err)
+				}
+			}
+		}
+	}
+
+	if anyObsHas(func(o *VectorStoreObserver) bool { return o.OnBulkUpsert != nil }) {
+		merged.OnBulkUpsert = func(ctx context.Context, count int, dur time.Duration, err error) {
+			for i := range observers {
+				if fn := observers[i].OnBulkUpsert; fn != nil {
+					fn(ctx, count, dur, err)
+				}
+			}
+		}
+	}
+
+	if anyObsHas(func(o *VectorStoreObserver) bool { return o.OnBulkDelete != nil }) {
+		merged.OnBulkDelete = func(ctx context.Context, count int, dur time.Duration, err error) {
+			for i := range observers {
+				if fn := observers[i].OnBulkDelete; fn != nil {
+					fn(ctx, count, dur, err)
+				}
+			}
+		}
+	}
+
+	return merged
+}
+
+// observableStore wraps a [VectorStore] and fires [VectorStoreObserver]
+// callbacks after each operation.
+type observableStore struct {
+	inner VectorStore
+	obs   VectorStoreObserver
+}
+
+func (s *observableStore) Upsert(ctx context.Context, id string, vector []float32, msg Message) error {
+	start := time.Now()
+	err := s.inner.Upsert(ctx, id, vector, msg)
+	if fn := s.obs.OnUpsert; fn != nil {
+		fn(ctx, id, time.Since(start), err)
+	}
+	return err
+}
+
+func (s *observableStore) Search(ctx context.Context, vector []float32, topK int, opts ...SearchOption) ([]ScoredMessage, error) {
+	start := time.Now()
+	results, err := s.inner.Search(ctx, vector, topK, opts...)
+	if fn := s.obs.OnSearch; fn != nil {
+		fn(ctx, topK, len(results), time.Since(start), err)
+	}
+	return results, err
+}
+
+func (s *observableStore) Delete(ctx context.Context, id string) error {
+	start := time.Now()
+	err := s.inner.Delete(ctx, id)
+	if fn := s.obs.OnDelete; fn != nil {
+		fn(ctx, id, time.Since(start), err)
+	}
+	return err
+}
+
+// observableBulkStore extends [observableStore] with [BulkVectorStore] support.
+type observableBulkStore struct {
+	*observableStore
+	bulk BulkVectorStore
+}
+
+func (s *observableBulkStore) BulkUpsert(ctx context.Context, entries []UpsertEntry) error {
+	start := time.Now()
+	err := s.bulk.BulkUpsert(ctx, entries)
+	if fn := s.obs.OnBulkUpsert; fn != nil {
+		fn(ctx, len(entries), time.Since(start), err)
+	}
+	return err
+}
+
+func (s *observableBulkStore) BulkDelete(ctx context.Context, ids []string) error {
+	start := time.Now()
+	err := s.bulk.BulkDelete(ctx, ids)
+	if fn := s.obs.OnBulkDelete; fn != nil {
+		fn(ctx, len(ids), time.Since(start), err)
+	}
+	return err
 }
 
 // TextFrom extracts and concatenates the text from a slice of ContentBlocks.

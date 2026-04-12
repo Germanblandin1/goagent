@@ -27,6 +27,24 @@ type instruments struct {
 	memoryAppendDuration metric.Float64Histogram
 }
 
+// vectorInstruments holds OTel metric instruments for [VectorStore] operations.
+type vectorInstruments struct {
+	// Latency histograms per operation
+	upsertDuration metric.Float64Histogram
+	searchDuration metric.Float64Histogram
+	deleteDuration metric.Float64Histogram
+
+	// Distribution of result counts returned by Search
+	searchResults metric.Int64Histogram
+
+	// Error counter shared across operations; "operation" attribute distinguishes them
+	errors metric.Int64Counter
+
+	// Distribution of batch sizes for BulkUpsert / BulkDelete;
+	// "operation" attribute distinguishes upsert vs delete
+	bulkSize metric.Int64Histogram
+}
+
 // newInstruments registers all metric instruments with the given meter.
 // Returns an error if any instrument registration fails.
 func newInstruments(meter metric.Meter) (instruments, error) {
@@ -112,6 +130,69 @@ func newInstruments(meter metric.Meter) (instruments, error) {
 	)
 	if err != nil {
 		return instruments{}, fmt.Errorf("otel: register goagent.memory.append.duration: %w", err)
+	}
+
+	return inst, nil
+}
+
+// newVectorInstruments registers all VectorStore metric instruments with the
+// given meter. Returns an error if any registration fails.
+func newVectorInstruments(meter metric.Meter) (vectorInstruments, error) {
+	var inst vectorInstruments
+	var err error
+
+	inst.upsertDuration, err = meter.Float64Histogram(
+		"goagent.vector.upsert.duration",
+		metric.WithUnit("s"),
+		metric.WithDescription("Wall-clock duration of each VectorStore.Upsert call."),
+	)
+	if err != nil {
+		return vectorInstruments{}, fmt.Errorf("otel: register goagent.vector.upsert.duration: %w", err)
+	}
+
+	inst.searchDuration, err = meter.Float64Histogram(
+		"goagent.vector.search.duration",
+		metric.WithUnit("s"),
+		metric.WithDescription("Wall-clock duration of each VectorStore.Search call."),
+	)
+	if err != nil {
+		return vectorInstruments{}, fmt.Errorf("otel: register goagent.vector.search.duration: %w", err)
+	}
+
+	inst.deleteDuration, err = meter.Float64Histogram(
+		"goagent.vector.delete.duration",
+		metric.WithUnit("s"),
+		metric.WithDescription("Wall-clock duration of each VectorStore.Delete call."),
+	)
+	if err != nil {
+		return vectorInstruments{}, fmt.Errorf("otel: register goagent.vector.delete.duration: %w", err)
+	}
+
+	inst.searchResults, err = meter.Int64Histogram(
+		"goagent.vector.search.results",
+		metric.WithUnit("{message}"),
+		metric.WithDescription("Number of results returned by each VectorStore.Search call."),
+	)
+	if err != nil {
+		return vectorInstruments{}, fmt.Errorf("otel: register goagent.vector.search.results: %w", err)
+	}
+
+	inst.errors, err = meter.Int64Counter(
+		"goagent.vector.errors",
+		metric.WithUnit("{error}"),
+		metric.WithDescription("Number of VectorStore operations that returned an error."),
+	)
+	if err != nil {
+		return vectorInstruments{}, fmt.Errorf("otel: register goagent.vector.errors: %w", err)
+	}
+
+	inst.bulkSize, err = meter.Int64Histogram(
+		"goagent.vector.bulk.size",
+		metric.WithUnit("{entry}"),
+		metric.WithDescription("Number of entries per BulkUpsert or BulkDelete call."),
+	)
+	if err != nil {
+		return vectorInstruments{}, fmt.Errorf("otel: register goagent.vector.bulk.size: %w", err)
 	}
 
 	return inst, nil
