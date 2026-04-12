@@ -1,0 +1,93 @@
+# golangci-lint configuration for goagent — local development only.
+# CI uses go vet + staticcheck directly (see .github/workflows/ci.yml).
+# Run locally: golangci-lint run ./...
+
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    # Correctness
+    - govet
+    - staticcheck
+    - errcheck
+    - gosimple
+    - unused
+
+    # Style / idioms
+    - gofmt
+    - goimports
+    - revive
+
+    # Security
+    - gosec
+
+    # Go-specific quality
+    - noctx
+    - bodyclose
+    - contextcheck
+    - nilerr
+    - errorlint
+    - wrapcheck
+
+linters-settings:
+  govet:
+    enable-all: true
+
+  staticcheck:
+    checks: ["all"]
+
+  revive:
+    rules:
+      - name: exported
+        arguments:
+          - "checkPrivateReceivers"
+          - "sayRepetitiveInsteadOfStutters"
+      - name: error-return
+      - name: error-naming
+      - name: if-return
+      - name: increment-decrement
+      - name: var-naming
+
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+
+  errorlint:
+    errorf: true
+    asserts: true
+    comparison: true
+
+  goimports:
+    # 3-group convention: stdlib / external / internal
+    local-prefixes: github.com/Germanblandin1/goagent
+
+  gosec:
+    excludes:
+      - G104  # errors unhandled — errcheck covers this
+      - G304  # file path from variable — acceptable in examples
+      - G204  # subprocess from variable — acceptable in MCP stdio transport
+
+  wrapcheck:
+    ignorePackageGlobs:
+      - "github.com/Germanblandin1/goagent*"
+
+issues:
+  exclude-rules:
+    - path: "_test\\.go"
+      linters:
+        - gosec
+        - wrapcheck
+        - errcheck
+    - path: "example_test\\.go"
+      linters:
+        - revive
+        - godot
+    - path: "internal/testutil"
+      linters:
+        - wrapcheck
+        - revive

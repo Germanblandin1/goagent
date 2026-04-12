@@ -1,0 +1,264 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # lint: go vet + staticcheck across all modules
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.0"
+          cache: true
+
+      - name: Install staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@latest
+
+      - name: Install GCC (for CGO/sqlitevec)
+        run: sudo apt-get update -q && sudo apt-get install -y -q gcc
+
+      - name: Lint root module
+        run: |
+          go vet ./...
+          staticcheck ./...
+
+      - name: Lint submodules (pure Go)
+        run: |
+          MODULES=(
+            mcp
+            memory/vector/pgvector
+            memory/vector/qdrant
+            memory/vector/tiktoken
+            otel
+            providers/anthropic
+            providers/ollama
+            providers/voyage
+            rag
+            ratelimit
+          )
+          for mod in "${MODULES[@]}"; do
+            echo "── lint: $mod ──"
+            cd "$GITHUB_WORKSPACE/$mod"
+            go vet ./...
+            staticcheck ./...
+          done
+
+      - name: Lint examples (vet only — not a library package)
+        run: |
+          cd "$GITHUB_WORKSPACE/examples"
+          go vet ./...
+
+      - name: Lint sqlitevec (CGO)
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          MOD_CACHE=$(go env GOMODCACHE)
+          export CGO_CFLAGS="-I$GITHUB_WORKSPACE/memory/vector/sqlitevec/csrc -I${MOD_CACHE}/github.com/mattn/go-sqlite3@v1.14.40"
+          cd "$GITHUB_WORKSPACE/memory/vector/sqlitevec"
+          go vet ./...
+          staticcheck ./...
+
+  # ---------------------------------------------------------------------------
+  # security: govulncheck across all modules
+  # ---------------------------------------------------------------------------
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.0"
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: govulncheck (all modules)
+        run: |
+          MODULES=(
+            .
+            mcp
+            memory/vector/pgvector
+            memory/vector/qdrant
+            memory/vector/sqlitevec
+            memory/vector/tiktoken
+            otel
+            providers/anthropic
+            providers/ollama
+            providers/voyage
+            rag
+            ratelimit
+          )
+          for mod in "${MODULES[@]}"; do
+            echo "── govulncheck: $mod ──"
+            (cd "$GITHUB_WORKSPACE/$mod" && govulncheck ./...)
+          done
+
+  # ---------------------------------------------------------------------------
+  # test: race detector + coverage for all modules
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.0"
+          cache: true
+
+      - name: Build + test root module
+        run: |
+          go build ./...
+          go test -race -timeout 5m \
+            -coverprofile=coverage-root.out \
+            -covermode=atomic \
+            ./...
+
+      - name: Build + test submodules (pure Go)
+        run: |
+          MODULES=(
+            mcp
+            memory/vector/pgvector
+            memory/vector/qdrant
+            memory/vector/tiktoken
+            otel
+            providers/anthropic
+            providers/ollama
+            providers/voyage
+            rag
+            ratelimit
+          )
+          for mod in "${MODULES[@]}"; do
+            echo "── test: $mod ──"
+            cd "$GITHUB_WORKSPACE/$mod"
+            go build ./...
+            go test -race -timeout 5m \
+              -coverprofile="$GITHUB_WORKSPACE/coverage-$(echo "$mod" | tr '/' '-').out" \
+              -covermode=atomic \
+              ./...
+          done
+
+      - name: Install GCC (for CGO/sqlitevec)
+        run: sudo apt-get update -q && sudo apt-get install -y -q gcc
+
+      - name: Build + test sqlitevec (CGO)
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          MOD_CACHE=$(go env GOMODCACHE)
+          export CGO_CFLAGS="-I$GITHUB_WORKSPACE/memory/vector/sqlitevec/csrc -I${MOD_CACHE}/github.com/mattn/go-sqlite3@v1.14.40"
+          cd "$GITHUB_WORKSPACE/memory/vector/sqlitevec"
+          go build ./...
+          go test -race -timeout 5m \
+            -coverprofile="$GITHUB_WORKSPACE/coverage-memory-vector-sqlitevec.out" \
+            -covermode=atomic \
+            ./...
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-files
+          path: coverage-*.out
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # coverage: enforce thresholds (depends on test)
+  # ---------------------------------------------------------------------------
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.0"
+          cache: true
+
+      - name: Download coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-files
+
+      - name: Enforce coverage thresholds
+        run: |
+          FAILED=0
+
+          check_coverage() {
+            local profile="$1"
+            local threshold="$2"
+            local label="$3"
+
+            if [ ! -f "$profile" ]; then
+              echo "SKIP : $label (no coverage file)"
+              return
+            fi
+
+            pct=$(go tool cover -func="$profile" | tail -1 | awk '{print $NF}' | tr -d '%')
+            ok=$(awk -v p="$pct" -v t="$threshold" 'BEGIN { print (p+0 >= t+0) ? "yes" : "no" }')
+
+            if [ "$ok" = "yes" ]; then
+              printf "PASS : %-45s %s%% (required ≥%s%%)\n" "$label" "$pct" "$threshold"
+            else
+              printf "FAIL : %-45s %s%% (required ≥%s%%)\n" "$label" "$pct" "$threshold"
+              FAILED=1
+            fi
+          }
+
+          # Core packages: ≥80%
+          check_coverage coverage-root.out  80 "core (agent/tool/dispatcher/memory)"
+          check_coverage coverage-rag.out   80 "rag"
+
+          # Sub-packages: ≥70%
+          check_coverage coverage-mcp.out                          70 "mcp"
+          check_coverage coverage-otel.out                         70 "otel"
+          check_coverage coverage-ratelimit.out                    70 "ratelimit"
+          check_coverage coverage-providers-anthropic.out          70 "providers/anthropic"
+          check_coverage coverage-providers-ollama.out             70 "providers/ollama"
+          check_coverage coverage-providers-voyage.out             70 "providers/voyage"
+          check_coverage coverage-memory-vector-pgvector.out       70 "memory/vector/pgvector (unit)"
+          check_coverage coverage-memory-vector-qdrant.out         70 "memory/vector/qdrant (unit)"
+          check_coverage coverage-memory-vector-sqlitevec.out      70 "memory/vector/sqlitevec"
+          check_coverage coverage-memory-vector-tiktoken.out       70 "memory/vector/tiktoken"
+
+          exit $FAILED
+
+  # ---------------------------------------------------------------------------
+  # integration: testcontainers-based tests (needs Docker on runner)
+  # ---------------------------------------------------------------------------
+  integration:
+    name: Integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.0"
+          cache: true
+
+      - name: Test pgvector (testcontainers — no sidecar needed)
+        run: |
+          cd "$GITHUB_WORKSPACE/memory/vector/pgvector"
+          go test -race -timeout 10m -tags integration ./...
+
+      - name: Test qdrant (testcontainers — no sidecar needed)
+        run: |
+          cd "$GITHUB_WORKSPACE/memory/vector/qdrant"
+          go test -race -timeout 10m -tags integration ./...
