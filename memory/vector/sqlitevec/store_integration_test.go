@@ -421,3 +421,194 @@ func TestCount_WithFilter_NoMetadataColumn(t *testing.T) {
 		t.Errorf("want 2 (filter ignored), got %d", n)
 	}
 }
+
+func TestBulkUpsert_StoreAndSearch(t *testing.T) {
+	db := openDB(t)
+	tcfg := migrateAndConfig(t, db, 3)
+	store, err := sqlitevec.New(db, tcfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx := context.Background()
+	entries := []goagent.UpsertEntry{
+		{ID: "a", Vector: vec(1, 0, 0), Message: goagent.UserMessage("alpha")},
+		{ID: "b", Vector: vec(0, 1, 0), Message: goagent.UserMessage("beta")},
+		{ID: "c", Vector: vec(0, 0, 1), Message: goagent.UserMessage("gamma")},
+	}
+	if err := store.BulkUpsert(ctx, entries); err != nil {
+		t.Fatalf("BulkUpsert: %v", err)
+	}
+
+	results, err := store.Search(ctx, vec(1, 0, 0), 1)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+	if got := results[0].Message.TextContent(); got != "alpha" {
+		t.Errorf("top result = %q, want %q", got, "alpha")
+	}
+}
+
+func TestBulkUpsert_WithMetadata(t *testing.T) {
+	db := openDB(t)
+	tcfg := migrateAndConfig(t, db, 3)
+	store, err := sqlitevec.New(db, tcfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx := context.Background()
+	entries := []goagent.UpsertEntry{
+		{
+			ID:     "a",
+			Vector: vec(1, 0, 0),
+			Message: goagent.Message{
+				Role:     goagent.RoleUser,
+				Content:  []goagent.ContentBlock{goagent.TextBlock("alpha")},
+				Metadata: map[string]any{"src": "a.md"},
+			},
+		},
+	}
+	if err := store.BulkUpsert(ctx, entries); err != nil {
+		t.Fatalf("BulkUpsert: %v", err)
+	}
+
+	results, err := store.Search(ctx, vec(1, 0, 0), 1)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("no results")
+	}
+	if results[0].Message.Metadata["src"] != "a.md" {
+		t.Errorf("metadata src = %v, want a.md", results[0].Message.Metadata["src"])
+	}
+}
+
+func TestBulkDelete_RemovesFromSearch(t *testing.T) {
+	db := openDB(t)
+	tcfg := migrateAndConfig(t, db, 3)
+	store, err := sqlitevec.New(db, tcfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx := context.Background()
+	for _, id := range []string{"a", "b", "c"} {
+		if err := store.Upsert(ctx, id, vec(1, 0, 0), goagent.UserMessage(id)); err != nil {
+			t.Fatalf("Upsert %s: %v", id, err)
+		}
+	}
+
+	if err := store.BulkDelete(ctx, []string{"a", "b"}); err != nil {
+		t.Fatalf("BulkDelete: %v", err)
+	}
+
+	results, err := store.Search(ctx, vec(1, 0, 0), 10)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("want 1 result after bulk delete, got %d", len(results))
+	}
+	if len(results) == 1 && results[0].Message.TextContent() != "c" {
+		t.Errorf("remaining doc = %q, want %q", results[0].Message.TextContent(), "c")
+	}
+}
+
+func TestBulkUpsert_EmptyIsNoop(t *testing.T) {
+	db := openDB(t)
+	tcfg := migrateAndConfig(t, db, 3)
+	store, err := sqlitevec.New(db, tcfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := store.BulkUpsert(context.Background(), nil); err != nil {
+		t.Errorf("BulkUpsert(nil) = %v, want nil", err)
+	}
+}
+
+func TestBulkDelete_EmptyIsNoop(t *testing.T) {
+	db := openDB(t)
+	tcfg := migrateAndConfig(t, db, 3)
+	store, err := sqlitevec.New(db, tcfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := store.BulkDelete(context.Background(), nil); err != nil {
+		t.Errorf("BulkDelete(nil) = %v, want nil", err)
+	}
+}
+
+func TestSearch_WithFilter_Metadata(t *testing.T) {
+	db := openDB(t)
+	tcfg := migrateAndConfig(t, db, 3)
+	store, err := sqlitevec.New(db, tcfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx := context.Background()
+	data := []struct {
+		id  string
+		env string
+	}{
+		{"a", "prod"},
+		{"b", "dev"},
+		{"c", "prod"},
+	}
+	for _, d := range data {
+		msg := goagent.Message{
+			Role:     goagent.RoleUser,
+			Content:  []goagent.ContentBlock{goagent.TextBlock(d.id)},
+			Metadata: map[string]any{"env": d.env},
+		}
+		if err := store.Upsert(ctx, d.id, vec(1, 0, 0), msg); err != nil {
+			t.Fatalf("Upsert %s: %v", d.id, err)
+		}
+	}
+
+	results, err := store.Search(ctx, vec(1, 0, 0), 10, goagent.WithFilter(map[string]any{"env": "prod"}))
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("want 2 results matching env=prod, got %d", len(results))
+	}
+}
+
+func TestWithDistanceMetric_Cosine(t *testing.T) {
+	db := openDB(t)
+	tcfg := migrateAndConfig(t, db, 3)
+	store, err := sqlitevec.New(db, tcfg, sqlitevec.WithDistanceMetric(sqlitevec.Cosine))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx := context.Background()
+	v := vec(1, 0, 0)
+	if err := store.Upsert(ctx, "doc1", v, goagent.UserMessage("text")); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	results, err := store.Search(ctx, v, 1)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("no results")
+	}
+	// Cosine score for identical vectors: 1 - cosine_distance ≈ 1 - 0 = 1.
+	if results[0].Score < 0.99 {
+		t.Errorf("expected score ~1.0 for identical vector with Cosine, got %f", results[0].Score)
+	}
+}
+
+func TestRegister_IsIdempotent(t *testing.T) {
+	// Register is safe to call multiple times — it must not panic.
+	sqlitevec.Register()
+	sqlitevec.Register()
+}
