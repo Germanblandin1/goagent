@@ -2,6 +2,7 @@ package vector
 
 import (
 	"context"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -55,7 +56,9 @@ func (s *InMemoryStore) Upsert(_ context.Context, id string, vec []float32, msg 
 // fewer matching entries.
 //
 // WithScoreThreshold is applied before topK truncation.
-// WithFilter is not supported and silently ignored.
+// WithFilter matches against each message's Metadata map using deep equality:
+// every key-value pair in the filter must be present in Metadata.
+// Messages without metadata are excluded when a filter is active.
 func (s *InMemoryStore) Search(ctx context.Context, query []float32, topK int, opts ...goagent.SearchOption) ([]goagent.ScoredMessage, error) {
 	cfg := &goagent.SearchOptions{}
 	for _, o := range opts {
@@ -81,6 +84,16 @@ func (s *InMemoryStore) Search(ctx context.Context, query []float32, topK int, o
 	}
 	s.mu.RUnlock()
 
+	if len(cfg.Filter) > 0 {
+		filtered := results[:0]
+		for _, r := range results {
+			if matchesFilter(r.Message.Metadata, cfg.Filter) {
+				filtered = append(filtered, r)
+			}
+		}
+		results = filtered
+	}
+
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Score > results[j].Score
 	})
@@ -89,6 +102,18 @@ func (s *InMemoryStore) Search(ctx context.Context, query []float32, topK int, o
 		results = results[:topK]
 	}
 	return results, nil
+}
+
+// matchesFilter reports whether meta contains all key-value pairs in filter.
+// Uses reflect.DeepEqual for value comparison to correctly handle nested types.
+func matchesFilter(meta, filter map[string]any) bool {
+	for k, want := range filter {
+		got, ok := meta[k]
+		if !ok || !reflect.DeepEqual(got, want) {
+			return false
+		}
+	}
+	return true
 }
 
 // Delete removes the entry with the given id from the store.

@@ -293,6 +293,147 @@ func TestInMemoryStore_BulkDelete(t *testing.T) {
 	})
 }
 
+func TestInMemoryStore_WithFilter(t *testing.T) {
+	ctx := context.Background()
+
+	upsertMsg := func(t *testing.T, s *vector.InMemoryStore, id string, meta map[string]any) {
+		t.Helper()
+		msg := goagent.Message{
+			Role:     goagent.RoleUser,
+			Content:  []goagent.ContentBlock{goagent.TextBlock(id)},
+			Metadata: meta,
+		}
+		if err := s.Upsert(ctx, id, []float32{1, 0}, msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tests := []struct {
+		name    string
+		filter  map[string]any
+		wantIDs []string
+	}{
+		{
+			name:    "single key match",
+			filter:  map[string]any{"project": "alpha"},
+			wantIDs: []string{"a", "c"},
+		},
+		{
+			name:    "multiple keys must all match",
+			filter:  map[string]any{"project": "alpha", "env": "prod"},
+			wantIDs: []string{"c"},
+		},
+		{
+			name:    "no match returns empty",
+			filter:  map[string]any{"project": "gamma"},
+			wantIDs: []string{},
+		},
+		{
+			name:    "nil filter returns all",
+			filter:  nil,
+			wantIDs: []string{"a", "b", "c"},
+		},
+		{
+			name:    "entry without metadata excluded when filter active",
+			filter:  map[string]any{"project": "alpha"},
+			wantIDs: []string{"a", "c"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := vector.NewInMemoryStore()
+			// a: project=alpha, env=dev
+			upsertMsg(t, s, "a", map[string]any{"project": "alpha", "env": "dev"})
+			// b: project=beta  (no env)
+			upsertMsg(t, s, "b", map[string]any{"project": "beta"})
+			// c: project=alpha, env=prod
+			upsertMsg(t, s, "c", map[string]any{"project": "alpha", "env": "prod"})
+
+			var opts []goagent.SearchOption
+			if tt.filter != nil {
+				opts = append(opts, goagent.WithFilter(tt.filter))
+			}
+
+			results, err := s.Search(ctx, []float32{1, 0}, 10, opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			got := make(map[string]bool, len(results))
+			for _, r := range results {
+				got[r.Message.TextContent()] = true
+			}
+			if len(got) != len(tt.wantIDs) {
+				t.Errorf("got %d results, want %d: %v", len(got), len(tt.wantIDs), got)
+				return
+			}
+			for _, id := range tt.wantIDs {
+				if !got[id] {
+					t.Errorf("expected result %q not found in %v", id, got)
+				}
+			}
+		})
+	}
+}
+
+func TestInMemoryStore_WithFilter_NoMetadata_Excluded(t *testing.T) {
+	s := vector.NewInMemoryStore()
+	ctx := context.Background()
+
+	// Message with no metadata.
+	if err := s.Upsert(ctx, "no-meta", []float32{1, 0}, goagent.UserMessage("no-meta")); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := s.Search(ctx, []float32{1, 0}, 10, goagent.WithFilter(map[string]any{"k": "v"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for message without metadata, got %d", len(results))
+	}
+}
+
+func TestInMemoryStore_WithFilter_CombinedWithScoreThreshold(t *testing.T) {
+	s := vector.NewInMemoryStore()
+	ctx := context.Background()
+
+	// High similarity (score ≈ 1.0), matching filter.
+	msgA := goagent.Message{
+		Role:     goagent.RoleUser,
+		Content:  []goagent.ContentBlock{goagent.TextBlock("A")},
+		Metadata: map[string]any{"env": "prod"},
+	}
+	if err := s.Upsert(ctx, "a", vector.Normalize([]float32{1, 0}), msgA); err != nil {
+		t.Fatal(err)
+	}
+	// Low similarity (score ≈ 0.0), matching filter.
+	msgB := goagent.Message{
+		Role:     goagent.RoleUser,
+		Content:  []goagent.ContentBlock{goagent.TextBlock("B")},
+		Metadata: map[string]any{"env": "prod"},
+	}
+	if err := s.Upsert(ctx, "b", vector.Normalize([]float32{0, 1}), msgB); err != nil {
+		t.Fatal(err)
+	}
+
+	threshold := 0.5
+	results, err := s.Search(ctx, []float32{1, 0}, 10,
+		goagent.WithFilter(map[string]any{"env": "prod"}),
+		goagent.WithScoreThreshold(threshold),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result (A passes threshold, B does not), got %d", len(results))
+	}
+	if results[0].Message.TextContent() != "A" {
+		t.Errorf("expected A, got %q", results[0].Message.TextContent())
+	}
+}
+
 func TestInMemoryStore_BulkUpsert_RaceCondition(t *testing.T) {
 	s := vector.NewInMemoryStore()
 	vec := []float32{1, 0}
