@@ -621,11 +621,8 @@ func TestCount_WithFilter_BoolValue(t *testing.T) {
 }
 
 // TestCount_WithFilter_IntegerValue exercises the float64 (whole-number) branch
-// of filterToConditions, which emits an integer Match condition in Qdrant.
-//
-// Note: anyToValue stores float64 metadata as Qdrant double values, while this
-// filter builds an integer match condition. Qdrant does not coerce between types,
-// so the count will be 0 — but the filter construction code path is fully exercised.
+// of filterToConditions. anyToValue now stores whole float64 as IntegerValue,
+// so the integer match condition correctly finds the stored points.
 func TestCount_WithFilter_IntegerValue(t *testing.T) {
 	client := openClient(t)
 	cfg := createAndConfig(t, client, 3)
@@ -654,18 +651,18 @@ func TestCount_WithFilter_IntegerValue(t *testing.T) {
 		}
 	}
 
-	// float64(1) is a whole number → exercices the int64 branch in filterToConditions.
-	// Qdrant stores float64 as double, so the integer condition returns 0 — no error.
-	_, err = store.Count(ctx, goagent.WithFilter(map[string]any{"rank": float64(1)}))
+	n, err := store.Count(ctx, goagent.WithFilter(map[string]any{"rank": float64(1)}))
 	if err != nil {
 		t.Fatalf("Count: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("want 2 docs with rank=1, got %d", n)
 	}
 }
 
 // TestCount_WithFilter_Int64Value exercises the explicit int64 branch of
-// filterToConditions. Values stored as float64 (double in Qdrant) will not
-// match the generated integer condition — the important thing is no error is
-// returned and the branch is exercised.
+// filterToConditions. The filter value is int64 and the stored value is a
+// whole float64 — both are stored and matched as IntegerValue in Qdrant.
 func TestCount_WithFilter_Int64Value(t *testing.T) {
 	client := openClient(t)
 	cfg := createAndConfig(t, client, 3)
@@ -694,9 +691,11 @@ func TestCount_WithFilter_Int64Value(t *testing.T) {
 		}
 	}
 
-	// Explicit int64 exercises the int64 branch in filterToConditions.
-	_, err = store.Count(ctx, goagent.WithFilter(map[string]any{"count": int64(5)}))
+	n, err := store.Count(ctx, goagent.WithFilter(map[string]any{"count": int64(5)}))
 	if err != nil {
 		t.Fatalf("Count: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("want 2 docs with count=5, got %d", n)
 	}
 }

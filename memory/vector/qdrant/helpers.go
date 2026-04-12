@@ -41,6 +41,9 @@ func anyToValue(v any) *qdrant.Value {
 	case string:
 		return qdrant.NewValueString(t)
 	case float64:
+		if i := int64(t); float64(i) == t {
+			return qdrant.NewValueInt(i)
+		}
 		return qdrant.NewValueDouble(t)
 	case bool:
 		return qdrant.NewValueBool(t)
@@ -157,6 +160,8 @@ func valueToAny(v *qdrant.Value) any {
 	switch k := v.Kind.(type) {
 	case *qdrant.Value_StringValue:
 		return k.StringValue
+	case *qdrant.Value_IntegerValue:
+		return float64(k.IntegerValue)
 	case *qdrant.Value_DoubleValue:
 		return k.DoubleValue
 	case *qdrant.Value_BoolValue:
