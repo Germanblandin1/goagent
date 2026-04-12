@@ -1,31 +1,24 @@
-//go:build integration
-
 package sqlitevec_test
 
 import (
 	"context"
 	"database/sql"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/Germanblandin1/goagent"
 	"github.com/Germanblandin1/goagent/memory/vector/sqlitevec"
 )
 
-// openDB opens a *sql.DB for integration tests.
-// If SQLITE_VEC_TEST_DSN is set, it is used as the database path.
-// Otherwise a temporary file is created in t.TempDir().
+// openDB opens an in-memory SQLite database for tests.
+// MaxOpenConns is set to 1 so all queries share the same connection — required
+// for in-memory SQLite where each connection sees its own empty database.
 func openDB(t *testing.T) *sql.DB {
 	t.Helper()
-	dsn := os.Getenv("SQLITE_VEC_TEST_DSN")
-	if dsn == "" {
-		dsn = filepath.Join(t.TempDir(), "test.db")
-	}
-	db, err := sqlitevec.Open(dsn)
+	db, err := sqlitevec.Open(":memory:")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { db.Close() })
 	return db
 }
