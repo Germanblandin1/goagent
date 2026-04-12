@@ -122,6 +122,15 @@ func TestCosineSimilarityRaw(t *testing.T) {
 	}
 }
 
+func TestCosineSimilarity_Empty(t *testing.T) {
+	t.Parallel()
+
+	got := vector.CosineSimilarity([]float32{}, []float32{})
+	if got != 0.0 {
+		t.Errorf("CosineSimilarity([], []) = %v, want 0.0", got)
+	}
+}
+
 func TestNormalize(t *testing.T) {
 	t.Run("unit length after normalize", func(t *testing.T) {
 		v := []float32{3, 4, 0}

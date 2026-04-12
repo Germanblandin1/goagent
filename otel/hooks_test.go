@@ -506,6 +506,111 @@ func TestNewHooks_IdempotentRegistration(t *testing.T) {
 	}
 }
 
+// TestNewHooks_MemoryHooksEmitSpans verifies that the four memory hooks
+// (OnShortTermLoad, OnShortTermAppend, OnLongTermRetrieve, OnLongTermStore)
+// each produce an OTel span with the expected name.
+func TestNewHooks_MemoryHooksEmitSpans(t *testing.T) {
+	t.Parallel()
+
+	tp, mp, exp := setupOTel(t)
+	hooks, err := otelagent.NewHooks(tp.Tracer("test"), mp.Meter("test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+
+	// Invoke each memory hook directly — they are plain functions stored in the struct.
+	hooks.OnShortTermLoad(ctx, 3, time.Millisecond, nil)
+	hooks.OnShortTermAppend(ctx, 2, time.Millisecond, nil)
+	hooks.OnLongTermRetrieve(ctx, []goagent.ScoredMessage{{Score: 0.9}}, time.Millisecond, nil)
+	hooks.OnLongTermStore(ctx, 5, time.Millisecond, nil)
+
+	want := []string{
+		"goagent.memory.short_term.load",
+		"goagent.memory.short_term.append",
+		"goagent.memory.long_term.retrieve",
+		"goagent.memory.long_term.store",
+	}
+
+	spans := exp.GetSpans()
+	recorded := make(map[string]bool, len(spans))
+	for _, s := range spans {
+		recorded[s.Name] = true
+	}
+
+	for _, name := range want {
+		if !recorded[name] {
+			t.Errorf("span %q not found; recorded: %v", name, spans)
+		}
+	}
+}
+
+// TestNewHooks_MemoryHooks_ErrorSpanStatus verifies that the memory hooks set
+// span status to Error when the operation fails.
+func TestNewHooks_MemoryHooks_ErrorSpanStatus(t *testing.T) {
+	t.Parallel()
+
+	tp, mp, exp := setupOTel(t)
+	hooks, err := otelagent.NewHooks(tp.Tracer("test"), mp.Meter("test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	opErr := errors.New("storage unavailable")
+	ctx := context.Background()
+
+	hooks.OnShortTermLoad(ctx, 0, time.Millisecond, opErr)
+	hooks.OnShortTermAppend(ctx, 0, time.Millisecond, opErr)
+	hooks.OnLongTermRetrieve(ctx, nil, time.Millisecond, opErr)
+	hooks.OnLongTermStore(ctx, 0, time.Millisecond, opErr)
+
+	for _, s := range exp.GetSpans() {
+		if s.Status.Code.String() != "Error" {
+			t.Errorf("span %q: status = %q, want Error", s.Name, s.Status.Code)
+		}
+	}
+}
+
+// TestNewHooks_ToolResult_ErrorEmitsMetric verifies that a failed tool call
+// increments the tool errors counter.
+func TestNewHooks_ToolResult_ErrorEmitsMetric(t *testing.T) {
+	t.Parallel()
+
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() {
+		_ = tp.Shutdown(context.Background())
+		_ = mp.Shutdown(context.Background())
+	})
+
+	hooks, err := otelagent.NewHooks(tp.Tracer("test"), mp.Meter("test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	toolErr := errors.New("tool failed")
+	hooks.OnToolResult(context.Background(), "my_tool", nil, time.Millisecond, toolErr)
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	found := false
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == "goagent.tool.errors" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("goagent.tool.errors metric not recorded on tool error")
+	}
+}
+
 // Ensure the errResp helper compiles (suppress unused warning).
 var _ = errResp
 var _ = time.Second

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	mcplib "github.com/mark3labs/mcp-go/mcp"
+
 	goagent "github.com/Germanblandin1/goagent"
 	"github.com/Germanblandin1/goagent/mcp"
 )
@@ -125,5 +127,52 @@ func TestTool_Execute_SystemError(t *testing.T) {
 	var toolErr *mcp.MCPToolError
 	if errors.As(err, &toolErr) {
 		t.Errorf("system error should not be *MCPToolError, got: %v", err)
+	}
+}
+
+// TestTool_Execute_BusinessError verifies that a handler that returns
+// IsError=true in the MCP result is translated to *MCPToolError. This exercises
+// the extractText helper and the IsError branch in the adapter.
+func TestTool_Execute_BusinessError(t *testing.T) {
+	t.Parallel()
+
+	s := mcp.NewServer("test-server", "0.0.1")
+
+	// Register a raw tool handler that explicitly sets IsError = true so that
+	// the adapter's extractText path is exercised.
+	rawTool := mcplib.NewTool("find_file", mcplib.WithDescription("finds a file"))
+	s.Inner().AddTool(rawTool, func(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+		return &mcplib.CallToolResult{
+			IsError: true,
+			Content: []mcplib.Content{
+				mcplib.NewTextContent("file not found"),
+			},
+		}, nil
+	})
+
+	client := mcp.NewTestClient(t, s)
+
+	var toolFound goagent.Tool
+	for _, t := range client.Tools() {
+		if t.Definition().Name == "find_file" {
+			toolFound = t
+			break
+		}
+	}
+	if toolFound == nil {
+		t.Fatal("find_file tool not discovered")
+	}
+
+	_, err := toolFound.Execute(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for IsError=true result, got nil")
+	}
+
+	var toolErr *mcp.MCPToolError
+	if !errors.As(err, &toolErr) {
+		t.Errorf("expected *MCPToolError, got %T: %v", err, err)
+	}
+	if toolErr != nil && toolErr.Message != "file not found" {
+		t.Errorf("MCPToolError.Message = %q, want %q", toolErr.Message, "file not found")
 	}
 }

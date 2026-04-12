@@ -140,6 +140,18 @@ func TestSchemaFrom(t *testing.T) {
 	}
 }
 
+func TestSchemaFrom_Nil(t *testing.T) {
+	t.Parallel()
+
+	schema := goagent.SchemaFrom(nil)
+	if schema["type"] != "object" {
+		t.Errorf("SchemaFrom(nil) type = %v, want 'object'", schema["type"])
+	}
+	if _, hasProps := schema["properties"]; hasProps {
+		t.Error("SchemaFrom(nil) should not have 'properties' key")
+	}
+}
+
 func TestSchemaFrom_Enum(t *testing.T) {
 	t.Parallel()
 
