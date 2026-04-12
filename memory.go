@@ -93,6 +93,21 @@ type SearchOptions struct {
 	// key–value pairs in this map. Support is implementation-defined:
 	// implementations that do not support metadata filtering silently ignore it.
 	Filter map[string]any
+
+	// TokenBudget, when positive, caps the total estimated token cost of the
+	// results returned by [LongTermMemory.Retrieve]. Results are evaluated in
+	// score-descending order; once a result would exceed the remaining budget,
+	// that result and all subsequent ones are dropped.
+	// TokenEstimator must be non-nil when TokenBudget > 0; otherwise the
+	// option has no effect.
+	// This field is consumed by [LongTermMemory] and is invisible to
+	// [VectorStore] implementations.
+	TokenBudget int
+
+	// TokenEstimator is called once per result with the concatenated text of
+	// that message's content blocks to determine its token cost.
+	// Provide e.g. est.Measure for any memory/vector.SizeEstimator.
+	TokenEstimator func(ctx context.Context, text string) int
 }
 
 // SearchOption configures an individual Search call.
@@ -110,6 +125,24 @@ func WithScoreThreshold(min float64) SearchOption {
 // metadata filtering silently ignore this option.
 func WithFilter(f map[string]any) SearchOption {
 	return func(o *SearchOptions) { o.Filter = f }
+}
+
+// WithTokenBudget returns a SearchOption that limits the total token cost of
+// results returned by [LongTermMemory.Retrieve]. Results are already ordered
+// by descending similarity score; the loop stops as soon as the next result
+// would exceed the remaining budget.
+//
+// estimator is called once per result with the concatenated text content of
+// that message. Pass e.g. est.Measure for any memory/vector.SizeEstimator.
+// If estimator is nil or budget ≤ 0 the option has no effect.
+//
+// This option is a no-op when passed directly to [VectorStore.Search];
+// it is only applied by [LongTermMemory.Retrieve].
+func WithTokenBudget(budget int, estimator func(ctx context.Context, text string) int) SearchOption {
+	return func(o *SearchOptions) {
+		o.TokenBudget = budget
+		o.TokenEstimator = estimator
+	}
 }
 
 // VectorStore stores (message, embedding) pairs and supports similarity search.

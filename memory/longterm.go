@@ -320,7 +320,34 @@ func (m *longTermMemory) Retrieve(ctx context.Context, query []goagent.ContentBl
 	if err != nil {
 		return nil, fmt.Errorf("embedding query: %w", err)
 	}
-	return m.store.Search(ctx, vec, k, opts...)
+	results, err := m.store.Search(ctx, vec, k, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return applyTokenBudget(ctx, results, opts...), nil
+}
+
+// applyTokenBudget trims results to fit within [goagent.SearchOptions.TokenBudget].
+// results must already be sorted by score descending (as returned by [goagent.VectorStore.Search]).
+// The loop stops as soon as the next result would exceed the remaining budget.
+// If TokenBudget ≤ 0 or TokenEstimator is nil, results are returned unchanged.
+func applyTokenBudget(ctx context.Context, results []goagent.ScoredMessage, opts ...goagent.SearchOption) []goagent.ScoredMessage {
+	cfg := &goagent.SearchOptions{}
+	for _, o := range opts {
+		o(cfg)
+	}
+	if cfg.TokenBudget <= 0 || cfg.TokenEstimator == nil {
+		return results
+	}
+	remaining := cfg.TokenBudget
+	for i, r := range results {
+		cost := cfg.TokenEstimator(ctx, vector.ExtractText(r.Message.Content))
+		if cost > remaining {
+			return results[:i]
+		}
+		remaining -= cost
+	}
+	return results
 }
 
 // messageID returns a stable content-based identifier for a message.

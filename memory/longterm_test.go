@@ -220,6 +220,91 @@ func TestLongTerm_Retrieve(t *testing.T) {
 	})
 }
 
+func TestLongTerm_RetrieveTokenBudget(t *testing.T) {
+	t.Parallel()
+
+	// charEstimator counts characters so tests are deterministic without network calls.
+	charEstimator := func(_ context.Context, text string) int { return len(text) }
+
+	newMem := func(t *testing.T, results []goagent.ScoredMessage) goagent.LongTermMemory {
+		t.Helper()
+		m, err := memory.NewLongTerm(
+			memory.WithVectorStore(&searchableVectorStore{results: results}),
+			memory.WithEmbedder(stubEmbedder{}),
+		)
+		if err != nil {
+			t.Fatalf("NewLongTerm: %v", err)
+		}
+		return m
+	}
+
+	msg := func(text string) goagent.ScoredMessage {
+		return goagent.ScoredMessage{Message: goagent.UserMessage(text)}
+	}
+
+	// "hi" = 2 chars, "hey" = 3 chars, "hello world" = 11 chars
+	three := []goagent.ScoredMessage{msg("hi"), msg("hey"), msg("hello world")}
+
+	tests := []struct {
+		name    string
+		results []goagent.ScoredMessage
+		budget  int
+		est     func(context.Context, string) int
+		want    int // expected len of results
+	}{
+		{
+			name:    "no budget option returns all",
+			results: three,
+			budget:  0,
+			est:     charEstimator,
+			want:    3,
+		},
+		{
+			name:    "budget covers all results",
+			results: three,
+			budget:  1000,
+			est:     charEstimator,
+			want:    3,
+		},
+		{
+			name:    "budget fits first two only",
+			results: three, // "hi"(2) + "hey"(3) = 5; "hello world"(11) would exceed 7
+			budget:  7,
+			est:     charEstimator,
+			want:    2,
+		},
+		{
+			name:    "budget too small for first result",
+			results: three, // "hi"(2) > budget(1)
+			budget:  1,
+			est:     charEstimator,
+			want:    0,
+		},
+		{
+			name:    "nil estimator disables budget",
+			results: three,
+			budget:  1,
+			est:     nil,
+			want:    3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := newMem(t, tt.results)
+			opts := []goagent.SearchOption{goagent.WithTokenBudget(tt.budget, tt.est)}
+			got, err := m.Retrieve(context.Background(), []goagent.ContentBlock{goagent.TextBlock("q")}, 5, opts...)
+			if err != nil {
+				t.Fatalf("Retrieve: %v", err)
+			}
+			if len(got) != tt.want {
+				t.Errorf("len(got) = %d, want %d", len(got), tt.want)
+			}
+		})
+	}
+}
+
 func TestLongTerm_RetrieveEmbedError(t *testing.T) {
 	t.Parallel()
 
