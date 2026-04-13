@@ -4,7 +4,7 @@
 
 A minimal, Go-idiomatic framework for building AI agents with a [ReAct](https://arxiv.org/abs/2210.03629) loop and pluggable model providers.
 
-![Go version](https://img.shields.io/badge/go-1.23%2B-blue)
+![Go version](https://img.shields.io/badge/go-1.26%2B-blue)
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue)
 
 ## Install
