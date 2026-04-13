@@ -13,6 +13,17 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FAIL=0
 RUN_INTEGRATION=0
 
+# En Windows/Git Bash, MinGW GCC necesita paths estilo C:/... (mixed).
+# cygpath -m convierte cualquier path a ese formato.
+# En Linux/macOS no existe cygpath, devuelve el path tal cual.
+mixed_path() {
+  if command -v cygpath &>/dev/null; then
+    cygpath -m "$1"
+  else
+    echo "$1"
+  fi
+}
+
 if [[ "${1:-}" == "--full" ]]; then
   RUN_INTEGRATION=1
 fi
@@ -143,10 +154,11 @@ popd > /dev/null
 
 echo "[lint] sqlitevec (CGO)"
 pushd "$ROOT/memory/vector/sqlitevec" > /dev/null
-MOD_CACHE=$(go env GOMODCACHE)
+MOD_CACHE=$(mixed_path "$(go env GOMODCACHE)")
+ROOT_M=$(mixed_path "$ROOT")
 SQLITE3_VER=$(go list -m -f '{{.Version}}' github.com/mattn/go-sqlite3)
 export CGO_ENABLED=1
-export CGO_CFLAGS="-I$ROOT/memory/vector/sqlitevec/csrc -I${MOD_CACHE}/github.com/mattn/go-sqlite3@${SQLITE3_VER}"
+export CGO_CFLAGS="-I${ROOT_M}/memory/vector/sqlitevec/csrc -I${MOD_CACHE}/github.com/mattn/go-sqlite3@${SQLITE3_VER}"
 run "go vet sqlitevec"      go vet ./...
 run "staticcheck sqlitevec" staticcheck ./...
 unset CGO_ENABLED CGO_CFLAGS
@@ -204,10 +216,11 @@ done
 
 echo "[test] sqlitevec (CGO)"
 pushd "$ROOT/memory/vector/sqlitevec" > /dev/null
-MOD_CACHE=$(go env GOMODCACHE)
+MOD_CACHE=$(mixed_path "$(go env GOMODCACHE)")
+ROOT_M=$(mixed_path "$ROOT")
 SQLITE3_VER=$(go list -m -f '{{.Version}}' github.com/mattn/go-sqlite3)
 export CGO_ENABLED=1
-export CGO_CFLAGS="-I$ROOT/memory/vector/sqlitevec/csrc -I${MOD_CACHE}/github.com/mattn/go-sqlite3@${SQLITE3_VER}"
+export CGO_CFLAGS="-I${ROOT_M}/memory/vector/sqlitevec/csrc -I${MOD_CACHE}/github.com/mattn/go-sqlite3@${SQLITE3_VER}"
 run "build sqlitevec" go build ./...
 run "test sqlitevec"  go test -race -timeout 5m \
   -coverprofile="$ROOT/coverage-memory-vector-sqlitevec.out" \
