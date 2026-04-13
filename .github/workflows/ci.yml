@@ -37,6 +37,7 @@ jobs:
             providers/voyage
             rag
             ratelimit
+            examples
           )
           for mod in "${MODULES[@]}"; do
             echo "── go mod tidy check: $mod ──"
@@ -85,7 +86,8 @@ jobs:
           CGO_ENABLED: "1"
         run: |
           MOD_CACHE=$(go env GOMODCACHE)
-          export CGO_CFLAGS="-I$GITHUB_WORKSPACE/memory/vector/sqlitevec/csrc -I${MOD_CACHE}/github.com/mattn/go-sqlite3@v1.14.40"
+          SQLITE3_VER=$(cd "$GITHUB_WORKSPACE/memory/vector/sqlitevec" && go list -m -f '{{.Version}}' github.com/mattn/go-sqlite3)
+          export CGO_CFLAGS="-I$GITHUB_WORKSPACE/memory/vector/sqlitevec/csrc -I${MOD_CACHE}/github.com/mattn/go-sqlite3@${SQLITE3_VER}"
           cd "$GITHUB_WORKSPACE/memory/vector/sqlitevec"
           go vet ./...
           staticcheck ./...
@@ -182,7 +184,8 @@ jobs:
           CGO_ENABLED: "1"
         run: |
           MOD_CACHE=$(go env GOMODCACHE)
-          export CGO_CFLAGS="-I$GITHUB_WORKSPACE/memory/vector/sqlitevec/csrc -I${MOD_CACHE}/github.com/mattn/go-sqlite3@v1.14.40"
+          SQLITE3_VER=$(cd "$GITHUB_WORKSPACE/memory/vector/sqlitevec" && go list -m -f '{{.Version}}' github.com/mattn/go-sqlite3)
+          export CGO_CFLAGS="-I$GITHUB_WORKSPACE/memory/vector/sqlitevec/csrc -I${MOD_CACHE}/github.com/mattn/go-sqlite3@${SQLITE3_VER}"
           cd "$GITHUB_WORKSPACE/memory/vector/sqlitevec"
           go build ./...
           go test -race -timeout 5m \
