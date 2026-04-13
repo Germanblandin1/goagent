@@ -22,6 +22,27 @@ jobs:
           go-version: "1.25.0"
           cache: true
 
+      - name: Verify go.sum is tidy (all modules)
+        run: |
+          MODULES=(
+            .
+            mcp
+            memory/vector/pgvector
+            memory/vector/qdrant
+            memory/vector/sqlitevec
+            memory/vector/tiktoken
+            otel
+            providers/anthropic
+            providers/ollama
+            providers/voyage
+            rag
+            ratelimit
+          )
+          for mod in "${MODULES[@]}"; do
+            echo "── go mod tidy check: $mod ──"
+            (cd "$GITHUB_WORKSPACE/$mod" && go mod tidy && git diff --exit-code go.mod go.sum)
+          done
+
       - name: Install staticcheck
         run: go install honnef.co/go/tools/cmd/staticcheck@latest
 
