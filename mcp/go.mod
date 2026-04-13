@@ -1,6 +1,6 @@
 module github.com/Germanblandin1/goagent/mcp
 
-go 1.25.0
+go 1.26.2
 
 require (
 	github.com/Germanblandin1/goagent v0.0.0
