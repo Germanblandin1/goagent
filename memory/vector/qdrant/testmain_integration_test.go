@@ -19,7 +19,7 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 
 	req := testcontainers.ContainerRequest{
-		Image:        "qdrant/qdrant:v1.13.0",
+		Image:        "qdrant/qdrant:v1.17.0",
 		ExposedPorts: []string{"6333/tcp", "6334/tcp"},
 		WaitingFor:   wait.ForHTTP("/healthz").WithPort("6333/tcp"),
 	}

@@ -205,11 +205,6 @@ func TestNewHooks_ErrorPropagation(t *testing.T) {
 	}
 
 	provErr := errors.New("provider down")
-	type errProvider struct{ err error }
-	provider := &struct{ goagent.Provider }{
-		Provider: &mockProvider{},
-	}
-	_ = provider
 	// Use a provider that always errors.
 	alwaysErr := &alwaysErrProvider{err: provErr}
 
