@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump type"
+        required: true
+        default: patch
+        type: choice
+        options: [patch, minor, major]
+
+permissions:
+  contents: write  # required to push tags and create GitHub releases
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # required to read all existing tags
+
+      - name: Configure git
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Calculate next version
+        id: version
+        run: |
+          # Read latest root tag (vX.Y.Z — no module prefix)
+          LATEST=$(git tag --sort=-version:refname | grep '^v[0-9]' | grep -v '/' | head -1)
+          echo "Latest tag: $LATEST"
+
+          MAJOR=$(echo "$LATEST" | cut -d. -f1 | tr -d 'v')
+          MINOR=$(echo "$LATEST" | cut -d. -f2)
+          PATCH=$(echo "$LATEST" | cut -d. -f3)
+
+          case "${{ inputs.bump }}" in
+            major) MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR+1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH+1)) ;;
+          esac
+
+          VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "Next version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tags
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAGS=(
+            "$VERSION"
+            "examples/$VERSION"
+            "mcp/$VERSION"
+            "memory/vector/pgvector/$VERSION"
+            "memory/vector/qdrant/$VERSION"
+            "memory/vector/sqlitevec/$VERSION"
+            "memory/vector/tiktoken/$VERSION"
+            "otel/$VERSION"
+            "providers/anthropic/$VERSION"
+            "providers/ollama/$VERSION"
+            "providers/voyage/$VERSION"
+            "rag/$VERSION"
+            "ratelimit/$VERSION"
+          )
+          for tag in "${TAGS[@]}"; do
+            git tag -a "$tag" -m "release: $tag"
+            echo "created: $tag"
+          done
+          git push origin --tags
+
+      - name: Extract changelog notes
+        id: changelog
+        run: |
+          # Extract the first section from CHANGELOG.md (between first and second ## heading)
+          NOTES=$(awk '/^## \[/{if(p)exit; p=1; next} p' CHANGELOG.md)
+          # Store multiline output using heredoc delimiter
+          {
+            echo "notes<<EOF"
+            echo "$NOTES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release create "$VERSION" \
+            --title "Release $VERSION" \
+            --notes "${{ steps.changelog.outputs.notes }}"
