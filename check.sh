@@ -250,8 +250,10 @@ check_coverage coverage-ratelimit.out                    70 "ratelimit"
 check_coverage coverage-providers-anthropic.out          70 "providers/anthropic"
 check_coverage coverage-providers-ollama.out             70 "providers/ollama"
 check_coverage coverage-providers-voyage.out             70 "providers/voyage"
-check_coverage coverage-memory-vector-pgvector.out       70 "memory/vector/pgvector"
-check_coverage coverage-memory-vector-qdrant.out         70 "memory/vector/qdrant"
+# pgvector y qdrant son paquetes de integración — casi todo su código
+# requiere una base de datos real. El job integration es su gate de calidad.
+skip "memory/vector/pgvector (integration-only package)"
+skip "memory/vector/qdrant   (integration-only package)"
 check_coverage coverage-memory-vector-sqlitevec.out      70 "memory/vector/sqlitevec"
 check_coverage coverage-memory-vector-tiktoken.out       70 "memory/vector/tiktoken"
 
