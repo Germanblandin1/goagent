@@ -41,7 +41,12 @@ jobs:
           )
           for mod in "${MODULES[@]}"; do
             echo "── go mod tidy check: $mod ──"
-            (cd "$GITHUB_WORKSPACE/$mod" && go mod tidy && git diff --exit-code go.mod go.sum)
+            cd "$GITHUB_WORKSPACE/$mod"
+            go mod tidy
+            # go.sum may not exist for modules with no external dependencies
+            FILES="go.mod"
+            [ -f go.sum ] && FILES="go.mod go.sum"
+            git diff --exit-code $FILES
           done
 
       - name: Install staticcheck
