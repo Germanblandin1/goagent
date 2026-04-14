@@ -228,18 +228,23 @@ jobs:
       - name: Enforce coverage thresholds
         run: |
           FAILED=0
+          ARTIFACTS_DIR="$GITHUB_WORKSPACE"
 
+          # check_coverage <profile> <threshold> <label> <module_dir>
+          # module_dir: path relative to GITHUB_WORKSPACE where the module lives
+          # go tool cover needs to run inside the module so it can resolve package paths
           check_coverage() {
-            local profile="$1"
+            local profile="$ARTIFACTS_DIR/$1"
             local threshold="$2"
             local label="$3"
+            local module_dir="${4:-.}"
 
             if [ ! -f "$profile" ]; then
               echo "SKIP : $label (no coverage file)"
               return
             fi
 
-            pct=$(go tool cover -func="$profile" | tail -1 | awk '{print $NF}' | tr -d '%')
+            pct=$(cd "$GITHUB_WORKSPACE/$module_dir" && go tool cover -func="$profile" | tail -1 | awk '{print $NF}' | tr -d '%')
             ok=$(awk -v p="$pct" -v t="$threshold" 'BEGIN { print (p+0 >= t+0) ? "yes" : "no" }')
 
             if [ "$ok" = "yes" ]; then
@@ -251,23 +256,23 @@ jobs:
           }
 
           # Core packages: ≥80%
-          check_coverage coverage-root.out  80 "core (agent/tool/dispatcher/memory)"
-          check_coverage coverage-rag.out   80 "rag"
+          check_coverage coverage-root.out  80 "core (agent/tool/dispatcher/memory)" .
+          check_coverage coverage-rag.out   80 "rag"                                 rag
 
           # Sub-packages: ≥70%
-          check_coverage coverage-mcp.out                          70 "mcp"
-          check_coverage coverage-otel.out                         70 "otel"
-          check_coverage coverage-ratelimit.out                    70 "ratelimit"
-          check_coverage coverage-providers-anthropic.out          70 "providers/anthropic"
-          check_coverage coverage-providers-ollama.out             70 "providers/ollama"
-          check_coverage coverage-providers-voyage.out             70 "providers/voyage"
+          check_coverage coverage-mcp.out                          70 "mcp"                        mcp
+          check_coverage coverage-otel.out                         70 "otel"                       otel
+          check_coverage coverage-ratelimit.out                    70 "ratelimit"                  ratelimit
+          check_coverage coverage-providers-anthropic.out          70 "providers/anthropic"        providers/anthropic
+          check_coverage coverage-providers-ollama.out             70 "providers/ollama"           providers/ollama
+          check_coverage coverage-providers-voyage.out             70 "providers/voyage"           providers/voyage
           # pgvector and qdrant are integration-only packages — almost all their code
           # requires a real database. Low unit-test coverage is intentional,
           # not an oversight. The integration job is their quality gate.
           echo "SKIP : memory/vector/pgvector (integration-only package)"
           echo "SKIP : memory/vector/qdrant   (integration-only package)"
-          check_coverage coverage-memory-vector-sqlitevec.out      70 "memory/vector/sqlitevec"
-          check_coverage coverage-memory-vector-tiktoken.out       70 "memory/vector/tiktoken"
+          check_coverage coverage-memory-vector-sqlitevec.out      70 "memory/vector/sqlitevec"   memory/vector/sqlitevec
+          check_coverage coverage-memory-vector-tiktoken.out       70 "memory/vector/tiktoken"    memory/vector/tiktoken
 
           exit $FAILED
 
