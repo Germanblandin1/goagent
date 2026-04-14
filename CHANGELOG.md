@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.6] - 2026-04-14
+
+### Fixed
+
+- **CI**: `go tool cover` now runs from each module's own directory so Go 1.20+ can resolve package paths in coverage profiles — previously all sub-module coverage checks failed with "no required module provides package"
+- **CI**: `go mod tidy` check no longer errors on modules without external dependencies (`providers/voyage`) where `go.sum` is absent — `git diff` now only includes `go.sum` when the file exists
+- **examples**: upgrade `golang.org/x/net` v0.50.0 → v0.51.0 (GO-2026-4559)
+- **ci.yml / check.sh**: all user-facing text translated to English
+
+---
+
 ## [0.5.5] - 2026-04-12
 
 ### Added
