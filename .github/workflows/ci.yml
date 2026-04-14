@@ -256,9 +256,9 @@ jobs:
           check_coverage coverage-providers-anthropic.out          70 "providers/anthropic"
           check_coverage coverage-providers-ollama.out             70 "providers/ollama"
           check_coverage coverage-providers-voyage.out             70 "providers/voyage"
-          # pgvector y qdrant son paquetes de integración — casi todo su código
-          # requiere una base de datos real. La cobertura de unit tests es baja
-          # por diseño, no por descuido. El job integration es su gate de calidad.
+          # pgvector and qdrant are integration-only packages — almost all their code
+          # requires a real database. Low unit-test coverage is intentional,
+          # not an oversight. The integration job is their quality gate.
           echo "SKIP : memory/vector/pgvector (integration-only package)"
           echo "SKIP : memory/vector/qdrant   (integration-only package)"
           check_coverage coverage-memory-vector-sqlitevec.out      70 "memory/vector/sqlitevec"

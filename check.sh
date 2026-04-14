@@ -5,7 +5,7 @@
 #
 #   Usage:
 #     ./check.sh          -- lint + security + test + coverage
-#     ./check.sh --full   -- idem + integration tests (necesita Docker)
+#     ./check.sh --full   -- idem + integration tests (requires Docker)
 # ============================================================
 set -euo pipefail
 
@@ -13,9 +13,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FAIL=0
 RUN_INTEGRATION=0
 
-# En Windows/Git Bash, MinGW GCC necesita paths estilo C:/... (mixed).
-# cygpath -m convierte cualquier path a ese formato.
-# En Linux/macOS no existe cygpath, devuelve el path tal cual.
+# On Windows/Git Bash, MinGW GCC requires C:/... paths (mixed format).
+# cygpath -m converts any path to that format.
+# On Linux/macOS cygpath is not available; returns the path unchanged.
 mixed_path() {
   if command -v cygpath &>/dev/null; then
     cygpath -m "$1"
@@ -63,7 +63,7 @@ skip() { echo "[SKIP] $*"; }
 sep()  { echo "============================================================"; }
 
 run() {
-  # run <label> <cmd...>: ejecuta el comando y registra OK/FAIL
+  # run <label> <cmd...>: runs the command and records OK/FAIL
   local label="$1"; shift
   if "$@"; then
     ok "$label"
@@ -78,7 +78,7 @@ check_coverage() {
   local label="$3"
 
   if [[ ! -f "$file" ]]; then
-    skip "$label (sin archivo de coverage)"
+    skip "$label (no coverage file)"
     return
   fi
 
@@ -102,22 +102,22 @@ echo "  goagent - CI local check"
 sep
 echo "  Root: $ROOT"
 if [[ $RUN_INTEGRATION -eq 1 ]]; then
-  echo "  Modo: completo (incluye integration tests)"
+  echo "  Mode: full (includes integration tests)"
 else
-  echo "  Modo: estandar (sin integration tests — usar --full)"
+  echo "  Mode: standard (no integration tests — use --full)"
 fi
 sep
 echo
 
-echo "[tools] Verificando herramientas..."
+echo "[tools] Checking required tools..."
 
 if ! command -v staticcheck &>/dev/null; then
-  echo "[tools] Instalando staticcheck..."
+  echo "[tools] Installing staticcheck..."
   go install honnef.co/go/tools/cmd/staticcheck@latest
 fi
 
 if ! command -v govulncheck &>/dev/null; then
-  echo "[tools] Instalando govulncheck..."
+  echo "[tools] Installing govulncheck..."
   go install golang.org/x/vuln/cmd/govulncheck@latest
 fi
 
@@ -200,7 +200,7 @@ echo "[test] root module"
 cd "$ROOT"
 run "build root" go build ./...
 
-# Filtrar paquetes sin test files (evita el error de covdata en Windows)
+# Filter packages without test files (avoids covdata error on Windows)
 ROOT_PKGS=$(go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... | tr '\n' ' ')
 # shellcheck disable=SC2086
 run "test root" go test -race -timeout 5m -coverprofile=coverage-root.out -covermode=atomic $ROOT_PKGS
@@ -250,8 +250,8 @@ check_coverage coverage-ratelimit.out                    70 "ratelimit"
 check_coverage coverage-providers-anthropic.out          70 "providers/anthropic"
 check_coverage coverage-providers-ollama.out             70 "providers/ollama"
 check_coverage coverage-providers-voyage.out             70 "providers/voyage"
-# pgvector y qdrant son paquetes de integración — casi todo su código
-# requiere una base de datos real. El job integration es su gate de calidad.
+# pgvector and qdrant are integration-only packages — almost all their code
+# requires a real database. The integration job is their quality gate.
 skip "memory/vector/pgvector (integration-only package)"
 skip "memory/vector/qdrant   (integration-only package)"
 check_coverage coverage-memory-vector-sqlitevec.out      70 "memory/vector/sqlitevec"
@@ -260,10 +260,10 @@ check_coverage coverage-memory-vector-tiktoken.out       70 "memory/vector/tikto
 echo
 
 # ============================================================
-# STEP 5 — INTEGRATION (opcional, requiere Docker)
+# STEP 5 — INTEGRATION (optional, requires Docker)
 # ============================================================
 if [[ $RUN_INTEGRATION -eq 0 ]]; then
-  echo "[integration] Saltado. Usar ./check.sh --full para correrlos."
+  echo "[integration] Skipped. Use ./check.sh --full to run them."
   echo
 else
   sep
@@ -284,17 +284,17 @@ else
 fi
 
 # ============================================================
-# RESUMEN
+# SUMMARY
 # ============================================================
 sep
 if [[ $FAIL -eq 0 ]]; then
-  echo "  LISTO PARA PUSH - todos los checks OK"
+  echo "  READY TO PUSH — all checks passed"
   echo
-  echo "  Proximo paso:"
+  echo "  Next steps:"
   echo "    git tag -a vX.X.X -m \"release: vX.X.X\""
   echo "    git push origin vX.X.X"
 else
-  echo "  NO LISTO - $FAIL check(s) fallaron"
+  echo "  NOT READY — $FAIL check(s) failed"
 fi
 sep
 echo
