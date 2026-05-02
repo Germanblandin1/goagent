@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-05-01
+
+### Added
+
+**`orchestration/` sub-module**
+- `Executor` — single interface (`RunWithContext(ctx, *StageContext) error`) that every orchestration primitive implements; enables nesting without type assertions
+- `StageContext` — state carrier with `Outputs` (LLM text), `Artifacts` (typed Go data), `Trace` (execution history), and `Goal` (immutable pipeline objective)
+- `StageTrace` — per-stage execution record with name, duration, and error
+- `GetArtifact[T]` — generic helper to retrieve typed artifacts from a `StageContext` with safe type assertion and descriptive errors
+- `Pipeline` — sequential executor; respects context cancellation before each stage; implements `Executor` for nesting; `Run` is the top-level entry point returning the full `*StageContext`
+- `ParallelGroup` — concurrent executor; forks a child `StageContext` per goroutine before launching (eliminating parent/child map races); merges results to parent after all stages complete; implements `Executor` for embedding inside a `Pipeline`
+- `AgentAdapter` / `NewAgentAdapter` — adapts a `*goagent.Agent` (text) to `Executor`
+- `AgentBlocksAdapter` / `NewAgentBlocksAdapter` — adapts a `*goagent.Agent` (multimodal) to `Executor`
+- `AgentStage` / `AgentBlocksStage` — syntactic sugar constructors for the two adapter types
+- `PromptBuilder` / `BlocksBuilder` — function types for building agent input from `StageContext`
+- `GoalOnly` / `LastOutput` — built-in `PromptBuilder` helpers
+
+---
+
 ## [0.5.6] - 2026-04-14
 
 ### Fixed
