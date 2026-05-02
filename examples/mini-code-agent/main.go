@@ -39,11 +39,11 @@ import (
 )
 
 func main() {
-	task      := flag.String("task",      "",                       "Programming task to implement (required)")
-	workspace := flag.String("workspace", "workspace",              "Directory where agents read and write files")
-	model     := flag.String("model",     "qwen3:latest",           "Ollama model name")
-	host      := flag.String("host",      "http://localhost:11434", "Ollama server URL")
-	debug     := flag.Bool("debug",       false,                    "Enable debug-level logs")
+	task := flag.String("task", "", "Programming task to implement (required)")
+	workspace := flag.String("workspace", "workspace", "Directory where agents read and write files")
+	model := flag.String("model", "qwen3:latest", "Ollama model name")
+	host := flag.String("host", "http://localhost:11434", "Ollama server URL")
+	debug := flag.Bool("debug", false, "Enable debug-level logs")
 	flag.Parse()
 
 	if *task == "" {
@@ -78,7 +78,7 @@ func main() {
 
 	// ── Tools ─────────────────────────────────────────────────────────────────
 	listFilesTool := makeListFilesTool(workspaceAbs)
-	readFileTool  := makeReadFileTool(workspaceAbs)
+	readFileTool := makeReadFileTool(workspaceAbs)
 	writeFileTool := makeWriteFileTool(workspaceAbs)
 
 	// ── Agents ────────────────────────────────────────────────────────────────
@@ -140,9 +140,9 @@ func main() {
 	// Stages run sequentially. Each stage receives the full StageContext, so
 	// PromptBuilders can inject outputs from previous stages into the next prompt.
 	pipeline := orchestration.NewPipeline(
-		orchestration.Stage("plan",   orchestration.AgentStage("plan",   plannerAgent,  orchestration.GoalOnly)),
-		orchestration.Stage("code",   orchestration.AgentStage("code",   coderAgent,    coderPB)),
-		orchestration.Stage("test",   orchestration.AgentStage("test",   testerAgent,   testerPB)),
+		orchestration.Stage("plan", orchestration.AgentStage("plan", plannerAgent, orchestration.GoalOnly)),
+		orchestration.Stage("code", orchestration.AgentStage("code", coderAgent, coderPB)),
+		orchestration.Stage("test", orchestration.AgentStage("test", testerAgent, testerPB)),
 		orchestration.Stage("review", orchestration.AgentStage("review", reviewerAgent, reviewerPB)),
 	)
 
@@ -155,9 +155,9 @@ func main() {
 
 	// ── Output ────────────────────────────────────────────────────────────────
 	for _, stage := range []struct{ key, title string }{
-		{"plan",   "PLAN"},
-		{"code",   "CODE SUMMARY"},
-		{"test",   "TEST SUMMARY"},
+		{"plan", "PLAN"},
+		{"code", "CODE SUMMARY"},
+		{"test", "TEST SUMMARY"},
 		{"review", "REVIEW"},
 	} {
 		if v, ok := sc.Output(stage.key); ok {
@@ -253,7 +253,7 @@ Produce a structured review with these sections:
 
 // ── Tools ─────────────────────────────────────────────────────────────────────
 
-const maxFileKB    = 100
+const maxFileKB = 100
 const maxFileBytes = maxFileKB * 1024
 
 func makeListFilesTool(workspace string) goagent.Tool {
