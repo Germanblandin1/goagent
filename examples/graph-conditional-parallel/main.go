@@ -127,8 +127,10 @@ COMPLEX — if it requires research AND coding (new library, architecture decisi
 
 			if isComplex {
 				group := orchestration.NewParallelGroup(
-					orchestration.Stage("research", researcherAdapter),
-					orchestration.Stage("code", coderAdapter),
+					orchestration.WithParallelStages(
+						orchestration.Stage("research", researcherAdapter),
+						orchestration.Stage("code", coderAdapter),
+					),
 				)
 				if err := group.RunWithContext(ctx, sc); err != nil {
 					return "", err

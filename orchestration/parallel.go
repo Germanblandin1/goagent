@@ -6,6 +6,9 @@ import (
 	"time"
 )
 
+// ParallelGroupOption configures a ParallelGroup.
+type ParallelGroupOption func(*ParallelGroup)
+
 // ParallelGroup executes multiple Executors concurrently.
 // All stages share the same StageContext — reads and writes to Outputs,
 // Artifacts, and Trace are memory-safe because StageContext uses an internal
@@ -20,16 +23,40 @@ import (
 // Example:
 //
 //	orchestration.NewParallelGroup(
-//	    orchestration.Stage("code",  coderExecutor),   // calls sc.SetOutput("code", ...)
-//	    orchestration.Stage("tests", testerExecutor),  // calls sc.SetOutput("tests", ...)
+//	    orchestration.WithParallelStages(
+//	        orchestration.Stage("code",  coderExecutor),
+//	        orchestration.Stage("tests", testerExecutor),
+//	    ),
 //	)
 type ParallelGroup struct {
 	stages []namedExecutor
+	hooks  OrchestrationHooks
 }
 
-// NewParallelGroup constructs a ParallelGroup.
-func NewParallelGroup(stages ...namedExecutor) *ParallelGroup {
-	return &ParallelGroup{stages: stages}
+// WithParallelStages sets the stages of the parallel group.
+func WithParallelStages(stages ...namedExecutor) ParallelGroupOption {
+	return func(g *ParallelGroup) {
+		g.stages = stages
+	}
+}
+
+// WithParallelHooks configures observability hooks for the parallel group.
+// Hooks are called around each stage execution.
+// The zero value of OrchestrationHooks is safe — unset fields are no-ops.
+func WithParallelHooks(h OrchestrationHooks) ParallelGroupOption {
+	return func(g *ParallelGroup) {
+		g.hooks = h
+	}
+}
+
+// NewParallelGroup constructs a ParallelGroup from the given options.
+// Stages are provided via WithParallelStages; hooks via WithParallelHooks.
+func NewParallelGroup(opts ...ParallelGroupOption) *ParallelGroup {
+	g := &ParallelGroup{}
+	for _, opt := range opts {
+		opt(g)
+	}
+	return g
 }
 
 // RunWithContext implements Executor.
@@ -48,9 +75,17 @@ func (g *ParallelGroup) RunWithContext(ctx context.Context, sc *StageContext) er
 
 	for _, s := range g.stages {
 		go func() {
+			stageCtx := invokeStart(g.hooks.OnStageStart, ctx, s.name)
+
 			start := time.Now()
-			err := s.executor.RunWithContext(ctx, sc)
-			results <- result{s.name, time.Since(start), err}
+			err := s.executor.RunWithContext(stageCtx, sc)
+			dur := time.Since(start)
+
+			if fn := g.hooks.OnStageEnd; fn != nil {
+				fn(stageCtx, s.name, dur, err)
+			}
+
+			results <- result{s.name, dur, err}
 		}()
 	}
 

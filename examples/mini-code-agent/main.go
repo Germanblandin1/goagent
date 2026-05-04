@@ -140,10 +140,12 @@ func main() {
 	// Stages run sequentially. Each stage receives the full StageContext, so
 	// PromptBuilders can inject outputs from previous stages into the next prompt.
 	pipeline := orchestration.NewPipeline(
-		orchestration.Stage("plan", orchestration.AgentStage("plan", plannerAgent, orchestration.GoalOnly)),
-		orchestration.Stage("code", orchestration.AgentStage("code", coderAgent, coderPB)),
-		orchestration.Stage("test", orchestration.AgentStage("test", testerAgent, testerPB)),
-		orchestration.Stage("review", orchestration.AgentStage("review", reviewerAgent, reviewerPB)),
+		orchestration.WithStages(
+			orchestration.Stage("plan", orchestration.AgentStage("plan", plannerAgent, orchestration.GoalOnly)),
+			orchestration.Stage("code", orchestration.AgentStage("code", coderAgent, coderPB)),
+			orchestration.Stage("test", orchestration.AgentStage("test", testerAgent, testerPB)),
+			orchestration.Stage("review", orchestration.AgentStage("review", reviewerAgent, reviewerPB)),
+		),
 	)
 
 	fmt.Printf("Running pipeline for task: %q\n\n", *task)

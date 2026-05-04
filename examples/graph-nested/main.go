@@ -147,20 +147,22 @@ REVISE: <one sentence describing what needs improvement>`),
 
 	// The Pipeline treats draftGraph as just another Executor stage.
 	pipeline := orchestration.NewPipeline(
-		orchestration.Stage("outline", orchestration.NewAgentAdapter(
-			outlineAgent, "outline",
-			func(sc *orchestration.StageContext) string {
-				return "Create an outline for a blog post about: " + sc.Goal
-			},
-		)),
-		orchestration.Stage("draft", draftGraph), // Graph as Executor
-		orchestration.Stage("format", orchestration.NewAgentAdapter(
-			formatterAgent, "formatted",
-			func(sc *orchestration.StageContext) string {
-				draft, _ := sc.RequireOutput("draft")
-				return fmt.Sprintf("Topic: %s\n\nPost to format:\n%s", sc.Goal, draft)
-			},
-		)),
+		orchestration.WithStages(
+			orchestration.Stage("outline", orchestration.NewAgentAdapter(
+				outlineAgent, "outline",
+				func(sc *orchestration.StageContext) string {
+					return "Create an outline for a blog post about: " + sc.Goal
+				},
+			)),
+			orchestration.Stage("draft", draftGraph), // Graph as Executor
+			orchestration.Stage("format", orchestration.NewAgentAdapter(
+				formatterAgent, "formatted",
+				func(sc *orchestration.StageContext) string {
+					draft, _ := sc.RequireOutput("draft")
+					return fmt.Sprintf("Topic: %s\n\nPost to format:\n%s", sc.Goal, draft)
+				},
+			)),
+		),
 	)
 
 	fmt.Printf("Writing blog post about %q...\n", *topic)

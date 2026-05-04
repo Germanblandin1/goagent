@@ -413,9 +413,11 @@ func TestGraph_ImplementsExecutor_nestedInPipeline(t *testing.T) {
 	)
 
 	pipeline := orchestration.NewPipeline(
-		orchestration.Stage("before", &mockExecutor{outputKey: "before", value: "v_before"}),
-		orchestration.Stage("graph", graph),
-		orchestration.Stage("after", &mockExecutor{outputKey: "after", value: "v_after"}),
+		orchestration.WithStages(
+			orchestration.Stage("before", &mockExecutor{outputKey: "before", value: "v_before"}),
+			orchestration.Stage("graph", graph),
+			orchestration.Stage("after", &mockExecutor{outputKey: "after", value: "v_after"}),
+		),
 	)
 
 	sc, err := pipeline.Run(context.Background(), "goal")
@@ -441,9 +443,11 @@ func TestGraph_ParallelGroupInsideNode(t *testing.T) {
 		orchestration.WithStart("dispatch"),
 		orchestration.WithNode("dispatch", func(ctx context.Context, sc *orchestration.StageContext) (string, error) {
 			group := orchestration.NewParallelGroup(
-				orchestration.Stage("worker_a", &mockExecutor{outputKey: "worker_a", value: "va"}),
-				orchestration.Stage("worker_b", &mockExecutor{outputKey: "worker_b", value: "vb"}),
-				orchestration.Stage("worker_c", &mockExecutor{outputKey: "worker_c", value: "vc"}),
+				orchestration.WithParallelStages(
+					orchestration.Stage("worker_a", &mockExecutor{outputKey: "worker_a", value: "va"}),
+					orchestration.Stage("worker_b", &mockExecutor{outputKey: "worker_b", value: "vb"}),
+					orchestration.Stage("worker_c", &mockExecutor{outputKey: "worker_c", value: "vc"}),
+				),
 			)
 			if err := group.RunWithContext(ctx, sc); err != nil {
 				return "", err
@@ -483,8 +487,10 @@ func TestGraph_ConditionalParallelism(t *testing.T) {
 
 				if useParallel {
 					group := orchestration.NewParallelGroup(
-						orchestration.Stage("p1", &mockExecutor{outputKey: "p1", value: "v1"}),
-						orchestration.Stage("p2", &mockExecutor{outputKey: "p2", value: "v2"}),
+						orchestration.WithParallelStages(
+							orchestration.Stage("p1", &mockExecutor{outputKey: "p1", value: "v1"}),
+							orchestration.Stage("p2", &mockExecutor{outputKey: "p2", value: "v2"}),
+						),
 					)
 					if err := group.RunWithContext(ctx, sc); err != nil {
 						return "", err

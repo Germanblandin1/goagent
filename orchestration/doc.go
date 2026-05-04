@@ -8,19 +8,21 @@
 // Pipeline — ejecución secuencial:
 //
 //	pipeline := orchestration.NewPipeline(
-//	    orchestration.Stage("research", orchestration.AgentStage(
-//	        "research", researcherAgent,
-//	        func(sc *orchestration.StageContext) string {
-//	            return "Investigá: " + sc.Goal
-//	        },
-//	    )),
-//	    orchestration.Stage("code", orchestration.AgentStage(
-//	        "code", coderAgent,
-//	        func(sc *orchestration.StageContext) string {
-//	            research, _ := sc.RequireOutput("research")
-//	            return fmt.Sprintf("Objetivo: %s\n\nInvestigación:\n%s", sc.Goal, research)
-//	        },
-//	    )),
+//	    orchestration.WithStages(
+//	        orchestration.Stage("research", orchestration.AgentStage(
+//	            "research", researcherAgent,
+//	            func(sc *orchestration.StageContext) string {
+//	                return "Investigá: " + sc.Goal
+//	            },
+//	        )),
+//	        orchestration.Stage("code", orchestration.AgentStage(
+//	            "code", coderAgent,
+//	            func(sc *orchestration.StageContext) string {
+//	                research, _ := sc.RequireOutput("research")
+//	                return fmt.Sprintf("Objetivo: %s\n\nInvestigación:\n%s", sc.Goal, research)
+//	            },
+//	        )),
+//	    ),
 //	)
 //	sc, err := pipeline.Run(ctx, "implementar endpoint REST")
 //

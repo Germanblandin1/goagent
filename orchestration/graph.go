@@ -84,10 +84,20 @@ type Graph struct {
 	nodes         map[string]nodeEntry
 	start         string
 	maxIterations int
+	hooks         OrchestrationHooks
 }
 
 // GraphOption configures a Graph.
 type GraphOption func(*Graph)
+
+// WithGraphHooks configures observability hooks for the graph.
+// Hooks are called around each node execution and around the graph itself.
+// The zero value of OrchestrationHooks is safe — unset fields are no-ops.
+func WithGraphHooks(h OrchestrationHooks) GraphOption {
+	return func(g *Graph) {
+		g.hooks = h
+	}
+}
 
 // WithNode registers a node under name.
 // The NodeFunc is called when the graph reaches this node.
@@ -152,15 +162,23 @@ func (g *Graph) Run(ctx context.Context, goal string) (*StageContext, error) {
 // RunWithContext implements Executor.
 // Allows nesting this Graph inside a Pipeline or ParallelGroup.
 // Executes from the start node using the provided StageContext.
-func (g *Graph) RunWithContext(ctx context.Context, sc *StageContext) error {
+func (g *Graph) RunWithContext(ctx context.Context, sc *StageContext) (err error) {
+	graphCtx := invokeStart(g.hooks.OnGraphStart, ctx, sc.Goal)
+
+	defer func() {
+		if fn := g.hooks.OnGraphEnd; fn != nil {
+			fn(graphCtx, sc, err)
+		}
+	}()
+
 	current := g.start
 	iterations := 0
 	cycles := make(map[string]int)
 
 	for current != "" {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-graphCtx.Done():
+			return graphCtx.Err()
 		default:
 		}
 
@@ -179,12 +197,19 @@ func (g *Graph) RunWithContext(ctx context.Context, sc *StageContext) error {
 			return fmt.Errorf("graph: node %q exceeded max cycles (%d)", current, entry.maxCycles)
 		}
 
-		start := time.Now()
-		next, err := entry.fn(ctx, sc)
-		sc.appendTrace(current, time.Since(start), err)
+		nodeCtx := invokeStart(g.hooks.OnNodeEnter, graphCtx, current)
 
-		if err != nil {
-			return fmt.Errorf("graph: node %q: %w", current, err)
+		start := time.Now()
+		next, nodeErr := entry.fn(nodeCtx, sc)
+		dur := time.Since(start)
+		sc.appendTrace(current, dur, nodeErr)
+
+		if fn := g.hooks.OnNodeExit; fn != nil {
+			fn(nodeCtx, current, next, dur, nodeErr)
+		}
+
+		if nodeErr != nil {
+			return fmt.Errorf("graph: node %q: %w", current, nodeErr)
 		}
 
 		iterations++

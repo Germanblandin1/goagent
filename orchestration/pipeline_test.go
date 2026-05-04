@@ -36,8 +36,10 @@ func (f executorFunc) RunWithContext(ctx context.Context, sc *orchestration.Stag
 
 func TestPipeline_PassesOutputBetweenStages(t *testing.T) {
 	pipeline := orchestration.NewPipeline(
-		orchestration.Stage("upper", &mockExecutor{outputKey: "upper", value: "HELLO"}),
-		orchestration.Stage("exclaim", &mockExecutor{outputKey: "exclaim", value: "HELLO!"}),
+		orchestration.WithStages(
+			orchestration.Stage("upper", &mockExecutor{outputKey: "upper", value: "HELLO"}),
+			orchestration.Stage("exclaim", &mockExecutor{outputKey: "exclaim", value: "HELLO!"}),
+		),
 	)
 
 	sc, err := pipeline.Run(context.Background(), "hello")
@@ -55,8 +57,10 @@ func TestPipeline_PassesOutputBetweenStages(t *testing.T) {
 
 func TestPipeline_GoalIsPreserved(t *testing.T) {
 	pipeline := orchestration.NewPipeline(
-		orchestration.Stage("s1", &mockExecutor{outputKey: "s1", value: "output1"}),
-		orchestration.Stage("s2", &mockExecutor{outputKey: "s2", value: "output2"}),
+		orchestration.WithStages(
+			orchestration.Stage("s1", &mockExecutor{outputKey: "s1", value: "output1"}),
+			orchestration.Stage("s2", &mockExecutor{outputKey: "s2", value: "output2"}),
+		),
 	)
 
 	sc, err := pipeline.Run(context.Background(), "objetivo original")
@@ -74,11 +78,13 @@ func TestPipeline_StopsOnError(t *testing.T) {
 	var executed bool
 
 	pipeline := orchestration.NewPipeline(
-		orchestration.Stage("fail", &mockExecutor{outputKey: "fail", err: errBoom}),
-		orchestration.Stage("should_not_run", executorFunc(func(_ context.Context, _ *orchestration.StageContext) error {
-			executed = true
-			return nil
-		})),
+		orchestration.WithStages(
+			orchestration.Stage("fail", &mockExecutor{outputKey: "fail", err: errBoom}),
+			orchestration.Stage("should_not_run", executorFunc(func(_ context.Context, _ *orchestration.StageContext) error {
+				executed = true
+				return nil
+			})),
+		),
 	)
 
 	_, err := pipeline.Run(context.Background(), "goal")
@@ -96,10 +102,12 @@ func TestPipeline_StopsOnError(t *testing.T) {
 
 func TestPipeline_ErrorWrapsWithStageName(t *testing.T) {
 	pipeline := orchestration.NewPipeline(
-		orchestration.Stage("my_stage", &mockExecutor{
-			outputKey: "x",
-			err:       errors.New("inner error"),
-		}),
+		orchestration.WithStages(
+			orchestration.Stage("my_stage", &mockExecutor{
+				outputKey: "x",
+				err:       errors.New("inner error"),
+			}),
+		),
 	)
 
 	_, err := pipeline.Run(context.Background(), "goal")
@@ -114,9 +122,11 @@ func TestPipeline_ErrorWrapsWithStageName(t *testing.T) {
 
 func TestPipeline_TraceRecordsAllStages(t *testing.T) {
 	pipeline := orchestration.NewPipeline(
-		orchestration.Stage("s1", &mockExecutor{outputKey: "s1", value: "v1"}),
-		orchestration.Stage("s2", &mockExecutor{outputKey: "s2", value: "v2"}),
-		orchestration.Stage("s3", &mockExecutor{outputKey: "s3", value: "v3"}),
+		orchestration.WithStages(
+			orchestration.Stage("s1", &mockExecutor{outputKey: "s1", value: "v1"}),
+			orchestration.Stage("s2", &mockExecutor{outputKey: "s2", value: "v2"}),
+			orchestration.Stage("s3", &mockExecutor{outputKey: "s3", value: "v3"}),
+		),
 	)
 
 	sc, err := pipeline.Run(context.Background(), "goal")
@@ -141,8 +151,10 @@ func TestPipeline_TraceRecordsAllStages(t *testing.T) {
 func TestPipeline_TraceRecordsErrorStage(t *testing.T) {
 	errBoom := errors.New("boom")
 	pipeline := orchestration.NewPipeline(
-		orchestration.Stage("ok", &mockExecutor{outputKey: "ok", value: "v"}),
-		orchestration.Stage("fail", &mockExecutor{outputKey: "fail", err: errBoom}),
+		orchestration.WithStages(
+			orchestration.Stage("ok", &mockExecutor{outputKey: "ok", value: "v"}),
+			orchestration.Stage("fail", &mockExecutor{outputKey: "fail", err: errBoom}),
+		),
 	)
 
 	sc, _ := pipeline.Run(context.Background(), "goal")
@@ -161,7 +173,9 @@ func TestPipeline_CancelledContext(t *testing.T) {
 	cancel() // cancel before running
 
 	pipeline := orchestration.NewPipeline(
-		orchestration.Stage("s1", &mockExecutor{outputKey: "s1", value: "v1"}),
+		orchestration.WithStages(
+			orchestration.Stage("s1", &mockExecutor{outputKey: "s1", value: "v1"}),
+		),
 	)
 
 	_, err := pipeline.Run(ctx, "goal")
@@ -173,14 +187,18 @@ func TestPipeline_CancelledContext(t *testing.T) {
 
 func TestPipeline_NestedPipeline(t *testing.T) {
 	inner := orchestration.NewPipeline(
-		orchestration.Stage("inner1", &mockExecutor{outputKey: "inner1", value: "vi1"}),
-		orchestration.Stage("inner2", &mockExecutor{outputKey: "inner2", value: "vi2"}),
+		orchestration.WithStages(
+			orchestration.Stage("inner1", &mockExecutor{outputKey: "inner1", value: "vi1"}),
+			orchestration.Stage("inner2", &mockExecutor{outputKey: "inner2", value: "vi2"}),
+		),
 	)
 
 	outer := orchestration.NewPipeline(
-		orchestration.Stage("outer1", &mockExecutor{outputKey: "outer1", value: "vo1"}),
-		orchestration.Stage("inner", inner),
-		orchestration.Stage("outer2", &mockExecutor{outputKey: "outer2", value: "vo2"}),
+		orchestration.WithStages(
+			orchestration.Stage("outer1", &mockExecutor{outputKey: "outer1", value: "vo1"}),
+			orchestration.Stage("inner", inner),
+			orchestration.Stage("outer2", &mockExecutor{outputKey: "outer2", value: "vo2"}),
+		),
 	)
 
 	sc, err := outer.Run(context.Background(), "goal")

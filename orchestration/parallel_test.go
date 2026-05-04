@@ -10,13 +10,15 @@ import (
 
 func TestParallelGroup_AllStagesRun(t *testing.T) {
 	group := orchestration.NewParallelGroup(
-		orchestration.Stage("a", &mockExecutor{outputKey: "a", value: "va"}),
-		orchestration.Stage("b", &mockExecutor{outputKey: "b", value: "vb"}),
-		orchestration.Stage("c", &mockExecutor{outputKey: "c", value: "vc"}),
+		orchestration.WithParallelStages(
+			orchestration.Stage("a", &mockExecutor{outputKey: "a", value: "va"}),
+			orchestration.Stage("b", &mockExecutor{outputKey: "b", value: "vb"}),
+			orchestration.Stage("c", &mockExecutor{outputKey: "c", value: "vc"}),
+		),
 	)
 
 	pipeline := orchestration.NewPipeline(
-		orchestration.Stage("parallel", group),
+		orchestration.WithStages(orchestration.Stage("parallel", group)),
 	)
 
 	sc, err := pipeline.Run(context.Background(), "goal")
@@ -33,12 +35,14 @@ func TestParallelGroup_AllStagesRun(t *testing.T) {
 
 func TestParallelGroup_TraceContainsAllStages(t *testing.T) {
 	group := orchestration.NewParallelGroup(
-		orchestration.Stage("a", &mockExecutor{outputKey: "a", value: "va"}),
-		orchestration.Stage("b", &mockExecutor{outputKey: "b", value: "vb"}),
+		orchestration.WithParallelStages(
+			orchestration.Stage("a", &mockExecutor{outputKey: "a", value: "va"}),
+			orchestration.Stage("b", &mockExecutor{outputKey: "b", value: "vb"}),
+		),
 	)
 
 	pipeline := orchestration.NewPipeline(
-		orchestration.Stage("parallel", group),
+		orchestration.WithStages(orchestration.Stage("parallel", group)),
 	)
 
 	sc, err := pipeline.Run(context.Background(), "goal")
@@ -58,12 +62,14 @@ func TestParallelGroup_PartialFailure(t *testing.T) {
 	errBoom := errors.New("boom")
 
 	group := orchestration.NewParallelGroup(
-		orchestration.Stage("ok", &mockExecutor{outputKey: "ok", value: "v"}),
-		orchestration.Stage("fail", &mockExecutor{outputKey: "fail", err: errBoom}),
+		orchestration.WithParallelStages(
+			orchestration.Stage("ok", &mockExecutor{outputKey: "ok", value: "v"}),
+			orchestration.Stage("fail", &mockExecutor{outputKey: "fail", err: errBoom}),
+		),
 	)
 
 	pipeline := orchestration.NewPipeline(
-		orchestration.Stage("parallel", group),
+		orchestration.WithStages(orchestration.Stage("parallel", group)),
 	)
 
 	_, err := pipeline.Run(context.Background(), "goal")
@@ -81,14 +87,16 @@ func TestParallelGroup_PartialFailure(t *testing.T) {
 // Run with: go test -race ./...
 func TestParallelGroup_RaceDetector(t *testing.T) {
 	group := orchestration.NewParallelGroup(
-		orchestration.Stage("r1", &mockExecutor{outputKey: "r1", value: "v1"}),
-		orchestration.Stage("r2", &mockExecutor{outputKey: "r2", value: "v2"}),
-		orchestration.Stage("r3", &mockExecutor{outputKey: "r3", value: "v3"}),
-		orchestration.Stage("r4", &mockExecutor{outputKey: "r4", value: "v4"}),
+		orchestration.WithParallelStages(
+			orchestration.Stage("r1", &mockExecutor{outputKey: "r1", value: "v1"}),
+			orchestration.Stage("r2", &mockExecutor{outputKey: "r2", value: "v2"}),
+			orchestration.Stage("r3", &mockExecutor{outputKey: "r3", value: "v3"}),
+			orchestration.Stage("r4", &mockExecutor{outputKey: "r4", value: "v4"}),
+		),
 	)
 
 	pipeline := orchestration.NewPipeline(
-		orchestration.Stage("parallel", group),
+		orchestration.WithStages(orchestration.Stage("parallel", group)),
 	)
 
 	sc, err := pipeline.Run(context.Background(), "goal")
