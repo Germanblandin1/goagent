@@ -137,7 +137,9 @@ func TestGraph_Branching_takesCorrectPath(t *testing.T) {
 	// caso left
 	sc := orchestration.NewStageContext("goal")
 	sc.SetArtifact("go_left", true)
-	graph.RunWithContext(context.Background(), sc) //nolint:errcheck
+	if err := graph.RunWithContext(context.Background(), sc); err != nil {
+		t.Fatalf("left branch: unexpected error: %v", err)
+	}
 	if v, _ := sc.Output("path"); v != "left" {
 		t.Errorf("left branch: got %q", v)
 	}
@@ -145,7 +147,9 @@ func TestGraph_Branching_takesCorrectPath(t *testing.T) {
 	// caso right
 	sc = orchestration.NewStageContext("goal")
 	sc.SetArtifact("go_left", false)
-	graph.RunWithContext(context.Background(), sc) //nolint:errcheck
+	if err := graph.RunWithContext(context.Background(), sc); err != nil {
+		t.Fatalf("right branch: unexpected error: %v", err)
+	}
 	if v, _ := sc.Output("path"); v != "right" {
 		t.Errorf("right branch: got %q", v)
 	}
@@ -401,6 +405,32 @@ func TestExecutorNode_wrapsExecutorWithFixedNext(t *testing.T) {
 	}
 }
 
+func TestExecutorNode_propagatesExecutorError(t *testing.T) {
+	errBoom := errors.New("executor failed")
+
+	graph, _ := orchestration.NewGraph(
+		orchestration.WithStart("step"),
+		orchestration.WithNode("step", orchestration.ExecutorNode(
+			executorFunc(func(_ context.Context, _ *orchestration.StageContext) error {
+				return errBoom
+			}),
+			"end",
+		)),
+		orchestration.WithNode("end", func(_ context.Context, _ *orchestration.StageContext) (string, error) {
+			return "", nil
+		}),
+	)
+
+	_, err := graph.Run(context.Background(), "goal")
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, errBoom) {
+		t.Errorf("expected errBoom in chain, got: %v", err)
+	}
+}
+
 // --- Graph implements Executor (nested in Pipeline) ---
 
 func TestGraph_ImplementsExecutor_nestedInPipeline(t *testing.T) {
@@ -514,7 +544,9 @@ func TestGraph_ConditionalParallelism(t *testing.T) {
 	t.Run("parallel", func(t *testing.T) {
 		sc := orchestration.NewStageContext("goal")
 		sc.SetArtifact("use_parallel", true)
-		buildGraph().RunWithContext(context.Background(), sc) //nolint:errcheck
+		if err := buildGraph().RunWithContext(context.Background(), sc); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		outputs := sc.Outputs()
 		if outputs["p1"] == "" || outputs["p2"] == "" {
@@ -528,7 +560,9 @@ func TestGraph_ConditionalParallelism(t *testing.T) {
 	t.Run("sequential", func(t *testing.T) {
 		sc := orchestration.NewStageContext("goal")
 		sc.SetArtifact("use_parallel", false)
-		buildGraph().RunWithContext(context.Background(), sc) //nolint:errcheck
+		if err := buildGraph().RunWithContext(context.Background(), sc); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
 		outputs := sc.Outputs()
 		if outputs["single"] == "" {

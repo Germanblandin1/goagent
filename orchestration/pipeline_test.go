@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Germanblandin1/goagent/orchestration"
 )
@@ -180,6 +181,62 @@ func TestPipeline_CancelledContext(t *testing.T) {
 
 	_, err := pipeline.Run(ctx, "goal")
 
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got: %v", err)
+	}
+}
+
+func TestPipeline_NoStages_returnsEmptyContext(t *testing.T) {
+	pipeline := orchestration.NewPipeline()
+
+	sc, err := pipeline.Run(context.Background(), "goal")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sc.Goal != "goal" {
+		t.Errorf("Goal: got %q, want %q", sc.Goal, "goal")
+	}
+	if len(sc.Outputs()) != 0 {
+		t.Errorf("expected no outputs, got %v", sc.Outputs())
+	}
+	if len(sc.Trace()) != 0 {
+		t.Errorf("expected empty trace, got %d entries", len(sc.Trace()))
+	}
+}
+
+func TestPipeline_ContextCancelledMidExecution(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+
+	pipeline := orchestration.NewPipeline(
+		orchestration.WithStages(
+			orchestration.Stage("slow", executorFunc(func(ctx context.Context, _ *orchestration.StageContext) error {
+				close(started)
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(10 * time.Second):
+					return nil
+				}
+			})),
+			orchestration.Stage("after", executorFunc(func(_ context.Context, _ *orchestration.StageContext) error {
+				t.Error("stage after cancelled stage must not run")
+				return nil
+			})),
+		),
+	)
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := pipeline.Run(ctx, "goal")
+		errCh <- err
+	}()
+
+	<-started
+	cancel()
+
+	err := <-errCh
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got: %v", err)
 	}

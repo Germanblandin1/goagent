@@ -41,20 +41,23 @@ func TestParallelGroup_TraceContainsAllStages(t *testing.T) {
 		),
 	)
 
-	pipeline := orchestration.NewPipeline(
-		orchestration.WithStages(orchestration.Stage("parallel", group)),
-	)
-
-	sc, err := pipeline.Run(context.Background(), "goal")
+	sc, err := group.Run(context.Background(), "goal")
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if v, _ := sc.Output("a"); v == "" {
-		t.Error("missing output for stage a")
+	trace := sc.Trace()
+	if len(trace) != 2 {
+		t.Fatalf("expected 2 trace entries, got %d", len(trace))
 	}
-	if v, _ := sc.Output("b"); v == "" {
-		t.Error("missing output for stage b")
+	found := make(map[string]bool, 2)
+	for _, e := range trace {
+		found[e.StageName] = true
+	}
+	for _, want := range []string{"a", "b"} {
+		if !found[want] {
+			t.Errorf("trace missing entry for stage %q", want)
+		}
 	}
 }
 

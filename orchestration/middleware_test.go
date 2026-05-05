@@ -165,8 +165,8 @@ func TestRetryMiddleware_respectsContextCancellation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if attempts > 2 {
-		t.Errorf("should not retry after cancellation, got %d attempts", attempts)
+	if attempts != 1 {
+		t.Errorf("expected exactly 1 attempt before cancellation is detected, got %d", attempts)
 	}
 }
 
