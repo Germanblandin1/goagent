@@ -3,7 +3,10 @@ package orchestration_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Germanblandin1/goagent/orchestration"
 )
@@ -179,6 +182,96 @@ func TestParallelGroup_Run_storesOutputsAndPreservesGoal(t *testing.T) {
 	}
 	if sc.Goal != "my goal" {
 		t.Errorf("Goal: got %q, want %q", sc.Goal, "my goal")
+	}
+	for _, key := range []string{"a", "b"} {
+		if v, ok := sc.Output(key); !ok || v == "" {
+			t.Errorf("missing output for key %q", key)
+		}
+	}
+}
+
+// --- WithMaxConcurrency ---
+
+func TestParallelGroup_MaxConcurrency_limitsInflight(t *testing.T) {
+	const limit = 2
+	const numStages = 6
+
+	var mu sync.Mutex
+	current, peak := 0, 0
+
+	makeStage := func(key string) orchestration.StageDef {
+		return orchestration.Stage(key, executorFunc(func(ctx context.Context, sc *orchestration.StageContext) error {
+			mu.Lock()
+			current++
+			if current > peak {
+				peak = current
+			}
+			mu.Unlock()
+
+			time.Sleep(10 * time.Millisecond)
+
+			mu.Lock()
+			current--
+			mu.Unlock()
+
+			sc.SetOutput(key, "v")
+			return nil
+		}))
+	}
+
+	stages := make([]orchestration.StageDef, numStages)
+	for i := range numStages {
+		stages[i] = makeStage(fmt.Sprintf("s%d", i))
+	}
+
+	group := orchestration.NewParallelGroup(
+		orchestration.WithParallelStages(stages...),
+		orchestration.WithMaxConcurrency(limit),
+	)
+
+	_, err := group.Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if peak > limit {
+		t.Errorf("peak concurrency %d exceeded limit %d", peak, limit)
+	}
+}
+
+func TestParallelGroup_WithParallelTimeout_firesAfterDeadline(t *testing.T) {
+	group := orchestration.NewParallelGroup(
+		orchestration.WithParallelStages(
+			orchestration.Stage("slow", executorFunc(func(ctx context.Context, _ *orchestration.StageContext) error {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(10 * time.Second):
+					return nil
+				}
+			})),
+		),
+		orchestration.WithParallelTimeout(20*time.Millisecond),
+	)
+
+	_, err := group.Run(context.Background(), "goal")
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected context.DeadlineExceeded, got: %v", err)
+	}
+}
+
+func TestParallelGroup_MaxConcurrency_zeroMeansUnlimited(t *testing.T) {
+	group := orchestration.NewParallelGroup(
+		orchestration.WithParallelStages(
+			orchestration.Stage("a", &mockExecutor{outputKey: "a", value: "va"}),
+			orchestration.Stage("b", &mockExecutor{outputKey: "b", value: "vb"}),
+		),
+		orchestration.WithMaxConcurrency(0),
+	)
+
+	sc, err := group.Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, key := range []string{"a", "b"} {
 		if v, ok := sc.Output(key); !ok || v == "" {

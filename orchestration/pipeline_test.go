@@ -242,6 +242,28 @@ func TestPipeline_ContextCancelledMidExecution(t *testing.T) {
 	}
 }
 
+func TestPipeline_WithPipelineTimeout_firesAfterDeadline(t *testing.T) {
+	pipeline := orchestration.NewPipeline(
+		orchestration.WithStages(
+			orchestration.Stage("slow", executorFunc(func(ctx context.Context, _ *orchestration.StageContext) error {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(10 * time.Second):
+					return nil
+				}
+			})),
+		),
+		orchestration.WithPipelineTimeout(20*time.Millisecond),
+	)
+
+	_, err := pipeline.Run(context.Background(), "goal")
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected context.DeadlineExceeded, got: %v", err)
+	}
+}
+
 func TestPipeline_NestedPipeline(t *testing.T) {
 	inner := orchestration.NewPipeline(
 		orchestration.WithStages(

@@ -42,16 +42,40 @@ type ParallelGroupOption func(*ParallelGroup)
 //	        orchestration.Stage("code",  coderExecutor),
 //	        orchestration.Stage("tests", testerExecutor),
 //	    ),
+//	    orchestration.WithMaxConcurrency(3),
 //	)
 type ParallelGroup struct {
-	stages []StageDef
-	hooks  OrchestrationHooks
+	stages         []StageDef
+	hooks          OrchestrationHooks
+	maxConcurrency int
+	timeout        time.Duration
 }
 
 // WithParallelStages sets the stages of the parallel group.
 func WithParallelStages(stages ...StageDef) ParallelGroupOption {
 	return func(g *ParallelGroup) {
 		g.stages = stages
+	}
+}
+
+// WithMaxConcurrency limits how many stages run concurrently.
+// When n > 0, a buffered channel of size n acts as a semaphore — each stage
+// acquires a slot before executing and releases it on completion.
+// A value of 0 (the default) means no limit: all stages start immediately.
+func WithMaxConcurrency(n int) ParallelGroupOption {
+	return func(g *ParallelGroup) {
+		g.maxConcurrency = n
+	}
+}
+
+// WithParallelTimeout sets a wall-clock deadline for the entire parallel group run.
+// If the group does not finish within d, the context is cancelled and
+// context.DeadlineExceeded is returned. If the caller's context already carries
+// a shorter deadline, that deadline takes precedence.
+// A value of 0 (the default) means no timeout.
+func WithParallelTimeout(d time.Duration) ParallelGroupOption {
+	return func(g *ParallelGroup) {
+		g.timeout = d
 	}
 }
 
@@ -65,7 +89,8 @@ func WithParallelHooks(h OrchestrationHooks) ParallelGroupOption {
 }
 
 // NewParallelGroup constructs a ParallelGroup from the given options.
-// Stages are provided via WithParallelStages; hooks via WithParallelHooks.
+// Stages are provided via WithParallelStages; hooks via WithParallelHooks;
+// concurrency limit via WithMaxConcurrency.
 func NewParallelGroup(opts ...ParallelGroupOption) *ParallelGroup {
 	g := &ParallelGroup{}
 	for _, opt := range opts {
@@ -89,16 +114,37 @@ func (g *ParallelGroup) Run(ctx context.Context, goal string) (*StageContext, er
 // SetArtifact). All stages run to completion regardless of failures;
 // the first error encountered is returned.
 func (g *ParallelGroup) RunWithContext(ctx context.Context, sc *StageContext) error {
+	if g.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, g.timeout)
+		defer cancel()
+	}
+
 	type result struct {
 		name     string
 		duration time.Duration
 		err      error
 	}
 
+	var semaphore chan struct{}
+	if g.maxConcurrency > 0 {
+		semaphore = make(chan struct{}, g.maxConcurrency)
+	}
+
 	results := make(chan result, len(g.stages))
 
 	for _, s := range g.stages {
 		go func() {
+			if semaphore != nil {
+				select {
+				case semaphore <- struct{}{}:
+					defer func() { <-semaphore }()
+				case <-ctx.Done():
+					results <- result{s.name, 0, ctx.Err()}
+					return
+				}
+			}
+
 			stageCtx := invokeStart(g.hooks.OnStageStart, ctx, s.name)
 			start := time.Now()
 

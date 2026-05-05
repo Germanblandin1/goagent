@@ -97,10 +97,22 @@ type Graph struct {
 	start         string
 	maxIterations int
 	hooks         OrchestrationHooks
+	timeout       time.Duration
 }
 
 // GraphOption configures a Graph.
 type GraphOption func(*Graph)
+
+// WithGraphTimeout sets a wall-clock deadline for the entire graph run.
+// If the graph does not finish within d, the context is cancelled and
+// context.DeadlineExceeded is returned. If the caller's context already carries
+// a shorter deadline, that deadline takes precedence.
+// A value of 0 (the default) means no timeout.
+func WithGraphTimeout(d time.Duration) GraphOption {
+	return func(g *Graph) {
+		g.timeout = d
+	}
+}
 
 // WithGraphHooks configures observability hooks for the graph.
 // Hooks are called around each node execution and around the graph itself.
@@ -177,6 +189,11 @@ func (g *Graph) Run(ctx context.Context, goal string) (*StageContext, error) {
 // Allows nesting this Graph inside a Pipeline or ParallelGroup.
 // Executes from the start node using the provided StageContext.
 func (g *Graph) RunWithContext(ctx context.Context, sc *StageContext) (err error) {
+	if g.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, g.timeout)
+		defer cancel()
+	}
 	graphCtx := invokeStart(g.hooks.OnGraphStart, ctx, sc.Goal)
 
 	defer func() {

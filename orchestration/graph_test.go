@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Germanblandin1/goagent/orchestration"
 )
@@ -782,5 +783,26 @@ func TestGraph_WithMaxIterations_zero_respectsContextCancel(t *testing.T) {
 
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got: %v", err)
+	}
+}
+
+func TestGraph_WithGraphTimeout_firesAfterDeadline(t *testing.T) {
+	graph, _ := orchestration.NewGraph(
+		orchestration.WithStart("slow"),
+		orchestration.WithGraphTimeout(20*time.Millisecond),
+		orchestration.WithNode("slow", func(ctx context.Context, _ *orchestration.StageContext) (string, error) {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(10 * time.Second):
+				return "", nil
+			}
+		}),
+	)
+
+	_, err := graph.Run(context.Background(), "goal")
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected context.DeadlineExceeded, got: %v", err)
 	}
 }

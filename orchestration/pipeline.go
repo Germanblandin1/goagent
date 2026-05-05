@@ -47,14 +47,26 @@ type PipelineOption func(*Pipeline)
 // Pipeline implements Executor — it can be nested inside another Pipeline
 // or inside a ParallelGroup.
 type Pipeline struct {
-	stages []StageDef
-	hooks  OrchestrationHooks
+	stages  []StageDef
+	hooks   OrchestrationHooks
+	timeout time.Duration
 }
 
 // WithStages sets the stages of the pipeline in the given order.
 func WithStages(stages ...StageDef) PipelineOption {
 	return func(p *Pipeline) {
 		p.stages = stages
+	}
+}
+
+// WithPipelineTimeout sets a wall-clock deadline for the entire pipeline run.
+// If the pipeline does not finish within d, the context is cancelled and
+// context.DeadlineExceeded is returned. If the caller's context already carries
+// a shorter deadline, that deadline takes precedence.
+// A value of 0 (the default) means no timeout.
+func WithPipelineTimeout(d time.Duration) PipelineOption {
+	return func(p *Pipeline) {
+		p.timeout = d
 	}
 }
 
@@ -100,6 +112,11 @@ func (p *Pipeline) Run(ctx context.Context, goal string) (*StageContext, error) 
 // Allows nesting this Pipeline inside another Pipeline or ParallelGroup.
 // Respects context cancellation before each stage.
 func (p *Pipeline) RunWithContext(ctx context.Context, sc *StageContext) (err error) {
+	if p.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.timeout)
+		defer cancel()
+	}
 	pipelineCtx := invokeStart(p.hooks.OnPipelineStart, ctx, sc.Goal)
 
 	defer func() {
