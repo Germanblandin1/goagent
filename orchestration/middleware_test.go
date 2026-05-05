@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	goagent "github.com/Germanblandin1/goagent"
 	"github.com/Germanblandin1/goagent/orchestration"
 )
 
@@ -98,7 +99,10 @@ func TestRetryMiddleware_retriesOnError(t *testing.T) {
 				sc.SetOutput("result", "ok")
 				return "", nil
 			},
-			orchestration.WithNodeMiddleware(orchestration.RetryMiddleware(3)),
+			orchestration.WithNodeMiddleware(orchestration.RetryMiddleware(goagent.RetryPolicy{
+				MaxAttempts:  3,
+				InitialDelay: time.Millisecond,
+			})),
 		),
 	)
 
@@ -124,7 +128,10 @@ func TestRetryMiddleware_exhaustedRetriesReturnsError(t *testing.T) {
 			func(_ context.Context, _ *orchestration.StageContext) (string, error) {
 				return "", errPersistent
 			},
-			orchestration.WithNodeMiddleware(orchestration.RetryMiddleware(3)),
+			orchestration.WithNodeMiddleware(orchestration.RetryMiddleware(goagent.RetryPolicy{
+				MaxAttempts:  3,
+				InitialDelay: time.Millisecond,
+			})),
 		),
 	)
 
@@ -156,17 +163,25 @@ func TestRetryMiddleware_respectsContextCancellation(t *testing.T) {
 				}
 				return "", errors.New("error")
 			},
-			orchestration.WithNodeMiddleware(orchestration.RetryMiddleware(5)),
+			orchestration.WithNodeMiddleware(orchestration.RetryMiddleware(goagent.RetryPolicy{
+				MaxAttempts:  5,
+				InitialDelay: 5 * time.Second, // long delay — context cancel must short-circuit it
+			})),
 		),
 	)
 
+	start := time.Now()
 	_, err := graph.Run(ctx, "goal")
+	elapsed := time.Since(start)
 
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 	if attempts != 1 {
 		t.Errorf("expected exactly 1 attempt before cancellation is detected, got %d", attempts)
+	}
+	if elapsed > time.Second {
+		t.Errorf("context cancel should short-circuit the 5s delay, elapsed=%v", elapsed)
 	}
 }
 
@@ -283,7 +298,10 @@ func TestNodeMiddleware_retryWithTimeout(t *testing.T) {
 				return "", nil
 			},
 			// orden: TimeoutMiddleware más externo, RetryMiddleware más interno
-			orchestration.WithNodeMiddleware(orchestration.RetryMiddleware(3)),
+			orchestration.WithNodeMiddleware(orchestration.RetryMiddleware(goagent.RetryPolicy{
+				MaxAttempts:  3,
+				InitialDelay: time.Millisecond,
+			})),
 			orchestration.WithNodeMiddleware(orchestration.TimeoutMiddleware(5*time.Second)),
 		),
 	)
@@ -298,5 +316,128 @@ func TestNodeMiddleware_retryWithTimeout(t *testing.T) {
 	}
 	if v, _ := sc.Output("result"); v != "success" {
 		t.Error("expected success output")
+	}
+}
+
+// --- RetryMiddleware backoff behaviour ---
+
+func TestRetryMiddleware_retryAfterOverridesBackoff(t *testing.T) {
+	t.Parallel()
+
+	rateLimitErr := errors.New("429 rate limited")
+	attempts := 0
+	var retryAfterCalled bool
+
+	graph, _ := orchestration.NewGraph(
+		orchestration.WithStart("work"),
+		orchestration.WithNode("work",
+			func(_ context.Context, sc *orchestration.StageContext) (string, error) {
+				attempts++
+				if attempts == 1 {
+					return "", rateLimitErr
+				}
+				sc.SetOutput("result", "ok")
+				return "", nil
+			},
+			orchestration.WithNodeMiddleware(orchestration.RetryMiddleware(goagent.RetryPolicy{
+				MaxAttempts:  2,
+				InitialDelay: 5 * time.Second, // would make the test slow if not overridden
+				RetryAfter: func(err error) time.Duration {
+					retryAfterCalled = true
+					if err.Error() == "429 rate limited" {
+						return time.Millisecond
+					}
+					return 0
+				},
+			})),
+		),
+	)
+
+	start := time.Now()
+	sc, err := graph.Run(context.Background(), "goal")
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v, _ := sc.Output("result"); v != "ok" {
+		t.Errorf("output = %q, want %q", v, "ok")
+	}
+	if !retryAfterCalled {
+		t.Error("RetryAfter was never called")
+	}
+	if elapsed > time.Second {
+		t.Errorf("RetryAfter should have used 1ms delay, elapsed=%v", elapsed)
+	}
+}
+
+func TestRetryMiddleware_retryableStopsEarly(t *testing.T) {
+	t.Parallel()
+
+	nonRetryable := errors.New("400 bad request")
+	attempts := 0
+
+	graph, _ := orchestration.NewGraph(
+		orchestration.WithStart("work"),
+		orchestration.WithNode("work",
+			func(_ context.Context, _ *orchestration.StageContext) (string, error) {
+				attempts++
+				return "", nonRetryable
+			},
+			orchestration.WithNodeMiddleware(orchestration.RetryMiddleware(goagent.RetryPolicy{
+				MaxAttempts:  5,
+				InitialDelay: time.Millisecond,
+				Retryable:    func(error) bool { return false },
+			})),
+		),
+	)
+
+	_, err := graph.Run(context.Background(), "goal")
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, nonRetryable) {
+		t.Errorf("error chain should contain nonRetryable, got: %v", err)
+	}
+	if attempts != 1 {
+		t.Errorf("Retryable=false should stop after 1 attempt, got %d", attempts)
+	}
+}
+
+func TestRetryMiddleware_defaultPolicyApplied(t *testing.T) {
+	t.Parallel()
+
+	// Zero-value policy should use defaults (MaxAttempts=3).
+	attempts := 0
+	errTransient := errors.New("transient")
+
+	graph, _ := orchestration.NewGraph(
+		orchestration.WithStart("work"),
+		orchestration.WithNode("work",
+			func(_ context.Context, sc *orchestration.StageContext) (string, error) {
+				attempts++
+				if attempts < 3 {
+					return "", errTransient
+				}
+				sc.SetOutput("result", "done")
+				return "", nil
+			},
+			orchestration.WithNodeMiddleware(orchestration.RetryMiddleware(goagent.RetryPolicy{
+				InitialDelay: time.Millisecond, // only override delay to keep test fast
+			})),
+		),
+	)
+
+	sc, err := graph.Run(context.Background(), "goal")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if attempts != 3 {
+		t.Errorf("default MaxAttempts=3, expected 3 attempts, got %d", attempts)
+	}
+	if v, _ := sc.Output("result"); v != "done" {
+		t.Errorf("output = %q, want %q", v, "done")
 	}
 }

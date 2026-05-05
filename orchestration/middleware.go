@@ -3,7 +3,11 @@ package orchestration
 import (
 	"context"
 	"fmt"
+	"math"
+	"math/rand/v2"
 	"time"
+
+	"github.com/Germanblandin1/goagent"
 )
 
 // NodeMiddleware wraps a NodeFunc to add cross-cutting behavior per node.
@@ -45,9 +49,12 @@ func (e *MaxRetriesError) Error() string {
 // Unwrap allows errors.Is and errors.As to inspect the underlying error.
 func (e *MaxRetriesError) Unwrap() error { return e.Err }
 
-// RetryMiddleware retries the NodeFunc up to maxRetries times on error.
-// If all attempts fail, a MaxRetriesError wrapping the last error is returned.
-// The next node string from the last attempt is returned on success.
+// RetryMiddleware retries the NodeFunc on error using exponential backoff with
+// jitter. The policy mirrors goagent.RetryPolicy — MaxAttempts, InitialDelay,
+// MaxDelay, Multiplier, Retryable, and RetryAfter are all respected.
+//
+// Zero-value policy fields use the same defaults as RetryPolicy: 3 attempts,
+// 200ms initial delay, 10s max delay, 2× multiplier.
 //
 // Note: retries re-execute the entire NodeFunc including any writes to
 // StageContext. NodeFuncs used with retry should be idempotent or handle
@@ -55,27 +62,88 @@ func (e *MaxRetriesError) Unwrap() error { return e.Err }
 //
 // Example:
 //
-//	orchestration.WithNode("fetch", fetchFunc,
-//	    orchestration.WithNodeMiddleware(orchestration.RetryMiddleware(3)),
+//	orchestration.WithNode("call_llm", llmFunc,
+//	    orchestration.WithNodeMiddleware(orchestration.RetryMiddleware(goagent.RetryPolicy{
+//	        MaxAttempts:  5,
+//	        InitialDelay: 200 * time.Millisecond,
+//	        Retryable:    func(err error) bool { return isRateLimit(err) },
+//	        RetryAfter:   func(err error) time.Duration { return parseRetryAfter(err) },
+//	    })),
 //	)
-func RetryMiddleware(maxRetries int) NodeMiddleware {
+func RetryMiddleware(policy goagent.RetryPolicy) NodeMiddleware {
+	p := applyRetryDefaults(policy)
 	return func(next NodeFunc) NodeFunc {
 		return func(ctx context.Context, sc *StageContext) (string, error) {
 			var lastErr error
-			for range maxRetries {
+			for attempt := range p.MaxAttempts {
 				n, err := next(ctx, sc)
 				if err == nil {
 					return n, nil
 				}
 				lastErr = err
-				select {
-				case <-ctx.Done():
-					return "", ctx.Err()
-				default:
+
+				if p.Retryable != nil && !p.Retryable(lastErr) {
+					return "", lastErr
+				}
+
+				if attempt == p.MaxAttempts-1 {
+					break
+				}
+
+				delay := nodeBackoffDelay(attempt, lastErr, p)
+				if err := nodeSleepCtx(ctx, delay); err != nil {
+					return "", err
 				}
 			}
-			return "", &MaxRetriesError{Retries: maxRetries, Err: lastErr}
+			return "", &MaxRetriesError{Retries: p.MaxAttempts, Err: lastErr}
 		}
+	}
+}
+
+// applyRetryDefaults returns a copy of p with zero fields replaced by defaults.
+func applyRetryDefaults(p goagent.RetryPolicy) goagent.RetryPolicy {
+	if p.MaxAttempts <= 0 {
+		p.MaxAttempts = 3
+	}
+	if p.InitialDelay <= 0 {
+		p.InitialDelay = 200 * time.Millisecond
+	}
+	if p.MaxDelay <= 0 {
+		p.MaxDelay = 10 * time.Second
+	}
+	if p.Multiplier <= 0 {
+		p.Multiplier = 2.0
+	}
+	return p
+}
+
+// nodeBackoffDelay computes the sleep duration for a retry attempt.
+// It honours RetryAfter (server-suggested delay) and falls back to
+// exponential backoff with ±25% jitter capped at MaxDelay.
+func nodeBackoffDelay(attempt int, err error, p goagent.RetryPolicy) time.Duration {
+	if p.RetryAfter != nil {
+		if d := p.RetryAfter(err); d > 0 {
+			return d
+		}
+	}
+	delay := float64(p.InitialDelay) * math.Pow(p.Multiplier, float64(attempt))
+	if delay > float64(p.MaxDelay) {
+		delay = float64(p.MaxDelay)
+	}
+	jitter := delay * 0.25 * (2*rand.Float64() - 1)
+	delay += jitter
+	return time.Duration(delay)
+}
+
+// nodeSleepCtx blocks for d or until ctx is cancelled, whichever comes first.
+func nodeSleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
 	}
 }
 
