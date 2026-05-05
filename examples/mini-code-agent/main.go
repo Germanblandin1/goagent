@@ -141,10 +141,10 @@ func main() {
 	// PromptBuilders can inject outputs from previous stages into the next prompt.
 	pipeline := orchestration.NewPipeline(
 		orchestration.WithStages(
-			orchestration.Stage("plan", orchestration.AgentStage("plan", plannerAgent, orchestration.GoalOnly)),
-			orchestration.Stage("code", orchestration.AgentStage("code", coderAgent, coderPB)),
-			orchestration.Stage("test", orchestration.AgentStage("test", testerAgent, testerPB)),
-			orchestration.Stage("review", orchestration.AgentStage("review", reviewerAgent, reviewerPB)),
+			orchestration.Stage("plan", orchestration.AgentStage(plannerAgent, orchestration.GoalOnly)),
+			orchestration.Stage("code", orchestration.AgentStage(coderAgent, coderPB)),
+			orchestration.Stage("test", orchestration.AgentStage(testerAgent, testerPB)),
+			orchestration.Stage("review", orchestration.AgentStage(reviewerAgent, reviewerPB)),
 		),
 	)
 

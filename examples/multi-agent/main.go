@@ -156,7 +156,7 @@ func main() {
 	// ── Pipeline ──────────────────────────────────────────────────────────────
 	pipeline := orchestration.NewPipeline(
 		orchestration.WithStages(
-			orchestration.Stage("plan", orchestration.AgentStage("plan", plannerAgent, orchestration.GoalOnly)),
+			orchestration.Stage("plan", orchestration.AgentStage(plannerAgent, orchestration.GoalOnly)),
 			orchestration.Stage("execute", supervisor),
 		),
 	)
