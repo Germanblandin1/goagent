@@ -395,3 +395,48 @@ func TestMergeOrchestrationHooks_chainsCtxBetweenHooks(t *testing.T) {
 		t.Error("h2 did not receive enriched ctx from h1")
 	}
 }
+
+func TestMergeOrchestrationHooks_unpopulatedFieldsRemainNil(t *testing.T) {
+	// Only OnStageStart is set — all other fields must be nil in the result.
+	h := orchestration.OrchestrationHooks{
+		OnStageStart: func(ctx context.Context, name string) context.Context { return ctx },
+	}
+
+	merged := orchestration.MergeOrchestrationHooks(h)
+
+	if merged.OnPipelineStart != nil {
+		t.Error("OnPipelineStart should be nil")
+	}
+	if merged.OnPipelineEnd != nil {
+		t.Error("OnPipelineEnd should be nil")
+	}
+	if merged.OnStageStart == nil {
+		t.Error("OnStageStart should be non-nil")
+	}
+	if merged.OnStageEnd != nil {
+		t.Error("OnStageEnd should be nil")
+	}
+	if merged.OnGraphStart != nil {
+		t.Error("OnGraphStart should be nil")
+	}
+	if merged.OnGraphEnd != nil {
+		t.Error("OnGraphEnd should be nil")
+	}
+	if merged.OnNodeEnter != nil {
+		t.Error("OnNodeEnter should be nil")
+	}
+	if merged.OnNodeExit != nil {
+		t.Error("OnNodeExit should be nil")
+	}
+}
+
+func TestMergeOrchestrationHooks_emptyInputProducesAllNilFields(t *testing.T) {
+	merged := orchestration.MergeOrchestrationHooks()
+
+	if merged.OnPipelineStart != nil || merged.OnPipelineEnd != nil ||
+		merged.OnStageStart != nil || merged.OnStageEnd != nil ||
+		merged.OnGraphStart != nil || merged.OnGraphEnd != nil ||
+		merged.OnNodeEnter != nil || merged.OnNodeExit != nil {
+		t.Error("MergeOrchestrationHooks() with no args should produce all-nil fields")
+	}
+}

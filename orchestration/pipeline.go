@@ -6,20 +6,35 @@ import (
 	"time"
 )
 
-// namedExecutor associates a name with an Executor for the Trace.
-// Not exported — constructed via the Stage function.
-type namedExecutor struct {
+// stageNameKey is an unexported context key used to propagate the currently
+// executing stage name through the context. Being unexported prevents
+// collisions with other packages and ensures only the Pipeline can write it.
+type stageNameKey struct{}
+
+// StageNameFromContext returns the name of the currently executing pipeline
+// stage as registered with Stage(). Returns "" if called outside a Pipeline
+// execution.
+func StageNameFromContext(ctx context.Context) string {
+	name, _ := ctx.Value(stageNameKey{}).(string)
+	return name
+}
+
+// StageDef pairs a name with an Executor for use in WithStages and
+// WithParallelStages. The type is exported so callers can declare slices
+// and build stage lists dynamically; fields are unexported so Stage() is
+// the only constructor.
+type StageDef struct {
 	name     string
 	executor Executor
 }
 
-// Stage builds a namedExecutor for use in WithStages and WithParallelStages.
+// Stage constructs a StageDef for use in WithStages and WithParallelStages.
 //
 // Example:
 //
 //	orchestration.Stage("research", myExecutor)
-func Stage(name string, e Executor) namedExecutor {
-	return namedExecutor{name: name, executor: e}
+func Stage(name string, e Executor) StageDef {
+	return StageDef{name: name, executor: e}
 }
 
 // PipelineOption configures a Pipeline.
@@ -32,12 +47,12 @@ type PipelineOption func(*Pipeline)
 // Pipeline implements Executor — it can be nested inside another Pipeline
 // or inside a ParallelGroup.
 type Pipeline struct {
-	stages []namedExecutor
+	stages []StageDef
 	hooks  OrchestrationHooks
 }
 
 // WithStages sets the stages of the pipeline in the given order.
-func WithStages(stages ...namedExecutor) PipelineOption {
+func WithStages(stages ...StageDef) PipelineOption {
 	return func(p *Pipeline) {
 		p.stages = stages
 	}
@@ -101,6 +116,7 @@ func (p *Pipeline) RunWithContext(ctx context.Context, sc *StageContext) (err er
 		}
 
 		stageCtx := invokeStart(p.hooks.OnStageStart, pipelineCtx, s.name)
+		stageCtx = context.WithValue(stageCtx, stageNameKey{}, s.name)
 
 		start := time.Now()
 		stageErr := s.executor.RunWithContext(stageCtx, sc)

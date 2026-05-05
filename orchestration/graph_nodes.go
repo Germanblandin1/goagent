@@ -2,6 +2,13 @@ package orchestration
 
 import "context"
 
+// ArtifactRejectionReason is the StageContext artifact key under which
+// HumanApprovalNode stores the rejection reason when a human rejects.
+// Use this constant to read the reason in subsequent nodes:
+//
+//	reason, _ := orchestration.GetArtifact[string](sc, orchestration.ArtifactRejectionReason)
+const ArtifactRejectionReason = "rejection_reason"
+
 // ExecutorNode converts an Executor into a NodeFunc with a fixed next node.
 // Use when a node always transitions to the same next node regardless of
 // its output.
@@ -84,6 +91,7 @@ func HumanApprovalNode(
 ) NodeFunc {
 	return func(ctx context.Context, sc *StageContext) (string, error) {
 		req := ApprovalRequest{
+			NodeName:  NodeNameFromContext(ctx),
 			Outputs:   sc.Outputs(),
 			Artifacts: sc.Artifacts(),
 		}
@@ -99,7 +107,7 @@ func HumanApprovalNode(
 			if resp.Approved {
 				return onApproved, nil
 			}
-			sc.SetArtifact("rejection_reason", resp.Reason)
+			sc.SetArtifact(ArtifactRejectionReason, resp.Reason)
 			return onRejected, nil
 		case <-ctx.Done():
 			return "", ctx.Err()

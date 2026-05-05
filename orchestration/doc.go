@@ -10,16 +10,16 @@
 //	pipeline := orchestration.NewPipeline(
 //	    orchestration.WithStages(
 //	        orchestration.Stage("research", orchestration.AgentStage(
-//	            "research", researcherAgent,
+//	            researcherAgent,
 //	            func(sc *orchestration.StageContext) string {
-//	                return "Investigá: " + sc.Goal
+//	                return "Research: " + sc.Goal
 //	            },
 //	        )),
 //	        orchestration.Stage("code", orchestration.AgentStage(
-//	            "code", coderAgent,
+//	            coderAgent,
 //	            func(sc *orchestration.StageContext) string {
 //	                research, _ := sc.RequireOutput("research")
-//	                return fmt.Sprintf("Objetivo: %s\n\nInvestigación:\n%s", sc.Goal, research)
+//	                return fmt.Sprintf("Goal: %s\n\nResearch:\n%s", sc.Goal, research)
 //	            },
 //	        )),
 //	    ),

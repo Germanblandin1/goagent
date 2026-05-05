@@ -79,81 +79,142 @@ type OrchestrationHooks struct {
 }
 
 // MergeOrchestrationHooks composes multiple OrchestrationHooks into one.
-// Hooks are called in order. For On*Start hooks, the ctx returned by the
-// first hook is passed as input to the second — allowing span hierarchies
-// to be built across multiple hook sets. If a hook returns nil, the current
-// ctx is passed unchanged to the next hook.
+// Hooks are called in order. For On*Start hooks, the ctx returned by each
+// hook is passed as input to the next — allowing span hierarchies to be built
+// across multiple hook sets. If a hook returns nil, the current ctx is passed
+// unchanged to the next hook.
+//
+// Fields that no hook in the list populates remain nil in the result, so the
+// nil-guards in Pipeline and Graph fire correctly and no-op wrappers are never
+// allocated.
 func MergeOrchestrationHooks(hooks ...OrchestrationHooks) OrchestrationHooks {
-	return OrchestrationHooks{
-		OnPipelineStart: func(ctx context.Context, goal string) context.Context {
-			for _, h := range hooks {
-				if fn := h.OnPipelineStart; fn != nil {
-					if enriched := fn(ctx, goal); enriched != nil {
-						ctx = enriched
-					}
-				}
-			}
-			return ctx
-		},
-		OnPipelineEnd: func(ctx context.Context, sc *StageContext, err error) {
-			for _, h := range hooks {
-				if fn := h.OnPipelineEnd; fn != nil {
-					fn(ctx, sc, err)
-				}
-			}
-		},
-		OnStageStart: func(ctx context.Context, name string) context.Context {
-			for _, h := range hooks {
-				if fn := h.OnStageStart; fn != nil {
-					if enriched := fn(ctx, name); enriched != nil {
-						ctx = enriched
-					}
-				}
-			}
-			return ctx
-		},
-		OnStageEnd: func(ctx context.Context, name string, dur time.Duration, err error) {
-			for _, h := range hooks {
-				if fn := h.OnStageEnd; fn != nil {
-					fn(ctx, name, dur, err)
-				}
-			}
-		},
-		OnGraphStart: func(ctx context.Context, goal string) context.Context {
-			for _, h := range hooks {
-				if fn := h.OnGraphStart; fn != nil {
-					if enriched := fn(ctx, goal); enriched != nil {
-						ctx = enriched
-					}
-				}
-			}
-			return ctx
-		},
-		OnGraphEnd: func(ctx context.Context, sc *StageContext, err error) {
-			for _, h := range hooks {
-				if fn := h.OnGraphEnd; fn != nil {
-					fn(ctx, sc, err)
-				}
-			}
-		},
-		OnNodeEnter: func(ctx context.Context, name string) context.Context {
-			for _, h := range hooks {
-				if fn := h.OnNodeEnter; fn != nil {
-					if enriched := fn(ctx, name); enriched != nil {
-						ctx = enriched
-					}
-				}
-			}
-			return ctx
-		},
-		OnNodeExit: func(ctx context.Context, name string, next string, dur time.Duration, err error) {
-			for _, h := range hooks {
-				if fn := h.OnNodeExit; fn != nil {
-					fn(ctx, name, next, dur, err)
-				}
-			}
-		},
+	var merged OrchestrationHooks
+
+	var pipelineStartFns []func(context.Context, string) context.Context
+	for _, h := range hooks {
+		if h.OnPipelineStart != nil {
+			pipelineStartFns = append(pipelineStartFns, h.OnPipelineStart)
+		}
 	}
+	if len(pipelineStartFns) > 0 {
+		merged.OnPipelineStart = func(ctx context.Context, goal string) context.Context {
+			for _, fn := range pipelineStartFns {
+				if enriched := fn(ctx, goal); enriched != nil {
+					ctx = enriched
+				}
+			}
+			return ctx
+		}
+	}
+
+	var pipelineEndFns []func(context.Context, *StageContext, error)
+	for _, h := range hooks {
+		if h.OnPipelineEnd != nil {
+			pipelineEndFns = append(pipelineEndFns, h.OnPipelineEnd)
+		}
+	}
+	if len(pipelineEndFns) > 0 {
+		merged.OnPipelineEnd = func(ctx context.Context, sc *StageContext, err error) {
+			for _, fn := range pipelineEndFns {
+				fn(ctx, sc, err)
+			}
+		}
+	}
+
+	var stageStartFns []func(context.Context, string) context.Context
+	for _, h := range hooks {
+		if h.OnStageStart != nil {
+			stageStartFns = append(stageStartFns, h.OnStageStart)
+		}
+	}
+	if len(stageStartFns) > 0 {
+		merged.OnStageStart = func(ctx context.Context, name string) context.Context {
+			for _, fn := range stageStartFns {
+				if enriched := fn(ctx, name); enriched != nil {
+					ctx = enriched
+				}
+			}
+			return ctx
+		}
+	}
+
+	var stageEndFns []func(context.Context, string, time.Duration, error)
+	for _, h := range hooks {
+		if h.OnStageEnd != nil {
+			stageEndFns = append(stageEndFns, h.OnStageEnd)
+		}
+	}
+	if len(stageEndFns) > 0 {
+		merged.OnStageEnd = func(ctx context.Context, name string, dur time.Duration, err error) {
+			for _, fn := range stageEndFns {
+				fn(ctx, name, dur, err)
+			}
+		}
+	}
+
+	var graphStartFns []func(context.Context, string) context.Context
+	for _, h := range hooks {
+		if h.OnGraphStart != nil {
+			graphStartFns = append(graphStartFns, h.OnGraphStart)
+		}
+	}
+	if len(graphStartFns) > 0 {
+		merged.OnGraphStart = func(ctx context.Context, goal string) context.Context {
+			for _, fn := range graphStartFns {
+				if enriched := fn(ctx, goal); enriched != nil {
+					ctx = enriched
+				}
+			}
+			return ctx
+		}
+	}
+
+	var graphEndFns []func(context.Context, *StageContext, error)
+	for _, h := range hooks {
+		if h.OnGraphEnd != nil {
+			graphEndFns = append(graphEndFns, h.OnGraphEnd)
+		}
+	}
+	if len(graphEndFns) > 0 {
+		merged.OnGraphEnd = func(ctx context.Context, sc *StageContext, err error) {
+			for _, fn := range graphEndFns {
+				fn(ctx, sc, err)
+			}
+		}
+	}
+
+	var nodeEnterFns []func(context.Context, string) context.Context
+	for _, h := range hooks {
+		if h.OnNodeEnter != nil {
+			nodeEnterFns = append(nodeEnterFns, h.OnNodeEnter)
+		}
+	}
+	if len(nodeEnterFns) > 0 {
+		merged.OnNodeEnter = func(ctx context.Context, name string) context.Context {
+			for _, fn := range nodeEnterFns {
+				if enriched := fn(ctx, name); enriched != nil {
+					ctx = enriched
+				}
+			}
+			return ctx
+		}
+	}
+
+	var nodeExitFns []func(context.Context, string, string, time.Duration, error)
+	for _, h := range hooks {
+		if h.OnNodeExit != nil {
+			nodeExitFns = append(nodeExitFns, h.OnNodeExit)
+		}
+	}
+	if len(nodeExitFns) > 0 {
+		merged.OnNodeExit = func(ctx context.Context, name string, next string, dur time.Duration, err error) {
+			for _, fn := range nodeExitFns {
+				fn(ctx, name, next, dur, err)
+			}
+		}
+	}
+
+	return merged
 }
 
 // invokeStart calls a start hook and returns the enriched ctx.

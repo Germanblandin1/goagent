@@ -2,9 +2,24 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
+
+// PanicError is returned when an Executor inside a ParallelGroup panics.
+// It wraps the recovered panic value so callers can distinguish panics
+// from normal errors via errors.As.
+type PanicError struct {
+	// StageName is the name of the stage that panicked.
+	StageName string
+	// Value is the value passed to panic().
+	Value any
+}
+
+func (e *PanicError) Error() string {
+	return fmt.Sprintf("parallel stage %q panicked: %v", e.StageName, e.Value)
+}
 
 // ParallelGroupOption configures a ParallelGroup.
 type ParallelGroupOption func(*ParallelGroup)
@@ -29,12 +44,12 @@ type ParallelGroupOption func(*ParallelGroup)
 //	    ),
 //	)
 type ParallelGroup struct {
-	stages []namedExecutor
+	stages []StageDef
 	hooks  OrchestrationHooks
 }
 
 // WithParallelStages sets the stages of the parallel group.
-func WithParallelStages(stages ...namedExecutor) ParallelGroupOption {
+func WithParallelStages(stages ...StageDef) ParallelGroupOption {
 	return func(g *ParallelGroup) {
 		g.stages = stages
 	}
@@ -59,6 +74,15 @@ func NewParallelGroup(opts ...ParallelGroupOption) *ParallelGroup {
 	return g
 }
 
+// Run is the top-level entry point for using a ParallelGroup standalone.
+// Constructs a StageContext with the given goal and executes all stages
+// concurrently. Returns the complete StageContext so the caller can inspect
+// all outputs and artifacts produced.
+func (g *ParallelGroup) Run(ctx context.Context, goal string) (*StageContext, error) {
+	sc := NewStageContext(goal)
+	return sc, g.RunWithContext(ctx, sc)
+}
+
 // RunWithContext implements Executor.
 // Launches one goroutine per stage and waits for all before returning.
 // Stages write directly to sc via its thread-safe methods (SetOutput,
@@ -76,27 +100,35 @@ func (g *ParallelGroup) RunWithContext(ctx context.Context, sc *StageContext) er
 	for _, s := range g.stages {
 		go func() {
 			stageCtx := invokeStart(g.hooks.OnStageStart, ctx, s.name)
-
 			start := time.Now()
-			err := s.executor.RunWithContext(stageCtx, sc)
+
+			var stageErr error
+			func() {
+				defer func() {
+					if rec := recover(); rec != nil {
+						stageErr = &PanicError{StageName: s.name, Value: rec}
+					}
+				}()
+				stageErr = s.executor.RunWithContext(stageCtx, sc)
+			}()
 			dur := time.Since(start)
 
 			if fn := g.hooks.OnStageEnd; fn != nil {
-				fn(stageCtx, s.name, dur, err)
+				fn(stageCtx, s.name, dur, stageErr)
 			}
 
-			results <- result{s.name, dur, err}
+			results <- result{s.name, dur, stageErr}
 		}()
 	}
 
-	var first error
+	var errs []error
 	for range g.stages {
 		r := <-results
 		sc.appendTrace(r.name, r.duration, r.err)
-		if r.err != nil && first == nil {
-			first = fmt.Errorf("parallel stage %q: %w", r.name, r.err)
+		if r.err != nil {
+			errs = append(errs, fmt.Errorf("parallel stage %q: %w", r.name, r.err))
 		}
 	}
 
-	return first
+	return errors.Join(errs...)
 }

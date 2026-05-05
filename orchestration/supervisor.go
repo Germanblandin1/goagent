@@ -74,8 +74,25 @@ func NewSupervisor(
 	workers []Worker,
 	opts ...goagent.Option,
 ) (Executor, error) {
+	if outputKey == "" {
+		return nil, fmt.Errorf("orchestration: supervisor: outputKey must not be empty")
+	}
 	if len(workers) == 0 {
 		return nil, fmt.Errorf("orchestration: supervisor requires at least one worker")
+	}
+	for i, w := range workers {
+		if w.Name == "" {
+			return nil, fmt.Errorf("orchestration: supervisor: worker[%d]: Name must not be empty", i)
+		}
+		if w.Description == "" {
+			return nil, fmt.Errorf("orchestration: supervisor: worker[%d] %q: Description must not be empty", i, w.Name)
+		}
+		if w.InputDescription == "" {
+			return nil, fmt.Errorf("orchestration: supervisor: worker[%d] %q: InputDescription must not be empty", i, w.Name)
+		}
+		if w.Agent == nil {
+			return nil, fmt.Errorf("orchestration: supervisor: worker[%d] %q: Agent must not be nil", i, w.Name)
+		}
 	}
 
 	allOpts := make([]goagent.Option, 0, len(opts)+len(workers))

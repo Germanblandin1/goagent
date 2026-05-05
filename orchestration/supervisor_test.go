@@ -170,6 +170,50 @@ func TestNewSupervisor_emptyWorkers_returnsError(t *testing.T) {
 	}
 }
 
+func TestNewSupervisor_emptyOutputKey_returnsError(t *testing.T) {
+	_, err := orchestration.NewSupervisor("", nil, []orchestration.Worker{
+		{Name: "w", Description: "d", InputDescription: "i", Agent: &mockAgentRunner{}},
+	})
+
+	if err == nil {
+		t.Fatal("expected error for empty outputKey, got nil")
+	}
+}
+
+func TestNewSupervisor_workerValidation(t *testing.T) {
+	valid := orchestration.Worker{
+		Name:             "worker",
+		Description:      "does things",
+		InputDescription: "what to do",
+		Agent:            &mockAgentRunner{},
+	}
+
+	tests := []struct {
+		name   string
+		worker orchestration.Worker
+	}{
+		{"empty Name", orchestration.Worker{Name: "", Description: "d", InputDescription: "i", Agent: &mockAgentRunner{}}},
+		{"empty Description", orchestration.Worker{Name: "w", Description: "", InputDescription: "i", Agent: &mockAgentRunner{}}},
+		{"empty InputDescription", orchestration.Worker{Name: "w", Description: "d", InputDescription: "", Agent: &mockAgentRunner{}}},
+		{"nil Agent", orchestration.Worker{Name: "w", Description: "d", InputDescription: "i", Agent: nil}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := orchestration.NewSupervisor("result", nil, []orchestration.Worker{tt.worker})
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil", tt.name)
+			}
+		})
+	}
+
+	// valid worker must not produce a validation error (may fail on agent construction)
+	_, err := orchestration.NewSupervisor("result", nil, []orchestration.Worker{valid})
+	if err != nil && err.Error() == "orchestration: supervisor: worker[0] \"worker\": Name must not be empty" {
+		t.Error("valid worker should not fail validation")
+	}
+}
+
 // TestNewSupervisor_callsWorkerAndStoresOutput is an integration test that
 // wires a MockProvider with two scripted responses:
 //  1. a tool call that delegates to "researcher"

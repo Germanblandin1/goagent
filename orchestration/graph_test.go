@@ -647,3 +647,106 @@ func TestHumanApprovalNode_cancelledContext_returnsError(t *testing.T) {
 		t.Errorf("expected context.Canceled, got: %v", err)
 	}
 }
+
+// --- NodeNameFromContext ---
+
+func TestNodeNameFromContext_insideGraph(t *testing.T) {
+	var capturedName string
+
+	graph, _ := orchestration.NewGraph(
+		orchestration.WithStart("my_node"),
+		orchestration.WithNode("my_node", func(ctx context.Context, _ *orchestration.StageContext) (string, error) {
+			capturedName = orchestration.NodeNameFromContext(ctx)
+			return "", nil
+		}),
+	)
+
+	_, err := graph.Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedName != "my_node" {
+		t.Errorf("got %q, want %q", capturedName, "my_node")
+	}
+}
+
+func TestNodeNameFromContext_outsideGraph(t *testing.T) {
+	name := orchestration.NodeNameFromContext(context.Background())
+	if name != "" {
+		t.Errorf("expected empty string outside graph, got %q", name)
+	}
+}
+
+// --- WithMaxIterations(0) — sin límite ---
+
+func TestGraph_WithMaxIterations_zero_runsWithoutLimit(t *testing.T) {
+	const target = 150 // supera el default de 100
+
+	graph, _ := orchestration.NewGraph(
+		orchestration.WithStart("work"),
+		orchestration.WithMaxIterations(0),
+		orchestration.WithNode("work", func(_ context.Context, sc *orchestration.StageContext) (string, error) {
+			count, _ := orchestration.GetArtifact[int](sc, "count")
+			count++
+			sc.SetArtifact("count", count)
+			if count >= target {
+				return "", nil
+			}
+			return "work", nil
+		}),
+	)
+
+	_, err := graph.Run(context.Background(), "goal")
+
+	if err != nil {
+		t.Fatalf("unexpected error with maxIterations=0: %v", err)
+	}
+}
+
+func TestGraph_WithMaxIterations_negative_treatedAsNoLimit(t *testing.T) {
+	const target = 10
+
+	graph, _ := orchestration.NewGraph(
+		orchestration.WithStart("work"),
+		orchestration.WithMaxIterations(-1),
+		orchestration.WithNode("work", func(_ context.Context, sc *orchestration.StageContext) (string, error) {
+			count, _ := orchestration.GetArtifact[int](sc, "count")
+			count++
+			sc.SetArtifact("count", count)
+			if count >= target {
+				return "", nil
+			}
+			return "work", nil
+		}),
+	)
+
+	_, err := graph.Run(context.Background(), "goal")
+
+	if err != nil {
+		t.Fatalf("unexpected error with maxIterations=-1: %v", err)
+	}
+}
+
+func TestGraph_WithMaxIterations_zero_respectsContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	graph, _ := orchestration.NewGraph(
+		orchestration.WithStart("work"),
+		orchestration.WithMaxIterations(0),
+		orchestration.WithNode("work", func(ctx context.Context, sc *orchestration.StageContext) (string, error) {
+			count, _ := orchestration.GetArtifact[int](sc, "count")
+			count++
+			sc.SetArtifact("count", count)
+			if count == 5 {
+				cancel()
+			}
+			return "work", nil
+		}),
+	)
+
+	_, err := graph.Run(ctx, "goal")
+
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got: %v", err)
+	}
+}

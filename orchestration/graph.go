@@ -8,6 +8,18 @@ import (
 	"time"
 )
 
+// nodeNameKey is an unexported context key used to propagate the currently
+// executing node name through the context. Being unexported prevents collisions
+// with other packages and ensures only the Graph can write this value.
+type nodeNameKey struct{}
+
+// NodeNameFromContext returns the name of the currently executing node as
+// registered with WithNode. Returns "" if called outside a Graph execution.
+func NodeNameFromContext(ctx context.Context) string {
+	name, _ := ctx.Value(nodeNameKey{}).(string)
+	return name
+}
+
 // NodeFunc is the function that executes a graph node.
 // It reads from and writes to the StageContext, then returns the name of
 // the next node to execute. Returning "" terminates the graph.
@@ -123,6 +135,8 @@ func WithStart(name string) GraphOption {
 // WithMaxIterations sets the maximum number of node executions before
 // the graph returns an error. Protects against infinite loops.
 // Default: 100.
+// A value <= 0 disables the limit — the graph runs until a node returns ""
+// or the context is cancelled. Use with caution.
 func WithMaxIterations(n int) GraphOption {
 	return func(g *Graph) {
 		g.maxIterations = n
@@ -182,7 +196,7 @@ func (g *Graph) RunWithContext(ctx context.Context, sc *StageContext) (err error
 		default:
 		}
 
-		if iterations >= g.maxIterations {
+		if g.maxIterations > 0 && iterations >= g.maxIterations {
 			return fmt.Errorf("graph: exceeded max iterations (%d), possible infinite loop at node %q",
 				g.maxIterations, current)
 		}
@@ -198,6 +212,7 @@ func (g *Graph) RunWithContext(ctx context.Context, sc *StageContext) (err error
 		}
 
 		nodeCtx := invokeStart(g.hooks.OnNodeEnter, graphCtx, current)
+		nodeCtx = context.WithValue(nodeCtx, nodeNameKey{}, current)
 
 		start := time.Now()
 		next, nodeErr := entry.fn(nodeCtx, sc)
