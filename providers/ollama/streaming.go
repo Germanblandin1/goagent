@@ -48,17 +48,22 @@ type ollamaNativeCallFunc struct {
 // ollamaStreamChunk is a single JSON line in the streaming response.
 type ollamaStreamChunk struct {
 	Message struct {
-		Content string `json:"content"`
+		Content   string             `json:"content"`
+		ToolCalls []ollamaNativeCall `json:"tool_calls,omitempty"`
 	} `json:"message"`
-	Done            bool `json:"done"`
-	EvalCount       int  `json:"eval_count"`
-	PromptEvalCount int  `json:"prompt_eval_count"`
+	Done            bool   `json:"done"`
+	DoneReason      string `json:"done_reason,omitempty"`
+	EvalCount       int    `json:"eval_count"`
+	PromptEvalCount int    `json:"prompt_eval_count"`
 }
 
 // ollamaStream implements goagent.Stream over Ollama's native streaming API.
 type ollamaStream struct {
 	resp    *http.Response
 	scanner *bufio.Scanner
+	// pending holds events queued from a done chunk (tool events + done) so
+	// that Next can return them one at a time without buffering the whole stream.
+	pending []goagent.StreamEvent
 	current goagent.StreamEvent
 	err     error
 	done    bool
@@ -68,6 +73,17 @@ func (s *ollamaStream) Next(_ context.Context) bool {
 	if s.done || s.err != nil {
 		return false
 	}
+
+	// Drain events queued from the previous chunk before reading the next one.
+	if len(s.pending) > 0 {
+		s.current = s.pending[0]
+		s.pending = s.pending[1:]
+		if s.current.Type == goagent.StreamEventDone {
+			s.done = true
+		}
+		return true
+	}
+
 	for s.scanner.Scan() {
 		line := s.scanner.Bytes()
 		if len(line) == 0 {
@@ -79,15 +95,38 @@ func (s *ollamaStream) Next(_ context.Context) bool {
 			return false
 		}
 		if chunk.Done {
-			s.current = goagent.StreamEvent{
+			// Emit one ToolStart + one ToolDelta per tool call, then Done.
+			for i, tc := range chunk.Message.ToolCalls {
+				toolID := fmt.Sprintf("ollama-tool-%d", i)
+				args := tc.Function.Arguments
+				if args == nil {
+					args = map[string]any{}
+				}
+				argsJSON, _ := json.Marshal(args)
+				s.pending = append(s.pending, goagent.StreamEvent{
+					Type:     goagent.StreamEventToolStart,
+					ToolName: tc.Function.Name,
+					ToolID:   toolID,
+				})
+				s.pending = append(s.pending, goagent.StreamEvent{
+					Type:       goagent.StreamEventToolDelta,
+					ToolID:     toolID,
+					InputDelta: string(argsJSON),
+				})
+			}
+			s.pending = append(s.pending, goagent.StreamEvent{
 				Type:       goagent.StreamEventDone,
-				StopReason: goagent.StopReasonEndTurn,
+				StopReason: ollamaStopReason(chunk.DoneReason, len(chunk.Message.ToolCalls) > 0),
 				Usage: goagent.Usage{
 					InputTokens:  chunk.PromptEvalCount,
 					OutputTokens: chunk.EvalCount,
 				},
+			})
+			s.current = s.pending[0]
+			s.pending = s.pending[1:]
+			if s.current.Type == goagent.StreamEventDone {
+				s.done = true
 			}
-			s.done = true
 			return true
 		}
 		if chunk.Message.Content != "" {
@@ -104,6 +143,21 @@ func (s *ollamaStream) Next(_ context.Context) bool {
 	return false
 }
 
+// ollamaStopReason maps the Ollama done_reason string to a goagent StopReason.
+// Tool calls take priority over done_reason because Ollama may still report
+// done_reason:"stop" even when the message contains tool calls.
+func ollamaStopReason(reason string, hasTools bool) goagent.StopReason {
+	if hasTools {
+		return goagent.StopReasonToolUse
+	}
+	switch reason {
+	case "length":
+		return goagent.StopReasonMaxTokens
+	default:
+		return goagent.StopReasonEndTurn
+	}
+}
+
 func (s *ollamaStream) Event() goagent.StreamEvent { return s.current }
 func (s *ollamaStream) Err() error                 { return s.err }
 func (s *ollamaStream) Close() error               { return s.resp.Body.Close() }
@@ -111,10 +165,10 @@ func (s *ollamaStream) Close() error               { return s.resp.Body.Close() 
 // CompleteStream implements goagent.StreamingProvider using Ollama's /api/chat
 // endpoint with stream:true.
 //
-// Limitation: Ollama local models do not support tool calls during streaming
-// in the same way as Anthropic. Tool calls are not surfaced as StreamEventToolStart/
-// StreamEventToolDelta events — they are accumulated in the complete response.
-// Use Complete() when tool use with local models is required.
+// Text tokens are delivered as StreamEventText events as they arrive.
+// Tool calls appear in the final done chunk and are translated to
+// StreamEventToolStart + StreamEventToolDelta events before StreamEventDone,
+// so the agent loop handles them the same way as Anthropic streaming.
 func (p *Provider) CompleteStream(ctx context.Context, req goagent.CompletionRequest) (goagent.Stream, error) {
 	if req.Model == "" {
 		return nil, fmt.Errorf("ollama: model not set; use goagent.WithModel")
