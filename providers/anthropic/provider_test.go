@@ -3,6 +3,7 @@ package anthropic_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -553,5 +554,390 @@ func TestProvider_ThinkingBlocksPassedBackToAPI(t *testing.T) {
 	}
 	if !foundThinkingInAssistant {
 		t.Error("thinking block not found in assistant message sent to API")
+	}
+}
+
+// ── New and WithMaxTokens ────────────────────────────────────────────────────
+
+func TestNew_ReturnsNonNilProvider(t *testing.T) {
+	t.Parallel()
+	// API key is read from the environment (may be empty in CI, but New does
+	// not validate it at construction time).
+	p := provider.New()
+	if p == nil {
+		t.Fatal("New() returned nil")
+	}
+}
+
+func TestWithMaxTokens_SentInRequest(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, textResponse, &captured)
+
+	client := provider.NewClient(
+		provider.WithBaseURL(srv.URL),
+		provider.WithAPIKey("test-key"),
+	)
+	p := provider.NewWithClient(client, provider.WithMaxTokens(8192))
+
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:    "claude-sonnet-4-6",
+		Messages: []goagent.Message{goagent.UserMessage("hi")},
+	})
+
+	maxTokens, _ := captured["max_tokens"].(float64)
+	if maxTokens != 8192 {
+		t.Errorf("max_tokens = %v, want 8192", maxTokens)
+	}
+}
+
+// ── Content blocks: image and document ──────────────────────────────────────
+
+func TestProvider_ImageBlock_SentInRequest(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, textResponse, &captured)
+	p := newTestProvider(t, srv)
+
+	imgBytes := []byte{0xFF, 0xD8, 0xFF} // fake JPEG header
+	_, err := p.Complete(context.Background(), goagent.CompletionRequest{
+		Model: "claude-sonnet-4-6",
+		Messages: []goagent.Message{
+			{
+				Role:    goagent.RoleUser,
+				Content: []goagent.ContentBlock{goagent.ImageBlock(imgBytes, "image/jpeg")},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	messages, _ := captured["messages"].([]any)
+	if len(messages) == 0 {
+		t.Fatal("no messages in captured request")
+	}
+	first, _ := messages[0].(map[string]any)
+	content, _ := first["content"].([]any)
+	if len(content) == 0 {
+		t.Fatal("no content blocks in first message")
+	}
+	block, _ := content[0].(map[string]any)
+	if block["type"] != "image" {
+		t.Errorf("block type = %v, want image", block["type"])
+	}
+}
+
+func TestProvider_DocumentPDF_SentInRequest(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, textResponse, &captured)
+	p := newTestProvider(t, srv)
+
+	_, err := p.Complete(context.Background(), goagent.CompletionRequest{
+		Model: "claude-sonnet-4-6",
+		Messages: []goagent.Message{
+			{
+				Role: goagent.RoleUser,
+				Content: []goagent.ContentBlock{
+					goagent.DocumentBlock([]byte{0x25, 0x50, 0x44, 0x46}, "application/pdf", "report"),
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	messages, _ := captured["messages"].([]any)
+	first, _ := messages[0].(map[string]any)
+	content, _ := first["content"].([]any)
+	if len(content) == 0 {
+		t.Fatal("no content blocks")
+	}
+	block, _ := content[0].(map[string]any)
+	if block["type"] != "document" {
+		t.Errorf("block type = %v, want document", block["type"])
+	}
+}
+
+func TestProvider_DocumentPlainText_SentInRequest(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, textResponse, &captured)
+	p := newTestProvider(t, srv)
+
+	_, err := p.Complete(context.Background(), goagent.CompletionRequest{
+		Model: "claude-sonnet-4-6",
+		Messages: []goagent.Message{
+			{
+				Role: goagent.RoleUser,
+				Content: []goagent.ContentBlock{
+					goagent.DocumentBlock([]byte("plain text content"), "text/plain", "notes"),
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	messages, _ := captured["messages"].([]any)
+	first, _ := messages[0].(map[string]any)
+	content, _ := first["content"].([]any)
+	if len(content) == 0 {
+		t.Fatal("no content blocks")
+	}
+	block, _ := content[0].(map[string]any)
+	if block["type"] != "document" {
+		t.Errorf("block type = %v, want document", block["type"])
+	}
+}
+
+func TestProvider_DocumentUnsupportedType_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeAnthropicServer(t, textResponse)
+	p := newTestProvider(t, srv)
+
+	_, err := p.Complete(context.Background(), goagent.CompletionRequest{
+		Model: "claude-sonnet-4-6",
+		Messages: []goagent.Message{
+			{
+				Role: goagent.RoleUser,
+				Content: []goagent.ContentBlock{
+					goagent.DocumentBlock([]byte("<html>"), "text/html", "page"),
+				},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for unsupported document media type, got nil")
+	}
+}
+
+// ── Message role handling ────────────────────────────────────────────────────
+
+func TestProvider_UnsupportedRole_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeAnthropicServer(t, textResponse)
+	p := newTestProvider(t, srv)
+
+	_, err := p.Complete(context.Background(), goagent.CompletionRequest{
+		Model: "claude-sonnet-4-6",
+		Messages: []goagent.Message{
+			{Role: "invalid_role", Content: []goagent.ContentBlock{goagent.TextBlock("hi")}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for unsupported role, got nil")
+	}
+}
+
+func TestProvider_SystemRoleInMessages_Skipped(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, textResponse, &captured)
+	p := newTestProvider(t, srv)
+
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model: "claude-sonnet-4-6",
+		Messages: []goagent.Message{
+			// System messages in conversation history are skipped;
+			// they must be passed via CompletionRequest.SystemPrompt instead.
+			{Role: goagent.RoleSystem, Content: []goagent.ContentBlock{goagent.TextBlock("be helpful")}},
+			goagent.UserMessage("hi"),
+		},
+	})
+
+	messages, _ := captured["messages"].([]any)
+	// Only the user message should be forwarded; the system message is dropped.
+	if len(messages) != 1 {
+		t.Errorf("got %d messages, want 1 (system message skipped)", len(messages))
+	}
+}
+
+// ── Tool schema: additionalProperties ───────────────────────────────────────
+
+func TestProvider_ToolWithAdditionalProperties(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, textResponse, &captured)
+	p := newTestProvider(t, srv)
+
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:    "claude-sonnet-4-6",
+		Messages: []goagent.Message{goagent.UserMessage("hi")},
+		Tools: []goagent.ToolDefinition{
+			{
+				Name:        "strict_tool",
+				Description: "strict schema",
+				Parameters: map[string]any{
+					"properties":           map[string]any{"x": map[string]any{"type": "number"}},
+					"required":             []string{"x"},
+					"additionalProperties": false,
+				},
+			},
+		},
+	})
+
+	tools, _ := captured["tools"].([]any)
+	if len(tools) == 0 {
+		t.Fatal("no tools in request")
+	}
+	tool, _ := tools[0].(map[string]any)
+	schema, _ := tool["input_schema"].(map[string]any)
+	if schema["additionalProperties"] != false {
+		t.Errorf("additionalProperties = %v, want false", schema["additionalProperties"])
+	}
+}
+
+// ── Streaming ────────────────────────────────────────────────────────────────
+
+func TestCompleteStream_EmptyModel_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeAnthropicServer(t, textResponse)
+	p := newTestProvider(t, srv)
+
+	_, err := p.CompleteStream(context.Background(), goagent.CompletionRequest{
+		Messages: []goagent.Message{goagent.UserMessage("hi")},
+	})
+	if err == nil {
+		t.Fatal("expected error for empty model, got nil")
+	}
+}
+
+// sseServer returns an httptest.Server that streams the given SSE event
+// strings (each already formatted as "event: X\ndata: Y") to any POST
+// /v1/messages request.
+func sseServer(t *testing.T, events []string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		flusher, _ := w.(http.Flusher)
+		for _, ev := range events {
+			fmt.Fprintf(w, "%s\n\n", ev)
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestCompleteStream_TextEvents(t *testing.T) {
+	t.Parallel()
+
+	events := []string{
+		`event: message_start
+data: {"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}`,
+		`event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`,
+		`event: content_block_stop
+data: {"type":"content_block_stop","index":0}`,
+		`event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}`,
+		`event: message_stop
+data: {"type":"message_stop"}`,
+	}
+
+	srv := sseServer(t, events)
+	p := newTestProvider(t, srv)
+
+	ctx := context.Background()
+	stream, err := p.CompleteStream(ctx, goagent.CompletionRequest{
+		Model:    "claude-sonnet-4-6",
+		Messages: []goagent.Message{goagent.UserMessage("hi")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error creating stream: %v", err)
+	}
+	defer stream.Close()
+
+	var texts []string
+	for stream.Next(ctx) {
+		ev := stream.Event()
+		if ev.Type == goagent.StreamEventText {
+			texts = append(texts, ev.Text)
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	if len(texts) == 0 || texts[0] != "Hello" {
+		t.Errorf("text events = %v, want [Hello]", texts)
+	}
+}
+
+func TestCompleteStream_ToolStartAndDeltaEvents(t *testing.T) {
+	t.Parallel()
+
+	events := []string{
+		`event: message_start
+data: {"type":"message_start","message":{"id":"msg_02","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":15,"output_tokens":0}}}`,
+		`event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"calc","input":{}}}`,
+		`event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"a\":"}}`,
+		`event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"2}"}}`,
+		`event: content_block_stop
+data: {"type":"content_block_stop","index":0}`,
+		`event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":5}}`,
+		`event: message_stop
+data: {"type":"message_stop"}`,
+	}
+
+	srv := sseServer(t, events)
+	p := newTestProvider(t, srv)
+
+	ctx := context.Background()
+	stream, err := p.CompleteStream(ctx, goagent.CompletionRequest{
+		Model:    "claude-sonnet-4-6",
+		Messages: []goagent.Message{goagent.UserMessage("compute")},
+		Tools:    []goagent.ToolDefinition{{Name: "calc", Description: "arithmetic", Parameters: map[string]any{}}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error creating stream: %v", err)
+	}
+	defer stream.Close()
+
+	var toolStarts, toolDeltas int
+	var stopReason goagent.StopReason
+	for stream.Next(ctx) {
+		ev := stream.Event()
+		switch ev.Type {
+		case goagent.StreamEventToolStart:
+			toolStarts++
+		case goagent.StreamEventToolDelta:
+			toolDeltas++
+		case goagent.StreamEventDone:
+			stopReason = ev.StopReason
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	if toolStarts != 1 {
+		t.Errorf("tool start events = %d, want 1", toolStarts)
+	}
+	if toolDeltas == 0 {
+		t.Error("expected at least one tool delta event, got none")
+	}
+	if stopReason != goagent.StopReasonToolUse {
+		t.Errorf("stop reason = %v, want ToolUse", stopReason)
 	}
 }
