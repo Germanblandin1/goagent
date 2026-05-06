@@ -32,6 +32,7 @@ jobs:
             memory/vector/sqlitevec
             memory/vector/tiktoken
             otel
+            orchestration
             providers/anthropic
             providers/ollama
             providers/voyage
@@ -68,6 +69,7 @@ jobs:
             memory/vector/qdrant
             memory/vector/tiktoken
             otel
+            orchestration
             providers/anthropic
             providers/ollama
             providers/voyage
@@ -124,6 +126,7 @@ jobs:
             memory/vector/sqlitevec
             memory/vector/tiktoken
             otel
+            orchestration
             providers/anthropic
             providers/ollama
             providers/voyage
@@ -165,6 +168,7 @@ jobs:
             memory/vector/qdrant
             memory/vector/tiktoken
             otel
+            orchestration
             providers/anthropic
             providers/ollama
             providers/voyage
@@ -261,6 +265,7 @@ jobs:
 
           # Sub-packages: ≥70%
           check_coverage coverage-mcp.out                          70 "mcp"                        mcp
+          check_coverage coverage-orchestration.out                70 "orchestration"               orchestration
           check_coverage coverage-otel.out                         70 "otel"                       otel
           check_coverage coverage-ratelimit.out                    70 "ratelimit"                  ratelimit
           check_coverage coverage-providers-anthropic.out          70 "providers/anthropic"        providers/anthropic
