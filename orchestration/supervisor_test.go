@@ -74,11 +74,11 @@ func TestAgentTool_Definition_hasCorrectSchema(t *testing.T) {
 }
 
 func TestAgentTool_Execute_callsAgentWithInput(t *testing.T) {
-	worker := &mockAgentRunner{response: "investigación sobre embeddings"}
+	worker := &mockAgentRunner{response: "research on embeddings"}
 	tool := orchestration.NewAgentTool("researcher", "desc", "input desc", worker)
 
 	blocks, err := tool.Execute(context.Background(), map[string]any{
-		"input": "investigá embeddings de Voyage AI",
+		"input": "research Voyage AI embeddings",
 	})
 
 	if err != nil {
@@ -87,16 +87,16 @@ func TestAgentTool_Execute_callsAgentWithInput(t *testing.T) {
 	if len(blocks) != 1 {
 		t.Fatalf("expected 1 block, got %d", len(blocks))
 	}
-	if worker.lastInput != "investigá embeddings de Voyage AI" {
+	if worker.lastInput != "research Voyage AI embeddings" {
 		t.Errorf("worker received wrong input: %q", worker.lastInput)
 	}
 }
 
 func TestAgentTool_Execute_outputIsTextBlock(t *testing.T) {
-	worker := &mockAgentRunner{response: "resultado del worker"}
+	worker := &mockAgentRunner{response: "worker result"}
 	tool := orchestration.NewAgentTool("worker", "desc", "input desc", worker)
 
-	blocks, err := tool.Execute(context.Background(), map[string]any{"input": "hacé algo"})
+	blocks, err := tool.Execute(context.Background(), map[string]any{"input": "do something"})
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -104,8 +104,8 @@ func TestAgentTool_Execute_outputIsTextBlock(t *testing.T) {
 	if len(blocks) != 1 {
 		t.Fatalf("expected 1 block, got %d", len(blocks))
 	}
-	if blocks[0].Text != "resultado del worker" {
-		t.Errorf("block text: got %q, want %q", blocks[0].Text, "resultado del worker")
+	if blocks[0].Text != "worker result" {
+		t.Errorf("block text: got %q, want %q", blocks[0].Text, "worker result")
 	}
 }
 
@@ -139,7 +139,7 @@ func TestAgentTool_Execute_workerError_wrapsWithToolName(t *testing.T) {
 		&mockAgentRunner{err: errWorker},
 	)
 
-	_, err := tool.Execute(context.Background(), map[string]any{"input": "escribí algo"})
+	_, err := tool.Execute(context.Background(), map[string]any{"input": "write something"})
 
 	if err == nil {
 		t.Fatal("expected error, got nil")

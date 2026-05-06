@@ -8,15 +8,15 @@ import (
 
 func TestStageContext_RequireOutput_found(t *testing.T) {
 	sc := orchestration.NewStageContext("test goal")
-	sc.SetOutput("research", "resultado de investigación")
+	sc.SetOutput("research", "research results")
 
 	got, err := sc.RequireOutput("research")
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != "resultado de investigación" {
-		t.Errorf("got %q, want %q", got, "resultado de investigación")
+	if got != "research results" {
+		t.Errorf("got %q, want %q", got, "research results")
 	}
 }
 
@@ -98,7 +98,7 @@ func TestGetArtifact_notFound(t *testing.T) {
 
 func TestGetArtifact_wrongType(t *testing.T) {
 	sc := orchestration.NewStageContext("test goal")
-	sc.SetArtifact("score", "no soy un float")
+	sc.SetArtifact("score", "not a float")
 
 	_, err := orchestration.GetArtifact[float64](sc, "score")
 

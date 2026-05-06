@@ -48,7 +48,7 @@ func TestGraph_Mermaid_withoutEdges_showsNodes(t *testing.T) {
 			func(_ context.Context, _ *orchestration.StageContext) (string, error) {
 				return "b", nil
 			},
-			// sin WithToNodes
+			// no WithToNodes
 		),
 		orchestration.WithNode("b",
 			func(_ context.Context, _ *orchestration.StageContext) (string, error) {
@@ -83,7 +83,7 @@ func TestGraph_Mermaid_mixedEdgesAndIsolated(t *testing.T) {
 			func(_ context.Context, _ *orchestration.StageContext) (string, error) {
 				return "", nil
 			},
-			// sin WithToNodes — nodo aislado en el diagrama
+			// no WithToNodes — isolated node in the diagram
 		),
 	)
 

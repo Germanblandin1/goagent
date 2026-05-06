@@ -41,8 +41,8 @@ func TestWithNodeMiddleware_wrapsNodeFunc(t *testing.T) {
 }
 
 func TestWithNodeMiddleware_orderIsInverse(t *testing.T) {
-	// primer middleware registrado = más interno (más cercano al NodeFunc)
-	// segundo middleware registrado = más externo
+	// first registered middleware = innermost (closest to the NodeFunc)
+	// second registered middleware = outermost
 	var order []string
 
 	makeMiddleware := func(name string) orchestration.NodeMiddleware {
@@ -63,14 +63,14 @@ func TestWithNodeMiddleware_orderIsInverse(t *testing.T) {
 				order = append(order, "fn")
 				return "", nil
 			},
-			orchestration.WithNodeMiddleware(makeMiddleware("A")), // más interno
-			orchestration.WithNodeMiddleware(makeMiddleware("B")), // más externo
+			orchestration.WithNodeMiddleware(makeMiddleware("A")), // innermost
+			orchestration.WithNodeMiddleware(makeMiddleware("B")), // outermost
 		),
 	)
 
 	graph.Run(context.Background(), "goal")
 
-	// esperado: B:before → A:before → fn → A:after → B:after
+	// expected: B:before → A:before → fn → A:after → B:after
 	expected := []string{"B:before", "A:before", "fn", "A:after", "B:after"}
 	if len(order) != len(expected) {
 		t.Fatalf("got order %v, want %v", order, expected)
@@ -297,7 +297,7 @@ func TestNodeMiddleware_retryWithTimeout(t *testing.T) {
 				sc.SetOutput("result", "success")
 				return "", nil
 			},
-			// orden: TimeoutMiddleware más externo, RetryMiddleware más interno
+			// order: TimeoutMiddleware outermost, RetryMiddleware innermost
 			orchestration.WithNodeMiddleware(orchestration.RetryMiddleware(goagent.RetryPolicy{
 				MaxAttempts:  3,
 				InitialDelay: time.Millisecond,

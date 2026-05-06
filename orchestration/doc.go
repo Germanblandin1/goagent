@@ -1,11 +1,26 @@
-// Package orchestration provee primitivas para coordinar múltiples agentes
-// goagent en pipelines secuenciales, paralelos y grafos dinámicos.
+// Package orchestration provides primitives for coordinating multiple goagent
+// agents in sequential pipelines, parallel groups, and dynamic graphs.
 //
-// El tipo central es Executor — cualquier cosa que implemente
-// RunWithContext(ctx, *StageContext) error puede participar en un pipeline.
-// Los agentes goagent se integran vía AgentAdapter o AgentBlocksAdapter.
+// # Choosing between Pipeline, Graph, and Supervisor
 //
-// Pipeline — ejecución secuencial:
+// Use Pipeline when the flow is linear and deterministic: each stage runs in
+// order and passes its output to the next. Branching and loops are not
+// supported.
+//
+// Use Graph when routing depends on node outputs: nodes return the name of
+// the next node to run, enabling conditional branching and feedback loops.
+//
+// Use Supervisor when you want emergent delegation via LLM tool calls: the
+// supervisor agent decides at runtime which worker agents to invoke and in
+// what order.
+//
+// # Core abstraction
+//
+// The central type is Executor — anything that implements
+// RunWithContext(ctx, *StageContext) error can participate in a pipeline.
+// goagent agents integrate via AgentAdapter or AgentBlocksAdapter.
+//
+// Pipeline — sequential execution:
 //
 //	pipeline := orchestration.NewPipeline(
 //	    orchestration.WithStages(
@@ -24,7 +39,7 @@
 //	        )),
 //	    ),
 //	)
-//	sc, err := pipeline.Run(ctx, "implementar endpoint REST")
+//	sc, err := pipeline.Run(ctx, "implement a REST endpoint")
 //
 // Graph — routing dinámico con branching y loops:
 //

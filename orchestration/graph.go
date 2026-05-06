@@ -256,6 +256,12 @@ func (g *Graph) RunWithContext(ctx context.Context, sc *StageContext) (err error
 // Nodes without WithToNodes appear as isolated nodes.
 // "" in WithToNodes is rendered as END.
 //
+// Node names are used as-is in the Mermaid syntax. Names containing spaces,
+// hyphens, parentheses, or other Mermaid special characters (e.g.
+// "generate-code", "step (1)") will produce an invalid diagram that the
+// Mermaid parser will reject. Use alphanumeric identifiers and underscores
+// for node names when Mermaid output is needed.
+//
 // Example output:
 //
 //	graph TD

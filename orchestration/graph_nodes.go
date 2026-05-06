@@ -54,6 +54,12 @@ type ApprovalResponse struct {
 // The graph should run in a separate goroutine so the caller can handle
 // the channels concurrently.
 //
+// Goroutine leak risk: if the context is cancelled after the node has sent
+// the ApprovalRequest but before the caller reads it or sends the response,
+// the caller's goroutine may block indefinitely on the channel send. Use
+// buffered channels or a select with a done channel on the caller side to
+// avoid this.
+//
 // onApproved is the next node if the human approves.
 // onRejected is the next node if the human rejects. The rejection reason
 // is stored in sc.Artifacts["rejection_reason"] for subsequent nodes.

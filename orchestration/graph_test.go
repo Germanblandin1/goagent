@@ -18,7 +18,7 @@ func TestNewGraph_missingStart_returnsError(t *testing.T) {
 		orchestration.WithNode("a", func(_ context.Context, _ *orchestration.StageContext) (string, error) {
 			return "", nil
 		}),
-		// sin WithStart
+		// no WithStart
 	)
 
 	if err == nil {
@@ -135,7 +135,7 @@ func TestGraph_Branching_takesCorrectPath(t *testing.T) {
 		}),
 	)
 
-	// caso left
+	// left branch
 	sc := orchestration.NewStageContext("goal")
 	sc.SetArtifact("go_left", true)
 	if err := graph.RunWithContext(context.Background(), sc); err != nil {
@@ -145,7 +145,7 @@ func TestGraph_Branching_takesCorrectPath(t *testing.T) {
 		t.Errorf("left branch: got %q", v)
 	}
 
-	// caso right
+	// right branch
 	sc = orchestration.NewStageContext("goal")
 	sc.SetArtifact("go_left", false)
 	if err := graph.RunWithContext(context.Background(), sc); err != nil {
@@ -169,7 +169,7 @@ func TestGraph_Loop_runsUntilCondition(t *testing.T) {
 			count++
 			sc.SetArtifact("count", count)
 			if count >= 3 {
-				return "", nil // END después de 3 iteraciones
+				return "", nil // END after 3 iterations
 			}
 			return "work", nil // loop
 		}),
@@ -212,8 +212,8 @@ func TestGraph_MaxCyclesPerNode_returnsError(t *testing.T) {
 }
 
 func TestGraph_MaxCyclesPerNode_doesNotAffectOtherNodes(t *testing.T) {
-	// node "a" tiene maxCycles=2, node "b" no tiene límite
-	// el flujo va a→b→a→b→a — "a" corre 3 veces, debe fallar
+	// node "a" has maxCycles=2, node "b" has no limit
+	// flow is a→b→a→b→a — "a" runs 3 times, must fail
 	graph, _ := orchestration.NewGraph(
 		orchestration.WithStart("a"),
 		orchestration.WithMaxIterations(20),
@@ -227,7 +227,7 @@ func TestGraph_MaxCyclesPerNode_doesNotAffectOtherNodes(t *testing.T) {
 			func(_ context.Context, _ *orchestration.StageContext) (string, error) {
 				return "a", nil
 			},
-			// sin MaxCycles — solo "a" tiene límite
+			// no MaxCycles — only "a" has a limit
 		),
 	)
 
@@ -248,7 +248,7 @@ func TestGraph_MaxIterations_returnsError(t *testing.T) {
 		orchestration.WithStart("loop"),
 		orchestration.WithMaxIterations(5),
 		orchestration.WithNode("loop", func(_ context.Context, _ *orchestration.StageContext) (string, error) {
-			return "loop", nil // loop infinito
+			return "loop", nil // infinite loop
 		}),
 	)
 
@@ -466,9 +466,9 @@ func TestGraph_ImplementsExecutor_nestedInPipeline(t *testing.T) {
 
 // --- ParallelGroup inside NodeFunc ---
 
-// TestGraph_ParallelGroupInsideNode verifica que un nodo puede construir
-// y ejecutar un ParallelGroup dinámicamente sin que el Graph lo sepa.
-// Correr con -race para verificar ausencia de data races.
+// TestGraph_ParallelGroupInsideNode verifies that a node can build and execute
+// a ParallelGroup dynamically without the Graph knowing about it.
+// Run with -race to verify absence of data races.
 func TestGraph_ParallelGroupInsideNode(t *testing.T) {
 	graph, _ := orchestration.NewGraph(
 		orchestration.WithStart("dispatch"),
@@ -506,9 +506,8 @@ func TestGraph_ParallelGroupInsideNode(t *testing.T) {
 	}
 }
 
-// TestGraph_ConditionalParallelism verifica el patrón central:
-// el nodo decide en runtime si usar paralelismo o no
-// basándose en un artefacto del StageContext.
+// TestGraph_ConditionalParallelism verifies the core pattern: a node decides
+// at runtime whether to use parallelism based on a StageContext artifact.
 func TestGraph_ConditionalParallelism(t *testing.T) {
 	buildGraph := func() *orchestration.Graph {
 		g, _ := orchestration.NewGraph(
@@ -654,7 +653,7 @@ func TestHumanApprovalNode_rejected_continuesOnRejectedPath(t *testing.T) {
 }
 
 func TestHumanApprovalNode_cancelledContext_returnsError(t *testing.T) {
-	requestCh := make(chan orchestration.ApprovalRequest) // sin buffer — bloquea
+	requestCh := make(chan orchestration.ApprovalRequest) // unbuffered — blocks
 	responseCh := make(chan orchestration.ApprovalResponse)
 
 	graph, _ := orchestration.NewGraph(
@@ -712,10 +711,10 @@ func TestNodeNameFromContext_outsideGraph(t *testing.T) {
 	}
 }
 
-// --- WithMaxIterations(0) — sin límite ---
+// --- WithMaxIterations(0) — no limit ---
 
 func TestGraph_WithMaxIterations_zero_runsWithoutLimit(t *testing.T) {
-	const target = 150 // supera el default de 100
+	const target = 150 // exceeds the default of 100
 
 	graph, _ := orchestration.NewGraph(
 		orchestration.WithStart("work"),
