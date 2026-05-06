@@ -7,6 +7,7 @@ require (
 	github.com/Germanblandin1/goagent/mcp v0.0.0
 	github.com/Germanblandin1/goagent/memory/vector/qdrant v0.0.0
 	github.com/Germanblandin1/goagent/memory/vector/sqlitevec v0.0.0
+	github.com/Germanblandin1/goagent/orchestration v0.0.0
 	github.com/Germanblandin1/goagent/providers/ollama v0.0.0
 	github.com/Germanblandin1/goagent/rag v0.0.0
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
@@ -43,3 +44,5 @@ replace github.com/Germanblandin1/goagent/memory/vector/qdrant => ../memory/vect
 replace github.com/Germanblandin1/goagent/memory/vector/sqlitevec => ../memory/vector/sqlitevec
 
 replace github.com/Germanblandin1/goagent/rag => ../rag
+
+replace github.com/Germanblandin1/goagent/orchestration => ../orchestration
