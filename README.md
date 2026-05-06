@@ -72,7 +72,8 @@ goagent/              Core — Agent, ReAct loop, interfaces
 │   ├── graph-loop-judge/        Judge-loop pattern with a Graph
 │   ├── graph-nested/            Nested Pipeline inside a Graph node
 │   ├── multi-agent/             Supervisor coordinating worker agents
-│   └── rag_batch_index/         Interactive RAG chatbot — BatchEmbedder + Qdrant
+│   ├── rag_batch_index/         Interactive RAG chatbot — BatchEmbedder + Qdrant
+│   └── streaming/               Real-time token streaming — text and tool-call paths
 └── internal/testutil/           Shared mocks
 ```
 
@@ -737,6 +738,7 @@ goagent.WithHooks(goagent.Hooks{
     OnProviderResponse:  func(ctx context.Context, iteration int, event goagent.ProviderEvent)                  { /* ... */ },
     OnIterationStart:    func(ctx context.Context, i int)                                                       { /* ... */ },
     OnThinking:          func(ctx context.Context, text string)                                                 { /* ... */ },
+    OnThinkingText:      func(ctx context.Context, token string)                                                { /* ... */ },
     OnToolCall:          func(ctx context.Context, name string, args map[string]any)                            { /* ... */ },
     OnToolResult:        func(ctx context.Context, name string, _ []goagent.ContentBlock, d time.Duration, err error) { /* ... */ },
     OnCircuitOpen:       func(ctx context.Context, toolName string, openUntil time.Time)                        { /* ... */ },
@@ -840,6 +842,54 @@ This records spans and RED metrics for every `Upsert`, `Search`, `Delete`, `Coun
 | `goagent.vector.bulk_upsert.batch_size` | Histogram | {entry} | Entries per bulk call |
 | `goagent.vector.errors` | Counter | {error} | Error rate by `operation` |
 
+### Streaming
+
+Stream tokens in real time instead of waiting for the complete response. Both Anthropic and Ollama providers support streaming.
+
+```go
+agent, _ := goagent.New(
+    goagent.WithProvider(ollama.New()),
+    goagent.WithModel("qwen3"),
+)
+
+_, err := agent.RunStream(ctx, "Write a short poem about Go.",
+    goagent.TextHandler(os.Stdout), // prints each token as it arrives
+)
+```
+
+`RunStream` returns the final accumulated text alongside any error. For multimodal input use `RunStreamBlocks`.
+
+The full `StreamHandler` signature — `func(StreamEvent) error` — lets you handle each event type individually:
+
+```go
+handler := func(e goagent.StreamEvent) error {
+    switch e.Type {
+    case goagent.StreamEventText:
+        fmt.Print(e.Text)
+    case goagent.StreamEventToolStart:
+        fmt.Printf("\n[calling %s]\n", e.ToolName)
+    case goagent.StreamEventDone:
+        fmt.Printf("\ntokens: %d in / %d out\n", e.Usage.InputTokens, e.Usage.OutputTokens)
+    }
+    return nil
+}
+
+_, err := agent.RunStream(ctx, prompt, handler)
+```
+
+Tool calls are still dispatched and their results fed back to the model automatically — streaming and the ReAct loop compose transparently.
+
+When extended thinking is enabled and the model reasons before a tool call, those reasoning tokens are suppressed by default. Pass `WithShowThinkingText` to forward them to the handler:
+
+```go
+_, err := agent.RunStream(ctx, prompt,
+    goagent.TextHandler(os.Stdout),
+    goagent.WithShowThinkingText(true),
+)
+```
+
+`Hooks.OnThinkingText` fires per reasoning token when `WithShowThinkingText(true)` is active, complementing `OnThinking` (which fires once with the full block after it completes).
+
 ### Multimodal input
 
 ```go
@@ -902,8 +952,8 @@ case errors.As(err, &provErr):
 
 | Provider | Package | Notes |
 |---|---|---|
-| Anthropic | `providers/anthropic` | Reads `ANTHROPIC_API_KEY`; supports text, images (5 MB), PDFs (32 MB) |
-| Ollama | `providers/ollama` | Default `http://localhost:11434/v1`; supports text and images; includes `NewEmbedder` |
+| Anthropic | `providers/anthropic` | Reads `ANTHROPIC_API_KEY`; supports text, images (5 MB), PDFs (32 MB); streaming via SSE |
+| Ollama | `providers/ollama` | Default `http://localhost:11434/v1`; supports text and images; streaming via NDJSON; includes `NewEmbedder` |
 | Voyage AI | `providers/voyage` | Reads `VOYAGE_API_KEY`; embedder only (e.g. `"voyage-3"`) |
 
 ## License
