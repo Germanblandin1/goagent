@@ -33,6 +33,7 @@ PURE_MODULES=(
   memory/vector/pgvector
   memory/vector/qdrant
   memory/vector/tiktoken
+  orchestration
   otel
   providers/anthropic
   providers/ollama
@@ -48,6 +49,7 @@ ALL_MODULES=(
   memory/vector/qdrant
   memory/vector/sqlitevec
   memory/vector/tiktoken
+  orchestration
   otel
   providers/anthropic
   providers/ollama
@@ -245,6 +247,7 @@ check_coverage coverage-rag.out   80 "rag"
 
 # Sub-packages: >=70%
 check_coverage coverage-mcp.out                          70 "mcp"
+check_coverage coverage-orchestration.out                70 "orchestration"
 check_coverage coverage-otel.out                         70 "otel"
 check_coverage coverage-ratelimit.out                    70 "ratelimit"
 check_coverage coverage-providers-anthropic.out          70 "providers/anthropic"

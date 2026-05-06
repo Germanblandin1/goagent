@@ -59,6 +59,7 @@ jobs:
             "memory/vector/qdrant/$VERSION"
             "memory/vector/sqlitevec/$VERSION"
             "memory/vector/tiktoken/$VERSION"
+            "orchestration/$VERSION"
             "otel/$VERSION"
             "providers/anthropic/$VERSION"
             "providers/ollama/$VERSION"

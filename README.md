@@ -19,6 +19,7 @@ Each sub-module is versioned and installed independently.
 
 | Module | Description |
 |--------|-------------|
+| [orchestration](orchestration/) | Multi-agent coordination — Pipeline, Graph, ParallelGroup, Supervisor |
 | [providers/anthropic](providers/anthropic/README.md) | Anthropic Messages API provider (Claude) |
 | [providers/ollama](providers/ollama/README.md) | Local Ollama provider + embedder |
 | [providers/voyage](providers/voyage/README.md) | Voyage AI embedder |
@@ -56,18 +57,23 @@ goagent/              Core — Agent, ReAct loop, interfaces
 │   └── vector/       VectorStore, chunkers, similarity, size estimators
 │       ├── pgvector/ Persistent VectorStore — PostgreSQL + pgvector (HNSW)
 │       └── sqlitevec/ Persistent VectorStore — SQLite + sqlite-vec (CGO)
+├── orchestration/    Multi-agent coordination — Pipeline, Graph, ParallelGroup, Supervisor
 ├── providers/
 │   ├── anthropic/    Anthropic Messages API (Claude)
 │   ├── ollama/       Local Ollama via OpenAI-compatible API (+ embedder)
 │   └── voyage/       Voyage AI embedder
 ├── rag/              RAG pipeline — Pipeline, NewTool, observers, formatters
 ├── examples/
-│   ├── calculator/           Tool use with arithmetic
-│   ├── chatbot/              Multi-turn conversation
-│   ├── chatbot-persistent/   Persistent memory across sessions
-│   ├── chatbot-mcp-fs/       Filesystem access via MCP stdio
-│   └── rag_batch_index/      Interactive RAG chatbot — BatchEmbedder + Qdrant
-└── internal/testutil/        Shared mocks
+│   ├── calculator/              Tool use with arithmetic
+│   ├── chatbot/                 Multi-turn conversation
+│   ├── chatbot-persistent/      Persistent memory across sessions
+│   ├── chatbot-mcp-fs/          Filesystem access via MCP stdio
+│   ├── graph-conditional-parallel/ Graph with in-node conditional parallelism
+│   ├── graph-loop-judge/        Judge-loop pattern with a Graph
+│   ├── graph-nested/            Nested Pipeline inside a Graph node
+│   ├── multi-agent/             Supervisor coordinating worker agents
+│   └── rag_batch_index/         Interactive RAG chatbot — BatchEmbedder + Qdrant
+└── internal/testutil/           Shared mocks
 ```
 
 ## Core concepts
@@ -470,6 +476,191 @@ pipeline, _ := rag.NewPipeline(
 ```
 
 The same optimization applies to `LongTermMemory.Store()` — when `BatchEmbedder` is available, all chunks from a turn are embedded in one call.
+
+### Multi-Agent Orchestration
+
+The `orchestration` sub-module coordinates multiple agents in structured workflows.
+
+```bash
+go get github.com/Germanblandin1/goagent/orchestration
+```
+
+```go
+import "github.com/Germanblandin1/goagent/orchestration"
+```
+
+**Choose the right primitive:**
+
+| Primitive | When to use |
+|-----------|-------------|
+| `Pipeline` | Linear, deterministic flow — stages run in order |
+| `Graph` | Dynamic routing — nodes return the next node name; supports branching and loops |
+| `ParallelGroup` | All stages run concurrently |
+| `Supervisor` | LLM decides which workers to call and in what order |
+
+#### Pipeline — sequential stages
+
+```go
+pipeline := orchestration.NewPipeline(
+    orchestration.WithStages(
+        orchestration.Stage("research", orchestration.AgentStage(
+            researcherAgent,
+            orchestration.GoalOnly,
+        )),
+        orchestration.Stage("code", orchestration.AgentStage(
+            coderAgent,
+            orchestration.OutputOf("research"), // reads previous stage output
+        )),
+    ),
+)
+
+sc, err := pipeline.Run(ctx, "implement a REST API endpoint")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(sc.Outputs()) // map["research": "...", "code": "..."]
+```
+
+`AgentStage` uses the `Stage` name as the output key automatically. `OutputOf("research")` reads the previous stage's output to feed it forward. Use `GoalOnly` for the first stage.
+
+#### Graph — dynamic routing with branching and loops
+
+```go
+graph, err := orchestration.NewGraph(
+    orchestration.WithStart("generate"),
+    orchestration.WithMaxIterations(10),
+    orchestration.WithNode("generate", func(ctx context.Context, sc *orchestration.StageContext) (string, error) {
+        output, err := coderAgent.Run(ctx, sc.Goal)
+        if err != nil {
+            return "", err
+        }
+        sc.SetOutput("code", output)
+        return "review", nil
+    }, orchestration.WithToNodes("review")),
+    orchestration.WithNode("review", func(ctx context.Context, sc *orchestration.StageContext) (string, error) {
+        code, _ := sc.RequireOutput("code")
+        verdict, err := reviewerAgent.Run(ctx, "Review this code:\n"+code)
+        if err != nil {
+            return "", err
+        }
+        if strings.Contains(verdict, "APPROVED") {
+            return "", nil // end graph
+        }
+        sc.SetArtifact("feedback", verdict)
+        return "generate", nil // loop back
+    }, orchestration.WithToNodes("generate", "")),
+)
+if err != nil {
+    log.Fatal(err)
+}
+
+sc, err := graph.Run(ctx, "implement a REST API endpoint")
+```
+
+Returning `""` from a `NodeFunc` terminates the graph. `WithToNodes` declares edges for `Graph.Mermaid()` and is validated at construction time. `WithMaxCycles(n)` limits per-node executions.
+
+#### ParallelGroup — concurrent stages
+
+```go
+group := orchestration.NewParallelGroup(
+    orchestration.WithParallelStages(
+        orchestration.Stage("tests",  testerAdapter),
+        orchestration.Stage("docs",   docsAdapter),
+        orchestration.Stage("review", reviewAdapter),
+    ),
+    orchestration.WithMaxConcurrency(2), // at most 2 stages at a time
+    orchestration.WithStrictKeys(),      // detect key collisions in dev
+)
+
+sc, err := group.Run(ctx, "finalise the REST API")
+```
+
+All stages share the same `StageContext` — writes are mutex-safe. `PanicError` is returned when a stage panics (wraps the recovered value). All stage errors are collected and joined before returning.
+
+#### Supervisor — emergent LLM delegation
+
+```go
+supervisor, err := orchestration.NewSupervisor(
+    "result",  // output key
+    nil,       // PromptBuilder — nil uses GoalOnly
+    []orchestration.Worker{
+        {
+            Name:             "researcher",
+            Description:      "Researches technical topics and APIs in depth.",
+            InputDescription: "The topic to research. Include technology name and version.",
+            Agent:            researcherAgent,
+        },
+        {
+            Name:             "coder",
+            Description:      "Writes idiomatic Go code.",
+            InputDescription: "Goal and any research context. Include design constraints.",
+            Agent:            coderAgent,
+        },
+    },
+    goagent.WithProvider(provider),
+    goagent.WithModel("claude-sonnet-4-6"),
+    goagent.WithSystemPrompt("You are a software coordinator. Use your tools to complete the task."),
+)
+if err != nil {
+    log.Fatal(err)
+}
+defer supervisor.(*orchestration.AgentAdapter) // supervisor implements Executor
+
+sc := orchestration.NewStageContext("implement a REST API endpoint")
+if err := supervisor.RunWithContext(ctx, sc); err != nil {
+    log.Fatal(err)
+}
+fmt.Println(sc.Outputs()["result"])
+```
+
+The supervisor LLM decides which workers to invoke, in what order, and whether to call multiple workers in the same turn (parallel dispatch via the ReAct tool fan-out). `InputDescription` is the most important field — the more specific, the better the supervisor's routing decisions.
+
+#### Node middleware (Graph only)
+
+```go
+orchestration.WithNode("call_api", apiFunc,
+    orchestration.WithNodeMiddleware(orchestration.TimeoutMiddleware(30*time.Second)),
+    orchestration.WithNodeMiddleware(orchestration.RetryMiddleware(goagent.RetryPolicy{
+        MaxAttempts: 5,
+        Retryable:   func(err error) bool { return isRateLimitErr(err) },
+    })),
+)
+// execution order: TimeoutMiddleware → RetryMiddleware → apiFunc
+```
+
+| Middleware | Purpose |
+|-----------|---------|
+| `RetryMiddleware(policy)` | Exponential backoff with jitter; `RetryAfter` support for HTTP 429 |
+| `TimeoutMiddleware(d)` | Per-invocation `context.WithTimeout` |
+| `RecoverMiddleware` | Converts panics to errors with stack trace |
+
+#### Observability hooks
+
+```go
+hooks := orchestration.OrchestrationHooks{
+    OnStageStart: func(ctx context.Context, name string) context.Context {
+        ctx, _ = tracer.Start(ctx, "stage."+name)
+        return ctx
+    },
+    OnStageEnd: func(ctx context.Context, name string, dur time.Duration, err error) {
+        trace.SpanFromContext(ctx).End()
+    },
+    OnNodeEnter: func(ctx context.Context, name string) context.Context {
+        ctx, _ = tracer.Start(ctx, "node."+name)
+        return ctx
+    },
+    OnNodeExit: func(ctx context.Context, name, next string, dur time.Duration, err error) {
+        trace.SpanFromContext(ctx).End()
+    },
+}
+
+pipeline := orchestration.NewPipeline(
+    orchestration.WithStages(/* … */),
+    orchestration.WithPipelineHooks(hooks),
+)
+```
+
+On*Start hooks return a `context.Context` that is forwarded to the executor or node, so OTel spans nest correctly without importing OTel in the orchestration package. Compose multiple hook sets with `MergeOrchestrationHooks`.
 
 ### Extended thinking & effort
 

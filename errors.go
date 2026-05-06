@@ -11,6 +11,21 @@ import (
 // registered with the agent.
 var ErrToolNotFound = errors.New("tool not found")
 
+// TransientError can be implemented by errors that self-classify as transient
+// (worth retrying) or permanent (not worth retrying). RetryPolicy consults
+// this interface when no Retryable function is set, so callers get informed
+// retry decisions without having to wire a Retryable predicate into every policy.
+//
+// Possible improvement: annotate library error types with IsTransient() based
+// on their semantic category — for example, ProviderError wrapping a network
+// failure → transient; UnsupportedContentError → permanent; CircuitOpenError →
+// permanent. Providers could expose an HTTPStatusIsTransient helper that maps
+// 429/5xx → transient and 4xx → permanent, so the right behaviour comes for
+// free without any caller configuration.
+type TransientError interface {
+	IsTransient() bool
+}
+
 // MaxIterationsError is returned by Run when the agent exhausts its iteration
 // budget without producing a final answer.
 type MaxIterationsError struct {
