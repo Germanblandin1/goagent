@@ -405,6 +405,40 @@ func TestRetryMiddleware_retryableStopsEarly(t *testing.T) {
 	}
 }
 
+// --- TransientError interface ---
+
+type permanentNodeErr struct{ msg string }
+
+func (e *permanentNodeErr) Error() string     { return e.msg }
+func (e *permanentNodeErr) IsTransient() bool { return false }
+
+func TestRetryMiddleware_PermanentTransientError_StopsAfterOneAttempt(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	graph, _ := orchestration.NewGraph(
+		orchestration.WithStart("work"),
+		orchestration.WithNode("work",
+			func(_ context.Context, _ *orchestration.StageContext) (string, error) {
+				attempts++
+				return "", &permanentNodeErr{"validation failed"}
+			},
+			orchestration.WithNodeMiddleware(orchestration.RetryMiddleware(goagent.RetryPolicy{
+				MaxAttempts:  5,
+				InitialDelay: time.Millisecond,
+			})),
+		),
+	)
+
+	_, err := graph.Run(context.Background(), "goal")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if attempts != 1 {
+		t.Errorf("attempts = %d, want 1 (permanent error must not be retried)", attempts)
+	}
+}
+
 func TestRetryMiddleware_defaultPolicyApplied(t *testing.T) {
 	t.Parallel()
 

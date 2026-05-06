@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -83,6 +84,10 @@ func RetryMiddleware(policy goagent.RetryPolicy) NodeMiddleware {
 				lastErr = err
 
 				if p.Retryable != nil && !p.Retryable(lastErr) {
+					return "", lastErr
+				}
+				var te goagent.TransientError
+				if errors.As(lastErr, &te) && !te.IsTransient() {
 					return "", lastErr
 				}
 

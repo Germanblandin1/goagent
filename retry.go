@@ -2,6 +2,7 @@ package goagent
 
 import (
 	"context"
+	"errors"
 	"math"
 	"math/rand/v2"
 	"time"
@@ -92,7 +93,7 @@ func (r *retryProvider) Complete(ctx context.Context, req CompletionRequest) (Co
 			return lastResp, nil
 		}
 
-		if r.policy.Retryable != nil && !r.policy.Retryable(lastErr) {
+		if !shouldRetry(lastErr, r.policy.Retryable) {
 			return lastResp, lastErr
 		}
 
@@ -194,6 +195,21 @@ func backoffDelay(attempt int, err error, p RetryPolicy) time.Duration {
 	delay += jitter
 
 	return time.Duration(delay)
+}
+
+// shouldRetry reports whether err warrants another attempt.
+// Priority: explicit Retryable hook > TransientError interface > default (retry).
+// Unknown errors (those that implement neither) are retried to preserve
+// backward-compatible behaviour.
+func shouldRetry(err error, retryable func(error) bool) bool {
+	if retryable != nil {
+		return retryable(err)
+	}
+	var te TransientError
+	if errors.As(err, &te) {
+		return te.IsTransient()
+	}
+	return true
 }
 
 // sleepCtx blocks for d or until ctx is cancelled, whichever comes first.

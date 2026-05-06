@@ -383,6 +383,93 @@ func TestRetryTool_RespectsContextCancellation(t *testing.T) {
 	}
 }
 
+// --- TransientError interface ---
+
+type permanentErr struct{ msg string }
+
+func (e *permanentErr) Error() string     { return e.msg }
+func (e *permanentErr) IsTransient() bool { return false }
+
+type transientErr struct{ msg string }
+
+func (e *transientErr) Error() string     { return e.msg }
+func (e *transientErr) IsTransient() bool { return true }
+
+func TestRetryProvider_PermanentTransientError_StopsAfterOneAttempt(t *testing.T) {
+	t.Parallel()
+
+	ep := &failingProvider{
+		inner:   testutil.NewMockProvider(),
+		failFor: 100,
+		err:     &permanentErr{"validation failed"},
+	}
+
+	provider := goagent.RetryProvider(ep, goagent.RetryPolicy{
+		MaxAttempts:  5,
+		InitialDelay: time.Millisecond,
+	})
+
+	_, err := provider.Complete(context.Background(), goagent.CompletionRequest{})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if ep.callCount() != 1 {
+		t.Errorf("call count = %d, want 1 (permanent error must not be retried)", ep.callCount())
+	}
+}
+
+func TestRetryProvider_TransientTransientError_Retries(t *testing.T) {
+	t.Parallel()
+
+	mp := testutil.NewMockProvider(endTurnResp("ok"))
+	ep := &failingProvider{
+		inner:   mp,
+		failFor: 2,
+		err:     &transientErr{"network hiccup"},
+	}
+
+	provider := goagent.RetryProvider(ep, goagent.RetryPolicy{
+		MaxAttempts:  3,
+		InitialDelay: time.Millisecond,
+	})
+
+	resp, err := provider.Complete(context.Background(), goagent.CompletionRequest{})
+	if err != nil {
+		t.Fatalf("expected success after retries, got: %v", err)
+	}
+	if resp.Message.TextContent() != "ok" {
+		t.Errorf("response = %q, want %q", resp.Message.TextContent(), "ok")
+	}
+	if ep.callCount() != 3 {
+		t.Errorf("call count = %d, want 3", ep.callCount())
+	}
+}
+
+func TestRetryProvider_RetryableTakesPrecedenceOverTransientError(t *testing.T) {
+	t.Parallel()
+
+	// permanentErr claims IsTransient()=false, but Retryable overrides to true.
+	ep := &failingProvider{
+		inner:   testutil.NewMockProvider(endTurnResp("ok")),
+		failFor: 1,
+		err:     &permanentErr{"should be overridden"},
+	}
+
+	provider := goagent.RetryProvider(ep, goagent.RetryPolicy{
+		MaxAttempts:  2,
+		InitialDelay: time.Millisecond,
+		Retryable:    func(error) bool { return true }, // explicit override
+	})
+
+	_, err := provider.Complete(context.Background(), goagent.CompletionRequest{})
+	if err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+	if ep.callCount() != 2 {
+		t.Errorf("call count = %d, want 2 (Retryable must take precedence)", ep.callCount())
+	}
+}
+
 func TestRetryTool_PreservesDefinition(t *testing.T) {
 	t.Parallel()
 
