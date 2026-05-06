@@ -39,6 +39,47 @@ func TestNewGraph_startNotRegistered_returnsError(t *testing.T) {
 	}
 }
 
+func TestNewGraph_withToNodes_unknownDestination_returnsError(t *testing.T) {
+	_, err := orchestration.NewGraph(
+		orchestration.WithStart("a"),
+		orchestration.WithNode("a",
+			func(_ context.Context, _ *orchestration.StageContext) (string, error) {
+				return "", nil
+			},
+			orchestration.WithToNodes("b", "typo"), // "b" exists, "typo" does not
+		),
+		orchestration.WithNode("b", func(_ context.Context, _ *orchestration.StageContext) (string, error) {
+			return "", nil
+		}),
+	)
+
+	if err == nil {
+		t.Fatal("expected error for undeclared destination in WithToNodes, got nil")
+	}
+	if !strings.Contains(err.Error(), "typo") {
+		t.Errorf("error should mention the unknown node name, got: %v", err)
+	}
+}
+
+func TestNewGraph_withToNodes_emptyStringIsValidEnd(t *testing.T) {
+	_, err := orchestration.NewGraph(
+		orchestration.WithStart("a"),
+		orchestration.WithNode("a",
+			func(_ context.Context, _ *orchestration.StageContext) (string, error) {
+				return "", nil
+			},
+			orchestration.WithToNodes("b", ""), // "" is the END terminal — always valid
+		),
+		orchestration.WithNode("b", func(_ context.Context, _ *orchestration.StageContext) (string, error) {
+			return "", nil
+		}),
+	)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // --- Basic execution ---
 
 func TestGraph_SingleNode_runsAndEnds(t *testing.T) {

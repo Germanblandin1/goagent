@@ -76,6 +76,10 @@ func WithMaxCycles(n int) NodeOption {
 // regardless of whether edges are declared here.
 // Used by Mermaid() to generate the flow diagram.
 // Pass "" to represent the END terminal node.
+//
+// NewGraph validates that every non-empty name listed here refers to a node
+// registered with WithNode. This converts typos in node names into construction
+// errors rather than silent runtime failures.
 func WithToNodes(names ...string) NodeOption {
 	return func(e *nodeEntry) {
 		e.toNodes = names
@@ -159,6 +163,11 @@ func WithMaxIterations(n int) GraphOption {
 // Returns an error if:
 //   - WithStart was not called
 //   - the start node was not registered with WithNode
+//   - any name listed in WithToNodes is not a registered node (excluding "",
+//     which represents the END terminal)
+//
+// The third check converts typos in declared edges into construction errors,
+// keeping runtime surprises to a minimum.
 func NewGraph(opts ...GraphOption) (*Graph, error) {
 	g := &Graph{
 		nodes:         make(map[string]nodeEntry),
@@ -172,6 +181,16 @@ func NewGraph(opts ...GraphOption) (*Graph, error) {
 	}
 	if _, ok := g.nodes[g.start]; !ok {
 		return nil, fmt.Errorf("graph: start node %q not registered", g.start)
+	}
+	for name, entry := range g.nodes {
+		for _, dest := range entry.toNodes {
+			if dest == "" {
+				continue // "" is the END terminal — always valid
+			}
+			if _, ok := g.nodes[dest]; !ok {
+				return nil, fmt.Errorf("graph: node %q declares edge to %q via WithToNodes, but %q is not registered", name, dest, dest)
+			}
+		}
 	}
 	return g, nil
 }
