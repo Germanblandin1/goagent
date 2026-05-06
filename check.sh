@@ -159,7 +159,7 @@ for mod in "${TIDY_MODULES[@]}"; do
   else
     pushd "$ROOT/$mod" > /dev/null
   fi
-  go mod tidy
+  GOWORK=off go mod tidy
   FILES="go.mod"
   [[ -f go.sum ]] && FILES="go.mod go.sum"
   # shellcheck disable=SC2086
