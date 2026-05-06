@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"runtime/debug"
 	"time"
 
 	"github.com/Germanblandin1/goagent"
@@ -182,7 +183,7 @@ func RecoverMiddleware(next NodeFunc) NodeFunc {
 	return func(ctx context.Context, sc *StageContext) (nextNode string, err error) {
 		defer func() {
 			if r := recover(); r != nil {
-				err = fmt.Errorf("node panic: %v", r)
+				err = fmt.Errorf("node panic: %v\n%s", r, debug.Stack())
 			}
 		}()
 		return next(ctx, sc)
