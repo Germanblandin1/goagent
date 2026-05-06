@@ -1512,6 +1512,9 @@ func TestMergeHooks_AllHookFields(t *testing.T) {
 		OnShortTermAppend:  func(_ context.Context, m int, d time.Duration, e error) { called["OnShortTermAppend"]++ },
 		OnLongTermRetrieve: func(_ context.Context, r []goagent.ScoredMessage, d time.Duration, e error) { called["OnLongTermRetrieve"]++ },
 		OnLongTermStore:    func(_ context.Context, m int, d time.Duration, e error) { called["OnLongTermStore"]++ },
+		OnStreamStart:      func(_ context.Context, i int) { called["OnStreamStart"]++ },
+		OnStreamToken:      func(_ context.Context, token string) { called["OnStreamToken"]++ },
+		OnThinkingText:     func(_ context.Context, token string) { called["OnThinkingText"]++ },
 	}
 
 	merged := goagent.MergeHooks(h, h) // merge with itself — each should be called twice
@@ -1532,12 +1535,16 @@ func TestMergeHooks_AllHookFields(t *testing.T) {
 	merged.OnShortTermAppend(bg, 0, 0, nil)
 	merged.OnLongTermRetrieve(bg, nil, 0, nil)
 	merged.OnLongTermStore(bg, 0, 0, nil)
+	merged.OnStreamStart(bg, 0)
+	merged.OnStreamToken(bg, "tok")
+	merged.OnThinkingText(bg, "think")
 
 	hooks := []string{
 		"OnRunStart", "OnRunEnd", "OnProviderRequest", "OnProviderResponse",
 		"OnIterationStart", "OnThinking", "OnToolCall", "OnToolResult",
 		"OnCircuitOpen", "OnResponse", "OnShortTermLoad", "OnShortTermAppend",
 		"OnLongTermRetrieve", "OnLongTermStore",
+		"OnStreamStart", "OnStreamToken", "OnThinkingText",
 	}
 	for _, name := range hooks {
 		if called[name] != 2 {

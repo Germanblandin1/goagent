@@ -2,8 +2,10 @@ package goagent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Germanblandin1/goagent/internal/session"
@@ -566,6 +568,467 @@ func (a *Agent) persistTurn(rctx runContexts, messages []Message, historyLen int
 			}
 		}
 	}
+}
+
+// RunStream executes the ReAct loop with real token-by-token streaming of the
+// final text response. Each token is delivered to handler as it arrives from
+// the model, not buffered until the end.
+//
+// Differences from Run:
+//   - Intermediate iterations (with tool calls) are not streamed to the handler.
+//   - Only the final text response is streamed token by token.
+//   - If the provider does not implement StreamingProvider, falls back to
+//     Complete() and delivers the full response as a single StreamEventText.
+//
+// Pass StreamOption values to control behavior (e.g. WithShowThinkingText).
+// If handler is nil, RunStream behaves exactly like Run.
+//
+// Possible errors: same as Run.
+func (a *Agent) RunStream(ctx context.Context, prompt string, handler StreamHandler, opts ...StreamOption) (string, error) {
+	return a.runStream(ctx, []ContentBlock{TextBlock(prompt)}, handler, opts...)
+}
+
+// RunStreamBlocks is the multimodal variant of RunStream.
+func (a *Agent) RunStreamBlocks(ctx context.Context, content []ContentBlock, handler StreamHandler, opts ...StreamOption) (string, error) {
+	if len(content) == 0 {
+		return "", errors.New("goagent: RunStreamBlocks requires at least one content block")
+	}
+	if err := validateBlocks(content); err != nil {
+		return "", err
+	}
+	return a.runStream(ctx, content, handler, opts...)
+}
+
+// runStream is the streaming variant of run. The loop mirrors run exactly;
+// the only difference is that provider calls use CompleteStream when the
+// provider implements StreamingProvider.
+func (a *Agent) runStream(ctx context.Context, content []ContentBlock, handler StreamHandler, rawOpts ...StreamOption) (string, error) {
+	streamOpts := defaultStreamOptions()
+	for _, o := range rawOpts {
+		o(&streamOpts)
+	}
+
+	if a.opts.provider == nil {
+		return "", errors.New("goagent: no provider configured; use WithProvider")
+	}
+
+	runStart := time.Now()
+
+	if a.opts.name != "" {
+		var err error
+		ctx, err = session.NewContext(ctx, a.opts.name)
+		if err != nil {
+			return "", fmt.Errorf("goagent: invalid agent name %q: %w", a.opts.name, err)
+		}
+	}
+
+	a.opts.logger.InfoContext(ctx, "run started",
+		"model", a.opts.model,
+		"max_iterations", a.opts.maxIterations,
+		"tool_count", len(a.opts.tools),
+	)
+
+	rctx := runContexts{io: ctx}
+	if fn := a.opts.hooks.OnRunStart; fn != nil {
+		if enriched := fn(ctx); enriched != nil {
+			rctx.hook = enriched
+		} else {
+			rctx.hook = ctx
+		}
+	} else {
+		rctx.hook = ctx
+	}
+
+	var (
+		totalUsage     Usage
+		totalToolCalls int
+		totalToolTime  time.Duration
+		iterations     int
+		runErr         error
+		lastContent    string
+	)
+
+	finishRun := func() {
+		result := RunResult{
+			Duration:   time.Since(runStart),
+			Iterations: iterations,
+			TotalUsage: totalUsage,
+			ToolCalls:  totalToolCalls,
+			ToolTime:   totalToolTime,
+			Err:        runErr,
+		}
+		a.opts.logger.InfoContext(rctx.io, "run completed",
+			"duration", result.Duration,
+			"iterations", result.Iterations,
+			"input_tokens", result.TotalUsage.InputTokens,
+			"output_tokens", result.TotalUsage.OutputTokens,
+			"tool_calls", result.ToolCalls,
+			"error", result.Err,
+		)
+		if fn := a.opts.hooks.OnRunEnd; fn != nil {
+			fn(rctx.hook, result)
+		}
+		if a.opts.runResult != nil {
+			*a.opts.runResult = result
+		}
+	}
+
+	messages, historyLen, err := a.buildMessages(rctx, content)
+	if err != nil {
+		runErr = err
+		finishRun()
+		return "", err
+	}
+
+	toolDefs := make([]ToolDefinition, 0, len(a.opts.tools))
+	for _, t := range a.opts.tools {
+		toolDefs = append(toolDefs, t.Definition())
+	}
+
+	sp, supportsStream := a.opts.provider.(StreamingProvider)
+
+	for i := 0; i < a.opts.maxIterations; i++ {
+		iterations = i + 1
+
+		select {
+		case <-rctx.io.Done():
+			a.opts.logger.InfoContext(rctx.io, "run cancelled",
+				"iteration", i+1,
+				"reason", rctx.io.Err(),
+			)
+			runErr = rctx.io.Err()
+			finishRun()
+			return "", runErr
+		default:
+		}
+
+		if fn := a.opts.hooks.OnIterationStart; fn != nil {
+			fn(rctx.hook, i)
+		}
+
+		req := CompletionRequest{
+			Model:        a.opts.model,
+			SystemPrompt: a.opts.systemPrompt,
+			Messages:     messages,
+			Tools:        toolDefs,
+			Thinking:     a.opts.thinking,
+			Effort:       a.opts.effort,
+		}
+
+		if fn := a.opts.hooks.OnProviderRequest; fn != nil {
+			fn(rctx.hook, i, req.Model, len(req.Messages))
+		}
+
+		a.opts.logger.DebugContext(rctx.io, "provider request",
+			"iteration", i+1,
+			"model", req.Model,
+			"message_count", len(req.Messages),
+		)
+
+		provStart := time.Now()
+
+		if supportsStream {
+			if fn := a.opts.hooks.OnStreamStart; fn != nil {
+				fn(rctx.hook, i)
+			}
+
+			text, toolCalls, usage, stopReason, serr := a.completeWithStream(rctx, sp, req, handler, streamOpts)
+			provDuration := time.Since(provStart)
+
+			if serr != nil {
+				a.opts.logger.WarnContext(rctx.io, "provider error",
+					"iteration", i+1,
+					"duration", provDuration,
+					"error", serr,
+				)
+				if fn := a.opts.hooks.OnProviderResponse; fn != nil {
+					fn(rctx.hook, i, ProviderEvent{Duration: provDuration, Err: serr})
+				}
+				runErr = &ProviderError{Cause: serr}
+				finishRun()
+				return "", runErr
+			}
+
+			totalUsage.add(usage)
+			lastContent = text
+
+			a.opts.logger.DebugContext(rctx.io, "provider response",
+				"iteration", i+1,
+				"duration", provDuration,
+				"input_tokens", usage.InputTokens,
+				"output_tokens", usage.OutputTokens,
+				"stop_reason", stopReason,
+				"tool_calls", len(toolCalls),
+			)
+
+			if fn := a.opts.hooks.OnProviderResponse; fn != nil {
+				fn(rctx.hook, i, ProviderEvent{
+					Duration:   provDuration,
+					Usage:      usage,
+					StopReason: stopReason,
+					ToolCalls:  len(toolCalls),
+				})
+			}
+
+			assistantMsg := Message{
+				Role:      RoleAssistant,
+				Content:   []ContentBlock{},
+				ToolCalls: toolCalls,
+			}
+			if text != "" {
+				assistantMsg.Content = append(assistantMsg.Content, TextBlock(text))
+			}
+			messages = append(messages, assistantMsg)
+
+			if len(toolCalls) == 0 {
+				if fn := a.opts.hooks.OnResponse; fn != nil {
+					fn(rctx.hook, lastContent, i+1)
+				}
+				finishRun()
+				a.persistTurn(rctx, messages, historyLen, lastContent)
+				return lastContent, nil
+			}
+
+			if fn := a.opts.hooks.OnToolCall; fn != nil {
+				for _, tc := range toolCalls {
+					fn(rctx.hook, tc.Name, tc.Arguments)
+				}
+			}
+
+			results := a.dispatcher.dispatch(rctx, toolCalls)
+
+			if fn := a.opts.hooks.OnToolResult; fn != nil {
+				for _, r := range results {
+					fn(rctx.hook, r.Name, r.Content, r.Duration, r.Err)
+				}
+			}
+
+			totalToolCalls += len(results)
+			for _, r := range results {
+				totalToolTime += r.Duration
+			}
+
+			for _, r := range results {
+				var toolContent []ContentBlock
+				if r.Err != nil {
+					toolContent = []ContentBlock{TextBlock(fmt.Sprintf("Error: %s", r.Err.Error()))}
+				} else {
+					toolContent = r.Content
+				}
+				messages = append(messages, Message{
+					Role:       RoleTool,
+					Content:    toolContent,
+					ToolCallID: r.ToolCallID,
+				})
+			}
+			continue
+		}
+
+		// Fallback: provider does not support streaming.
+		resp, err := a.opts.provider.Complete(rctx.io, req)
+		provDuration := time.Since(provStart)
+
+		if err != nil {
+			a.opts.logger.WarnContext(rctx.io, "provider error",
+				"iteration", i+1,
+				"duration", provDuration,
+				"error", err,
+			)
+			if fn := a.opts.hooks.OnProviderResponse; fn != nil {
+				fn(rctx.hook, i, ProviderEvent{Duration: provDuration, Err: err})
+			}
+			runErr = &ProviderError{Cause: err}
+			finishRun()
+			return "", runErr
+		}
+
+		totalUsage.add(resp.Usage)
+		messages = append(messages, resp.Message)
+		lastContent = resp.Message.TextContent()
+
+		a.opts.logger.DebugContext(rctx.io, "provider response",
+			"iteration", i+1,
+			"duration", provDuration,
+			"input_tokens", resp.Usage.InputTokens,
+			"output_tokens", resp.Usage.OutputTokens,
+			"stop_reason", resp.StopReason,
+			"tool_calls", len(resp.Message.ToolCalls),
+		)
+
+		if fn := a.opts.hooks.OnProviderResponse; fn != nil {
+			fn(rctx.hook, i, ProviderEvent{
+				Duration:   provDuration,
+				Usage:      resp.Usage,
+				StopReason: resp.StopReason,
+				ToolCalls:  len(resp.Message.ToolCalls),
+			})
+		}
+
+		if fn := a.opts.hooks.OnThinking; fn != nil {
+			for _, block := range resp.Message.Content {
+				if block.Type == ContentThinking && block.Thinking != nil {
+					fn(rctx.hook, block.Thinking.Thinking)
+				}
+			}
+		}
+
+		if resp.StopReason != StopReasonToolUse || len(resp.Message.ToolCalls) == 0 {
+			if handler != nil {
+				if herr := handler(StreamEvent{Type: StreamEventText, Text: lastContent}); herr != nil {
+					runErr = herr
+					finishRun()
+					return "", runErr
+				}
+			}
+			if fn := a.opts.hooks.OnResponse; fn != nil {
+				fn(rctx.hook, lastContent, i+1)
+			}
+			finishRun()
+			a.persistTurn(rctx, messages, historyLen, lastContent)
+			return lastContent, nil
+		}
+
+		if fn := a.opts.hooks.OnToolCall; fn != nil {
+			for _, tc := range resp.Message.ToolCalls {
+				fn(rctx.hook, tc.Name, tc.Arguments)
+			}
+		}
+
+		results := a.dispatcher.dispatch(rctx, resp.Message.ToolCalls)
+
+		if fn := a.opts.hooks.OnToolResult; fn != nil {
+			for _, r := range results {
+				fn(rctx.hook, r.Name, r.Content, r.Duration, r.Err)
+			}
+		}
+
+		totalToolCalls += len(results)
+		for _, r := range results {
+			totalToolTime += r.Duration
+		}
+
+		for _, r := range results {
+			var toolContent []ContentBlock
+			if r.Err != nil {
+				toolContent = []ContentBlock{TextBlock(fmt.Sprintf("Error: %s", r.Err.Error()))}
+			} else {
+				toolContent = r.Content
+			}
+			messages = append(messages, Message{
+				Role:       RoleTool,
+				Content:    toolContent,
+				ToolCallID: r.ToolCallID,
+			})
+		}
+	}
+
+	if fn := a.opts.hooks.OnResponse; fn != nil {
+		fn(rctx.hook, lastContent, a.opts.maxIterations)
+	}
+	runErr = &MaxIterationsError{
+		Iterations:  a.opts.maxIterations,
+		LastThought: lastContent,
+	}
+	finishRun()
+	a.persistTurn(rctx, messages, historyLen, lastContent)
+	return "", runErr
+}
+
+// completeWithStream executes a CompleteStream with real token-by-token streaming.
+// Each StreamEventText is delivered to handler immediately as it arrives.
+// Handler is not called during iterations that contain tool calls.
+func (a *Agent) completeWithStream(
+	rctx runContexts,
+	sp StreamingProvider,
+	req CompletionRequest,
+	handler StreamHandler,
+	opts StreamOptions,
+) (text string, toolCalls []ToolCall, usage Usage, stopReason StopReason, err error) {
+	stream, err := sp.CompleteStream(rctx.io, req)
+	if err != nil {
+		return "", nil, Usage{}, StopReasonEndTurn, err
+	}
+	defer stream.Close()
+
+	var textBuf strings.Builder
+	var toolBuf map[string]*streamToolAccumulator
+	var hasTools bool
+
+	for stream.Next(rctx.io) {
+		ev := stream.Event()
+		switch ev.Type {
+		case StreamEventToolStart:
+			hasTools = true
+			if toolBuf == nil {
+				toolBuf = make(map[string]*streamToolAccumulator)
+			}
+			toolBuf[ev.ToolID] = &streamToolAccumulator{
+				id:   ev.ToolID,
+				name: ev.ToolName,
+			}
+
+		case StreamEventText:
+			textBuf.WriteString(ev.Text)
+
+			if hasTools {
+				// Thinking text — model is reasoning before (or alongside) a tool call.
+				if opts.showThinkingText {
+					if handler != nil {
+						if herr := handler(ev); herr != nil {
+							return "", nil, Usage{}, StopReasonEndTurn, herr
+						}
+					}
+					if fn := a.opts.hooks.OnThinkingText; fn != nil {
+						fn(rctx.hook, ev.Text)
+					}
+				}
+				continue
+			}
+
+			// Final response in progress — emit immediately, not at end.
+			if handler != nil {
+				if herr := handler(ev); herr != nil {
+					return "", nil, Usage{}, StopReasonEndTurn, herr
+				}
+			}
+			if fn := a.opts.hooks.OnStreamToken; fn != nil {
+				fn(rctx.hook, ev.Text)
+			}
+
+		case StreamEventToolDelta:
+			if acc, ok := toolBuf[ev.ToolID]; ok {
+				acc.inputJSON = ev.InputDelta
+			}
+
+		case StreamEventDone:
+			usage = ev.Usage
+			stopReason = ev.StopReason
+		}
+	}
+
+	if serr := stream.Err(); serr != nil {
+		return "", nil, Usage{}, StopReasonEndTurn, serr
+	}
+
+	for _, acc := range toolBuf {
+		var args map[string]any
+		if acc.inputJSON != "" {
+			_ = json.Unmarshal([]byte(acc.inputJSON), &args)
+		}
+		toolCalls = append(toolCalls, ToolCall{
+			ID:        acc.id,
+			Name:      acc.name,
+			Arguments: args,
+		})
+	}
+
+	return textBuf.String(), toolCalls, usage, stopReason, nil
+}
+
+type streamToolAccumulator struct {
+	id        string
+	name      string
+	inputJSON string
 }
 
 // stripThinking returns a copy of msgs with all ContentThinking blocks

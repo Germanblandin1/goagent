@@ -49,6 +49,39 @@ func NewClient(opts ...ClientOption) *OllamaClient {
 	return c
 }
 
+// doStream marshals reqBody as JSON, POSTs it to baseURL+path, and returns the
+// raw *http.Response for streaming. The caller is responsible for closing
+// resp.Body. On non-200 status the body is consumed and closed before returning.
+func (c *OllamaClient) doStream(ctx context.Context, path string, reqBody any) (*http.Response, error) {
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("ollama: marshaling request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("ollama: creating request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		var errBody struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&errBody)
+		resp.Body.Close()
+		if errBody.Error != "" {
+			return nil, fmt.Errorf("ollama: status %d: %s", resp.StatusCode, errBody.Error)
+		}
+		return nil, fmt.Errorf("ollama: status %d", resp.StatusCode)
+	}
+	return resp, nil
+}
+
 // do marshals reqBody as JSON, POSTs it to baseURL+path, checks the HTTP
 // status, and decodes the response body into out.
 // On non-200 status it tries to decode {"error": "..."} from the body and

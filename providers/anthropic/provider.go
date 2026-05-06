@@ -61,18 +61,30 @@ func NewWithClient(client *AnthropicClient, opts ...ProviderOption) *Provider {
 //   - error wrapping the SDK error on API failures
 //   - error on message/tool conversion failures
 func (p *Provider) Complete(ctx context.Context, req goagent.CompletionRequest) (goagent.CompletionResponse, error) {
-	model := req.Model
-	if model == "" {
+	if req.Model == "" {
 		return goagent.CompletionResponse{}, fmt.Errorf("anthropic: model not set; use goagent.WithModel")
 	}
+	params, err := p.buildMessageParams(req)
+	if err != nil {
+		return goagent.CompletionResponse{}, err
+	}
+	resp, err := p.client.cl.Messages.New(ctx, params)
+	if err != nil {
+		return goagent.CompletionResponse{}, fmt.Errorf("anthropic completion: %w", err)
+	}
+	return toGoAgentResponse(resp), nil
+}
 
+// buildMessageParams converts a CompletionRequest to the Anthropic SDK params.
+// Used by both Complete and CompleteStream.
+func (p *Provider) buildMessageParams(req goagent.CompletionRequest) (sdk.MessageNewParams, error) {
 	messages, err := toAnthropicMessages(req.Messages)
 	if err != nil {
-		return goagent.CompletionResponse{}, fmt.Errorf("building messages: %w", err)
+		return sdk.MessageNewParams{}, fmt.Errorf("building messages: %w", err)
 	}
 
 	params := sdk.MessageNewParams{
-		Model:     sdk.Model(model),
+		Model:     sdk.Model(req.Model),
 		Messages:  messages,
 		MaxTokens: p.maxTokens,
 	}
@@ -90,13 +102,7 @@ func (p *Provider) Complete(ctx context.Context, req goagent.CompletionRequest) 
 
 	params.Thinking = buildThinkingParam(req.Thinking)
 	params.OutputConfig = buildOutputConfig(req.Effort)
-
-	resp, err := p.client.cl.Messages.New(ctx, params)
-	if err != nil {
-		return goagent.CompletionResponse{}, fmt.Errorf("anthropic completion: %w", err)
-	}
-
-	return toGoAgentResponse(resp), nil
+	return params, nil
 }
 
 // toAnthropicMessages converts goagent messages to Anthropic SDK messages.

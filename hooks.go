@@ -151,6 +151,32 @@ type Hooks struct {
 	// WritePolicy decided to persist the turn. Not called when the
 	// policy discards the turn.
 	OnLongTermStore func(ctx context.Context, msgs int, duration time.Duration, err error)
+
+	// OnStreamStart is called when RunStream initiates a streaming completion.
+	// iteration is the 0-indexed loop iteration in which the stream starts.
+	// Not called in iterations that produce tool calls without a final text response.
+	OnStreamStart func(ctx context.Context, iteration int)
+
+	// OnStreamToken is called for each text delta received from the stream
+	// that belongs to the final text response.
+	// token is the partial text (may be a single letter or several words).
+	// Use it for latency metrics such as Time To First Token (TTFT).
+	// Not called for thinking text — see OnThinkingText.
+	OnStreamToken func(ctx context.Context, token string)
+
+	// OnThinkingText is called when the model emits text in a block that
+	// precedes or coexists with a tool call in the same response.
+	// Only called when showThinkingText=true in StreamOptions (the default).
+	//
+	// Use it to distinguish reasoning text from the final response:
+	//
+	//   OnThinkingText: func(_ context.Context, token string) {
+	//       fmt.Printf("\033[90m%s\033[0m", token) // grey
+	//   },
+	//   OnStreamToken: func(_ context.Context, token string) {
+	//       fmt.Print(token) // white — final answer
+	//   },
+	OnThinkingText func(ctx context.Context, token string)
 }
 
 // MergeHooks combines multiple Hooks structs into one. For each hook field,
@@ -316,6 +342,36 @@ func MergeHooks(hooks ...Hooks) Hooks {
 			for i := range hooks {
 				if fn := hooks[i].OnLongTermStore; fn != nil {
 					fn(ctx, msgs, duration, err)
+				}
+			}
+		}
+	}
+
+	if anyHas(hooks, func(h *Hooks) bool { return h.OnStreamStart != nil }) {
+		merged.OnStreamStart = func(ctx context.Context, iteration int) {
+			for i := range hooks {
+				if fn := hooks[i].OnStreamStart; fn != nil {
+					fn(ctx, iteration)
+				}
+			}
+		}
+	}
+
+	if anyHas(hooks, func(h *Hooks) bool { return h.OnStreamToken != nil }) {
+		merged.OnStreamToken = func(ctx context.Context, token string) {
+			for i := range hooks {
+				if fn := hooks[i].OnStreamToken; fn != nil {
+					fn(ctx, token)
+				}
+			}
+		}
+	}
+
+	if anyHas(hooks, func(h *Hooks) bool { return h.OnThinkingText != nil }) {
+		merged.OnThinkingText = func(ctx context.Context, token string) {
+			for i := range hooks {
+				if fn := hooks[i].OnThinkingText; fn != nil {
+					fn(ctx, token)
 				}
 			}
 		}
