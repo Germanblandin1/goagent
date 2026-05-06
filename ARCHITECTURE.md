@@ -11,6 +11,7 @@ goagent/                      Root package — Agent, ReAct loop, core interface
 │   ├── storage/              Message persistence (InMemory, etc.)
 │   ├── policy/               Read-time message filtering (FixedWindow, TokenWindow, NoOp)
 │   └── vector/               VectorStore, chunkers, similarity functions, size estimators
+├── orchestration/            Multi-agent coordination — Pipeline, Graph, ParallelGroup, Supervisor
 ├── providers/
 │   ├── anthropic/            Provider for Claude (Anthropic API)
 │   ├── ollama/               Provider for local models (OpenAI-compatible API) + embedder
@@ -21,6 +22,10 @@ goagent/                      Root package — Agent, ReAct loop, core interface
 │   ├── chatbot/              Example: multi-turn conversation with memory
 │   ├── chatbot-persistent/   Example: file-backed persistence
 │   ├── chatbot-mcp-fs/       Example: chatbot with filesystem access via MCP stdio
+│   ├── graph-conditional-parallel/ Example: Graph with in-node conditional parallelism
+│   ├── graph-loop-judge/     Example: judge-loop pattern with a Graph
+│   ├── graph-nested/         Example: nested Pipeline inside a Graph node
+│   ├── multi-agent/          Example: Supervisor coordinating worker agents
 │   └── rag_docs/             Example: RAG over local Markdown files with Ollama
 └── internal/
     └── testutil/             Provider, Tool and Memory mocks for tests
@@ -405,6 +410,202 @@ The write side is controlled by `WithWritePolicy`:
 - **`StoreAlways`** (default): persists every `[user, assistant]` pair.
 - **`MinLength(n)`**: skips exchanges whose combined text is shorter than `n` characters (filters out trivial greetings, confirmations, etc.).
 - A custom `WritePolicy` function can transform, condense, or selectively persist turns.
+
+---
+
+## Multi-Agent Orchestration — `orchestration/` sub-module
+
+The `orchestration` package coordinates multiple `goagent.Agent`s in structured workflows. It is decoupled from the ReAct loop — it operates one level above it, composing agents as black-box execution units.
+
+### Choosing between primitives
+
+| Primitive | When to use |
+|-----------|-------------|
+| `Pipeline` | Linear, deterministic flow — each stage runs in order |
+| `Graph` | Dynamic routing — nodes return the next node to run; supports branching and loops |
+| `ParallelGroup` | Concurrent execution — all stages run at the same time |
+| `Supervisor` | Emergent delegation — the LLM decides which workers to call and in what order |
+
+### Core abstraction — `Executor`
+
+Everything in `orchestration` implements one interface:
+
+```go
+type Executor interface {
+    RunWithContext(ctx context.Context, sc *StageContext) error
+}
+```
+
+`AgentAdapter`, `AgentBlocksAdapter`, `Pipeline`, `ParallelGroup`, and `Graph` all implement `Executor`. This makes them composable: a `Graph` node can run a `Pipeline`, a `Pipeline` stage can be a `ParallelGroup`, and so on.
+
+### `StageContext` — the state carrier
+
+`StageContext` travels through the entire execution and accumulates state:
+
+```go
+type StageContext struct {
+    Goal string          // immutable; the original task objective
+
+    // all maps are protected by sync.RWMutex — safe for concurrent access
+    outputs   map[string]string  // LLM-generated text, keyed by stage/node name
+    artifacts map[string]any     // typed Go values (scores, slices, flags)
+    trace     []StageTrace       // per-stage execution record (name, duration, error)
+}
+```
+
+Key methods:
+- `SetOutput(key, value)` / `Output(key) (string, bool)` / `RequireOutput(key) (string, error)`
+- `SetArtifact(key, value)` / `Artifact(key) (any, bool)` / `GetArtifact[T](sc, key) (T, error)`
+- `Outputs() map[string]string` / `Artifacts() map[string]any` — snapshot copies, safe for concurrent use
+- `Trace() []StageTrace` — snapshot copy of the execution history
+- `CollisionErrors() []error` — key collisions recorded in strict mode
+
+**Strict mode** (`NewStrictStageContext`) records a `KeyCollisionError` whenever a key is written more than once. Use it during development to catch parallel stages that accidentally write to the same key. `WithStrictKeys` enables it on the `StageContext` created by `ParallelGroup.Run`.
+
+### Pipeline — sequential execution
+
+```
+┌─────────────────────────────────────────────────┐
+│  Pipeline.Run(ctx, goal)                         │
+│                                                  │
+│  stage "research"  →  stage "code"  →  return   │
+│       ↓                    ↓                     │
+│  sc.SetOutput(           sc.SetOutput(           │
+│    "research", ...)        "code", ...)          │
+└─────────────────────────────────────────────────┘
+```
+
+`Pipeline` runs `StageDef`s in order. Before each stage it checks `ctx.Done()`. If a stage fails, the error is wrapped with the stage name and returned immediately. The full `*StageContext` is returned on success.
+
+`AgentStage(agent, pb)` and `AgentBlocksStage(agent, bb)` are syntactic sugar that use the stage name as the output key automatically, eliminating redundancy.
+
+### Graph — dynamic routing
+
+```
+                    ┌──────────────┐
+   ctx, goal  ──▶   │  start node  │
+                    └──────┬───────┘
+                           │ returns next name
+                    ┌──────▼───────┐
+                    │   node B     │──── "" ──▶ END
+                    └──────┬───────┘
+                           │ returns "start"
+                    ┌──────▼───────┐
+                    │  start node  │   (loop)
+                    └──────────────┘
+```
+
+`NodeFunc` receives the context and `StageContext`, reads/writes state, and returns the next node name. Returning `""` ends the graph. Key safety features:
+
+- **`WithMaxIterations(n)`** (default 100) — global guard against infinite loops
+- **`WithMaxCycles(n)`** per node — limits how many times a specific node may execute
+- **`WithToNodes` validation** — `NewGraph` returns an error if a declared edge refers to an unregistered node, catching typos at construction time
+- **`Graph.Mermaid()`** — generates a Mermaid flowchart of declared edges for documentation
+
+A `NodeFunc` can construct a `ParallelGroup` internally to achieve conditional parallelism decided at runtime:
+
+```go
+func analyzeNode(ctx context.Context, sc *StageContext) (string, error) {
+    if needsParallel, _ := GetArtifact[bool](sc, "needs_parallel"); needsParallel {
+        group := orchestration.NewParallelGroup(
+            orchestration.WithParallelStages(
+                orchestration.Stage("research", researchAdapter),
+                orchestration.Stage("code",     coderAdapter),
+            ),
+        )
+        return "synthesize", group.RunWithContext(ctx, sc)
+    }
+    return "review", coderAdapter.RunWithContext(ctx, sc)
+}
+```
+
+**Human-in-the-loop** is built in via `HumanApprovalNode`, which pauses the graph and waits for an `ApprovalResponse` over a channel before routing to `onApproved` or `onRejected`.
+
+### ParallelGroup — concurrent execution
+
+```
+         ┌── stage "research" ──┐
+sc  ──▶  ├── stage "code"     ──┼──▶  wait all  ──▶  sc (merged)
+         └── stage "tests"    ──┘
+```
+
+All stages write to the **same** `StageContext` via its mutex-protected maps. `PanicError` is returned if any stage panics. All stages always run to completion regardless of individual failures; all errors are joined and returned together.
+
+`WithMaxConcurrency(n)` uses a buffered-channel semaphore to limit parallelism. `WithStrictKeys` surfaces key collisions across concurrent stages during development.
+
+### Supervisor — emergent delegation
+
+```
+                    ┌────────────────────────────────┐
+                    │  supervisor agent (goagent)     │
+                    │                                 │
+                    │  tools: [researcher, coder, …]  │
+                    │           (AgentTool)           │
+                    │                                 │
+                    │  LLM decides: who, order, count │
+                    └──────────┬──────────────────────┘
+                               │ tool calls
+                    ┌──────────▼──────────────────────┐
+                    │  worker agents run in parallel   │
+                    │  (via ReAct fan-out)             │
+                    └─────────────────────────────────┘
+```
+
+`NewSupervisor` builds a `goagent.Agent` whose tools are `AgentTool` wrappers for each `Worker`. The supervisor LLM decides which workers to call, in what order, and how many times — including calling multiple workers in a single response turn for parallel execution. The final synthesized answer is stored in `sc.Outputs[outputKey]`.
+
+### NodeMiddleware — per-node cross-cutting behavior
+
+```
+[outermost]
+  TimeoutMiddleware    — wraps ctx with deadline
+  RetryMiddleware      — exponential backoff with jitter
+[innermost → NodeFunc]
+```
+
+Middlewares are registered with `WithNodeMiddleware` inside `WithNode` and applied in reverse registration order (first registered = innermost). Three built-ins ship with the package:
+
+| Middleware | Purpose |
+|-----------|---------|
+| `RetryMiddleware(policy)` | Retries on error with exponential backoff and `RetryAfter` support |
+| `TimeoutMiddleware(d)` | Per-invocation deadline via `context.WithTimeout` |
+| `RecoverMiddleware` | Converts panics to errors with stack trace |
+
+`RetryMiddleware` uses the same `goagent.RetryPolicy` type as the root package (with `Retryable`, `RetryAfter`, `MaxAttempts`, `InitialDelay`, `MaxDelay`, `Multiplier`).
+
+### OrchestrationHooks — observability
+
+```go
+hooks := orchestration.OrchestrationHooks{
+    OnStageStart: func(ctx context.Context, name string) context.Context {
+        ctx, _ = tracer.Start(ctx, "orchestration.stage."+name)
+        return ctx  // forwarded to the stage executor
+    },
+    OnStageEnd: func(ctx context.Context, name string, dur time.Duration, err error) {
+        trace.SpanFromContext(ctx).End()
+    },
+    OnNodeEnter: func(ctx context.Context, name string) context.Context { /* … */ return ctx },
+    OnNodeExit:  func(ctx context.Context, name, next string, dur time.Duration, err error) { /* … */ },
+}
+```
+
+On*Start hooks return `context.Context`. The returned context is forwarded to the executor or node so OTel spans nest correctly under stage/node spans. `MergeOrchestrationHooks` chains multiple hook sets in order, correctly threading context enrichments.
+
+### Adapters — bridging agents to orchestration
+
+| Adapter | How to use | Output key |
+|---------|-----------|------------|
+| `NewAgentAdapter(agent, key, pb)` | Explicit key, explicit `PromptBuilder` | `key` |
+| `AgentStage(agent, pb)` | Inside `Stage()` only | stage name (auto) |
+| `NewAgentBlocksAdapter(agent, key, bb)` | Multimodal, explicit key | `key` |
+| `AgentBlocksStage(agent, bb)` | Multimodal, inside `Stage()` only | stage name (auto) |
+
+### PromptBuilders — injecting context into agent inputs
+
+| Builder | Behavior |
+|---------|---------|
+| `GoalOnly` | Returns `sc.Goal` unchanged; for the first stage |
+| `OutputOf(name)` | Returns the output of a named stage; falls back to `sc.Goal` |
+| `LastOutput` | Returns the output of the last successful stage in the trace; **avoid after `ParallelGroup`** (non-deterministic order) |
 
 ---
 
