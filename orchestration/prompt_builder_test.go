@@ -94,3 +94,51 @@ func TestLastOutput_successfulStageWithNoOutput_returnsGoal(t *testing.T) {
 		t.Errorf("got %q, want %q", got, "fallback goal")
 	}
 }
+
+func TestOutputOf_existingStage_returnsOutput(t *testing.T) {
+	pipeline := orchestration.NewPipeline(
+		orchestration.WithStages(
+			orchestration.Stage("summarize", &mockExecutor{outputKey: "summarize", value: "the summary"}),
+			orchestration.Stage("translate", &mockExecutor{outputKey: "translate", value: "la traducción"}),
+		),
+	)
+	sc, err := pipeline.Run(context.Background(), "goal")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := orchestration.OutputOf("summarize")(sc)
+	if got != "the summary" {
+		t.Errorf("got %q, want %q", got, "the summary")
+	}
+}
+
+func TestOutputOf_missingStage_returnsGoal(t *testing.T) {
+	sc := orchestration.NewStageContext("my goal")
+
+	got := orchestration.OutputOf("nonexistent")(sc)
+	if got != "my goal" {
+		t.Errorf("got %q, want %q", got, "my goal")
+	}
+}
+
+func TestOutputOf_afterParallelGroup_deterministic(t *testing.T) {
+	// Run many times to expose non-determinism that LastOutput would exhibit.
+	for range 50 {
+		group := orchestration.NewParallelGroup(
+			orchestration.WithParallelStages(
+				orchestration.Stage("summarize", &mockExecutor{outputKey: "summarize", value: "the summary"}),
+				orchestration.Stage("translate", &mockExecutor{outputKey: "translate", value: "la traducción"}),
+			),
+		)
+		sc, err := group.Run(context.Background(), "goal")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		got := orchestration.OutputOf("summarize")(sc)
+		if got != "the summary" {
+			t.Errorf("got %q, want %q", got, "the summary")
+		}
+	}
+}
