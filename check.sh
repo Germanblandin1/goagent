@@ -127,10 +127,53 @@ ok "tools"
 echo
 
 # ============================================================
+# STEP 0 — go mod tidy check (mirrors CI "Verify go.sum is tidy")
+# ============================================================
+sep
+echo "  STEP 0/4 - GO MOD TIDY"
+sep
+
+set +e
+
+TIDY_MODULES=(
+  .
+  mcp
+  memory/vector/pgvector
+  memory/vector/qdrant
+  memory/vector/sqlitevec
+  memory/vector/tiktoken
+  otel
+  orchestration
+  providers/anthropic
+  providers/ollama
+  providers/voyage
+  rag
+  ratelimit
+  examples
+)
+
+for mod in "${TIDY_MODULES[@]}"; do
+  echo "[tidy] $mod"
+  if [[ "$mod" == "." ]]; then
+    pushd "$ROOT" > /dev/null
+  else
+    pushd "$ROOT/$mod" > /dev/null
+  fi
+  go mod tidy
+  FILES="go.mod"
+  [[ -f go.sum ]] && FILES="go.mod go.sum"
+  # shellcheck disable=SC2086
+  run "go mod tidy $mod" git diff --exit-code $FILES
+  popd > /dev/null
+done
+
+echo
+
+# ============================================================
 # STEP 1 — LINT (go vet + staticcheck)
 # ============================================================
 sep
-echo "  STEP 1/4 - LINT"
+echo "  STEP 1/5 - LINT"
 sep
 
 # Disable set -e inside loops so one failure doesn't abort everything
@@ -172,7 +215,7 @@ echo
 # STEP 2 — SECURITY (govulncheck)
 # ============================================================
 sep
-echo "  STEP 2/4 - SECURITY"
+echo "  STEP 2/5 - SECURITY"
 sep
 
 for mod in "${ALL_MODULES[@]}"; do
@@ -192,7 +235,7 @@ echo
 # STEP 3 — TEST (race detector + coverage)
 # ============================================================
 sep
-echo "  STEP 3/4 - TEST"
+echo "  STEP 3/5 - TEST"
 sep
 
 cd "$ROOT"
@@ -236,7 +279,7 @@ echo
 # STEP 4 — COVERAGE (threshold enforcement)
 # ============================================================
 sep
-echo "  STEP 4/4 - COVERAGE"
+echo "  STEP 4/5 - COVERAGE"
 sep
 
 cd "$ROOT"
@@ -270,7 +313,7 @@ if [[ $RUN_INTEGRATION -eq 0 ]]; then
   echo
 else
   sep
-  echo "  STEP 5 - INTEGRATION (testcontainers)"
+  echo "  STEP 5/5 - INTEGRATION (testcontainers)"
   sep
 
   echo "[integration] pgvector"
