@@ -9,76 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-**`orchestration/` — Graph, Supervisor, Hooks, Middleware, and Strict Mode**
+**Streaming — token-by-token real-time delivery (`goagent`)**
+- `Stream` — iterator interface over streaming events; callers loop with `Next(ctx)`, read via `Event()`, and must call `Close()` to release the connection
+- `StreamingProvider` — optional interface extending `Provider` with `CompleteStream(ctx, CompletionRequest) (Stream, error)`; the agent detects support via type assertion at runtime — no breaking change for existing providers
+- `StreamEvent` — atomic delivery unit with `Type StreamEventType`, `Text`, `ToolName`, `ToolID`, `InputDelta`, `StopReason`, and `Usage` fields; only fields relevant to the event type are populated
+- `StreamEventType` constants: `StreamEventText` (text delta), `StreamEventToolStart` (model declared a tool call), `StreamEventToolDelta` (cumulative JSON fragment of tool args), `StreamEventDone` (final event with usage)
+- `StreamHandler` — `func(event StreamEvent) error` callback invoked per event by `RunStream`/`RunStreamBlocks`; returning a non-nil error aborts the stream
+- `TextHandler(w io.Writer) StreamHandler` — built-in handler that writes `StreamEventText` tokens to any `io.Writer`; ignores all other event types
+- `StreamOptions` / `StreamOption` — functional options for streaming behaviour; constructed via variadic `...StreamOption` on `RunStream`/`RunStreamBlocks`
+- `WithShowThinkingText(show bool) StreamOption` — controls whether model reasoning tokens emitted before a tool call are forwarded to the handler; default false
+- `Agent.RunStream(ctx, prompt, handler, ...StreamOption) (string, error)` — streaming counterpart to `Run`; delivers tokens in real time via `handler`; returns the final accumulated text
+- `Agent.RunStreamBlocks(ctx, []ContentBlock, handler, ...StreamOption) (string, error)` — multimodal variant of `RunStream`
+- `Hooks.OnThinkingText func(ctx, token string)` — new hook fired per token when the model reasons before a tool call and `WithShowThinkingText(true)` is set; complements the existing `OnThinking` hook (which fires once with the full thinking block)
 
-**Graph — dynamic routing with conditional branching and loops**
-- `Graph` — executor that routes between `NodeFunc`s at runtime; each node returns the name of the next node to execute (`""` terminates the graph); implements `Executor` for nesting inside a `Pipeline` or `ParallelGroup`
-- `NodeFunc` — `func(ctx context.Context, sc *StageContext) (next string, err error)` — the unit of work inside a `Graph`; a `NodeFunc` can internally construct and run a `ParallelGroup` to achieve conditional in-node parallelism
-- `NewGraph(opts ...GraphOption) (*Graph, error)` — validated constructor; returns an error if `WithStart` was not called, the start node is not registered, or any name declared in `WithToNodes` does not refer to a registered node (converts typos into construction-time errors)
-- `WithStart(name)` — sets the entry node; required
-- `WithNode(name, fn, ...NodeOption)` — registers a node; `NodeOption` accepts `WithMaxCycles` (per-node cycle cap) and `WithToNodes` (declared outgoing edges for `Mermaid()`)
-- `WithMaxIterations(n)` — global guard against infinite loops; default 100; `n ≤ 0` disables the limit
-- `WithMaxCycles(n) NodeOption` — limits how many times a specific node may execute in a single graph run; per-node complement to `WithMaxIterations`
-- `WithToNodes(names...) NodeOption` — declares the possible destination nodes from this node; validated at `NewGraph` time; drives `Graph.Mermaid()`; `""` represents the END terminal
-- `WithGraphTimeout(d)` — wall-clock deadline for the entire graph run
-- `WithGraphHooks(h)` — observability hooks for graph and node lifecycle events
-- `Graph.Run(ctx, goal) (*StageContext, error)` — top-level entry point; constructs a `StageContext` and executes from the start node
-- `Graph.RunWithContext(ctx, sc) error` — implements `Executor`; executes from the start node using an existing `StageContext`
-- `Graph.Mermaid() string` — returns a Mermaid `graph TD` diagram of the declared edges; nodes without `WithToNodes` appear as isolated nodes; useful for documentation and debugging
-- `NodeNameFromContext(ctx) string` — returns the name of the currently executing node from context; returns `""` outside a `Graph` execution
+**Anthropic streaming (`goagent/providers/anthropic`)**
+- `CompleteStream` — SSE-based real streaming; delivers each text token as `StreamEventText` immediately as it arrives; maps `input_json_delta` to `StreamEventToolDelta`; emits `StreamEventDone` with final usage on `message_stop`
 
-**Supervisor — emergent LLM delegation**
-- `NewSupervisor(outputKey, pb, workers, ...goagent.Option) (Executor, error)` — builds a supervisor `goagent.Agent` whose tools are `AgentTool` wrappers for each worker; the model decides at runtime which workers to invoke, in what order, and whether to parallelize (by emitting multiple tool calls in a single response); validated: returns an error if any `Worker` has an empty `Name`, `Description`, `InputDescription`, or nil `Agent`
-- `Worker` — describes a delegatable agent: `Name` (tool name the LLM uses), `Description` (what it does), `InputDescription` (how to formulate its input — the most critical field for delegation quality), and `Agent`
-- `AgentTool` / `NewAgentTool(name, description, inputDescription, agent)` — wraps any `agentRunner` as a `goagent.Tool` with a single `"input"` string argument; available for manual supervisor wiring outside of `NewSupervisor`
-
-**Graph node helpers**
-- `ExecutorNode(executor, next) NodeFunc` — adapts any `Executor` to a `NodeFunc` that always routes to the same next node; eliminates boilerplate for deterministic transitions
-- `HumanApprovalNode(requestCh, responseCh, onApproved, onRejected) NodeFunc` — pauses the graph for human-in-the-loop review; sends an `ApprovalRequest` (snapshot of current outputs and artifacts) to `requestCh` and blocks until an `ApprovalResponse` arrives from `responseCh` or the context is cancelled; stores the rejection reason in `sc.Artifacts[ArtifactRejectionReason]` on rejection
-- `ApprovalRequest` — carries `NodeName`, `Outputs`, and `Artifacts` snapshots shown to the reviewer
-- `ApprovalResponse` — carries `Approved bool` and optional `Reason string`
-- `ArtifactRejectionReason` — string constant `"rejection_reason"` for reading rejection reasons from subsequent nodes
-
-**OrchestrationHooks — lifecycle observability**
-- `OrchestrationHooks` — struct of optional callbacks for `Pipeline`, `ParallelGroup`, and `Graph` events; zero value is safe (all fields are no-ops); hooks cover: `OnPipelineStart/End`, `OnStageStart/End`, `OnGraphStart/End`, `OnNodeEnter/Exit`
-- On*Start hooks return `context.Context` — the returned context is forwarded to the executor or node, enabling OTel span injection without importing OTel in the orchestration package
-- `MergeOrchestrationHooks(...OrchestrationHooks) OrchestrationHooks` — composes multiple hook sets; `OnXStart` return values are chained so that span hierarchies nest correctly across composed hook sets
-- `WithPipelineHooks(h)`, `WithParallelHooks(h)`, `WithGraphHooks(h)` — hook injection options for each primitive
-
-**NodeMiddleware — per-node cross-cutting behavior**
-- `NodeMiddleware` — `func(next NodeFunc) NodeFunc`; registered via `WithNodeMiddleware(mw) NodeOption` inside `WithNode`; applied in reverse registration order (first registered = innermost, closest to the `NodeFunc`) — mirrors standard Go HTTP middleware conventions
-- `RetryMiddleware(policy goagent.RetryPolicy) NodeMiddleware` — retries the `NodeFunc` on error using exponential backoff with ±25% jitter; respects `RetryAfter` for server-suggested delays (e.g. HTTP 429); uses the same defaults as `goagent.RetryPolicy` (3 attempts, 200ms initial, 10s max, 2× multiplier); wraps the final failure in `MaxRetriesError`; re-executes the full `NodeFunc` including `StageContext` writes — nodes should be idempotent
-- `TimeoutMiddleware(d time.Duration) NodeMiddleware` — wraps the node's context with a per-invocation `context.WithTimeout`; independent of `WithGraphTimeout` (which covers the whole graph)
-- `RecoverMiddleware NodeMiddleware` — catches panics from the `NodeFunc`, converts them to errors with a full stack trace, and prevents a panicking node from crashing the graph
-- `MaxRetriesError` — returned by `RetryMiddleware` when all attempts fail; wraps the last error via `Unwrap` for `errors.As` compatibility
-
-**StageContext improvements**
-- `NewStrictStageContext(goal) *StageContext` — strict-mode context that records a `KeyCollisionError` whenever `SetOutput` or `SetArtifact` is called with a key that already exists; intended for development and testing to surface logical conflicts between parallel stages; use `NewStageContext` in production
-- `StageContext.CollisionErrors() []error` — returns a snapshot of all collision errors recorded during execution; returns `nil` when strict mode is disabled or no collisions occurred
-- `KeyCollisionError` — error type with `Key string` and `Namespace string` (`"output"` or `"artifact"`)
-- `StageContext.RequireOutput(key) (string, error)` — returns an explicit error when a key is absent, instead of a silent empty string; use in `PromptBuilder`s to enforce stage dependencies
-- `StageContext.Outputs() map[string]string` — returns a snapshot copy of all text outputs; safe for concurrent use
-- `StageContext.Artifacts() map[string]any` — returns a snapshot copy of all typed artifacts; safe for concurrent use
-
-**ParallelGroup improvements**
-- `WithStrictKeys() ParallelGroupOption` — creates the `StageContext` in strict mode when `Run` is called; key collisions across concurrent stages are returned as `KeyCollisionError` values alongside any stage errors
-- `WithMaxConcurrency(n) ParallelGroupOption` — limits the number of concurrently executing stages via a buffered-channel semaphore; `0` (default) means no limit — all stages start immediately
-- `WithParallelTimeout(d) ParallelGroupOption` — wall-clock deadline for the entire parallel group run
-- `PanicError` — returned when a stage inside `ParallelGroup.RunWithContext` panics; carries `StageName string` and `Value any` (the recovered panic value); supports `errors.As`
-
-**PromptBuilder improvements**
-- `OutputOf(stageName) PromptBuilder` — reads the output of a specific named stage; falls back to `sc.Goal` when the stage has not yet written an output; preferred over `LastOutput` in pipelines containing a `ParallelGroup`, where stage completion order is non-deterministic
+**Ollama streaming (`goagent/providers/ollama`)**
+- `CompleteStream` — NDJSON-based real streaming; reads each chunk and emits `StreamEventText` tokens immediately; tool calls arriving in the done chunk are queued and emitted as `StreamEventToolStart + StreamEventToolDelta` before `StreamEventDone`; maps `done_reason:"length"` to `StopReasonMaxTokens`
+- Fixed: `ToolCalls` and `DoneReason` fields added to `ollamaStreamChunk` so tool calls are no longer silently dropped
 
 **Examples**
-- `examples/graph-conditional-parallel` — `Graph` with in-node conditional parallelism: a `NodeFunc` decides at runtime whether to construct a `ParallelGroup` based on an artifact flag
-- `examples/graph-loop-judge` — judge-loop pattern: `generate → review → generate` until the reviewer approves or iterations are exhausted
-- `examples/graph-nested` — nested `Pipeline` inside a `Graph` node via `ExecutorNode`
-- `examples/multi-agent` — `Supervisor` coordinating specialized researcher and coder worker agents with emergent parallel delegation
-
-### Changed
-
-- `ParallelGroup`: stages now share the **same** `StageContext` (mutex-protected maps via `sync.RWMutex`) rather than forking child contexts and merging — the mutex guarantees memory safety; `WithStrictKeys` surfaces logical key conflicts during development; callers are responsible for avoiding key collisions in production
-- `check.sh`: orchestration added to `PURE_MODULES` and `ALL_MODULES` for lint (`go vet`, `staticcheck`), vulnerability scanning (`govulncheck`), and test coverage
+- `examples/streaming` — interactive demonstration of real-time streaming with two cases: plain text streaming and tool-call streaming; uses Ollama (`OLLAMA_MODEL` / `OLLAMA_HOST` configurable)
 
 ---
 
@@ -87,17 +39,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 **`orchestration/` sub-module**
+
+**Foundation — pipeline and parallel primitives**
 - `Executor` — single interface (`RunWithContext(ctx, *StageContext) error`) that every orchestration primitive implements; enables nesting without type assertions
 - `StageContext` — state carrier with `Outputs` (LLM text), `Artifacts` (typed Go data), `Trace` (execution history), and `Goal` (immutable pipeline objective)
 - `StageTrace` — per-stage execution record with name, duration, and error
 - `GetArtifact[T]` — generic helper to retrieve typed artifacts from a `StageContext` with safe type assertion and descriptive errors
 - `Pipeline` — sequential executor; respects context cancellation before each stage; implements `Executor` for nesting; `Run` is the top-level entry point returning the full `*StageContext`
-- `ParallelGroup` — concurrent executor; forks a child `StageContext` per goroutine before launching (eliminating parent/child map races); merges results to parent after all stages complete; implements `Executor` for embedding inside a `Pipeline`
+- `ParallelGroup` — concurrent executor; stages share the same mutex-protected `StageContext` (`sync.RWMutex`); implements `Executor` for embedding inside a `Pipeline`
 - `AgentAdapter` / `NewAgentAdapter` — adapts a `*goagent.Agent` (text) to `Executor`
 - `AgentBlocksAdapter` / `NewAgentBlocksAdapter` — adapts a `*goagent.Agent` (multimodal) to `Executor`
 - `AgentStage` / `AgentBlocksStage` — syntactic sugar constructors for the two adapter types
 - `PromptBuilder` / `BlocksBuilder` — function types for building agent input from `StageContext`
-- `GoalOnly` / `LastOutput` — built-in `PromptBuilder` helpers
+- `GoalOnly` / `LastOutput` / `OutputOf(stageName)` — built-in `PromptBuilder` helpers; `OutputOf` is preferred over `LastOutput` when a `ParallelGroup` is present, as completion order is non-deterministic
+
+**Graph — dynamic routing with conditional branching and loops**
+- `Graph` — executor that routes between `NodeFunc`s at runtime; each node returns the name of the next node to execute (`""` terminates the graph); implements `Executor` for nesting inside a `Pipeline` or `ParallelGroup`
+- `NodeFunc` — `func(ctx context.Context, sc *StageContext) (next string, err error)` — the unit of work inside a `Graph`; a `NodeFunc` can internally construct and run a `ParallelGroup` to achieve conditional in-node parallelism
+- `NewGraph(opts ...GraphOption) (*Graph, error)` — validated constructor; returns an error if `WithStart` was not called, the start node is not registered, or any name declared in `WithToNodes` does not refer to a registered node
+- `WithStart(name)` — sets the entry node; required
+- `WithNode(name, fn, ...NodeOption)` — registers a node; `NodeOption` accepts `WithMaxCycles` and `WithToNodes`
+- `WithMaxIterations(n)` — global guard against infinite loops; default 100; `n ≤ 0` disables the limit
+- `WithMaxCycles(n) NodeOption` — per-node cycle cap; complement to `WithMaxIterations`
+- `WithToNodes(names...) NodeOption` — declares possible destination nodes; validated at `NewGraph` time; drives `Graph.Mermaid()`; `""` represents END
+- `WithGraphTimeout(d)` — wall-clock deadline for the entire graph run
+- `WithGraphHooks(h)` — observability hooks for graph and node lifecycle events
+- `Graph.Run(ctx, goal) (*StageContext, error)` — top-level entry point
+- `Graph.RunWithContext(ctx, sc) error` — implements `Executor`
+- `Graph.Mermaid() string` — returns a Mermaid `graph TD` diagram of declared edges
+- `NodeNameFromContext(ctx) string` — returns the currently executing node name from context; `""` outside a graph run
+
+**Supervisor — emergent LLM delegation**
+- `NewSupervisor(outputKey, pb, workers, ...goagent.Option) (Executor, error)` — builds a supervisor agent whose tools are `AgentTool` wrappers; the model decides at runtime which workers to invoke, in what order, and whether to parallelize; validated: returns an error if any `Worker` has an empty `Name`, `Description`, `InputDescription`, or nil `Agent`
+- `Worker` — describes a delegatable agent: `Name`, `Description`, `InputDescription`, and `Agent`
+- `AgentTool` / `NewAgentTool(name, description, inputDescription, agent)` — wraps any `agentRunner` as a `goagent.Tool` with a single `"input"` string argument
+
+**Graph node helpers**
+- `ExecutorNode(executor, next) NodeFunc` — adapts any `Executor` to a `NodeFunc` with a fixed next node
+- `HumanApprovalNode(requestCh, responseCh, onApproved, onRejected) NodeFunc` — pauses the graph for human-in-the-loop review; sends an `ApprovalRequest` to `requestCh` and blocks until an `ApprovalResponse` arrives or the context is cancelled; stores rejection reason in `sc.Artifacts[ArtifactRejectionReason]`
+- `ApprovalRequest` — carries `NodeName`, `Outputs`, and `Artifacts` snapshots
+- `ApprovalResponse` — carries `Approved bool` and optional `Reason string`
+- `ArtifactRejectionReason` — string constant `"rejection_reason"`
+
+**OrchestrationHooks — lifecycle observability**
+- `OrchestrationHooks` — struct of optional callbacks for `Pipeline`, `ParallelGroup`, and `Graph` events; zero value is safe; covers `OnPipelineStart/End`, `OnStageStart/End`, `OnGraphStart/End`, `OnNodeEnter/Exit`
+- `On*Start` hooks return `context.Context` — enables OTel span injection without importing OTel in the orchestration package
+- `MergeOrchestrationHooks(...OrchestrationHooks) OrchestrationHooks` — composes multiple hook sets; `OnXStart` return values are chained so span hierarchies nest correctly
+- `WithPipelineHooks(h)`, `WithParallelHooks(h)`, `WithGraphHooks(h)` — hook injection options
+
+**NodeMiddleware — per-node cross-cutting behavior**
+- `NodeMiddleware` — `func(next NodeFunc) NodeFunc`; registered via `WithNodeMiddleware(mw) NodeOption`; applied in reverse registration order (first registered = innermost) — mirrors standard Go HTTP middleware conventions
+- `RetryMiddleware(policy goagent.RetryPolicy) NodeMiddleware` — retries on error using exponential backoff with ±25% jitter; respects `RetryAfter`; wraps final failure in `MaxRetriesError`; nodes should be idempotent
+- `TimeoutMiddleware(d time.Duration) NodeMiddleware` — per-invocation `context.WithTimeout`; independent of `WithGraphTimeout`
+- `RecoverMiddleware NodeMiddleware` — catches panics, converts them to errors with a full stack trace
+- `MaxRetriesError` — wraps the last error via `Unwrap` for `errors.As` compatibility
+
+**StageContext additions**
+- `NewStrictStageContext(goal) *StageContext` — records a `KeyCollisionError` on duplicate `SetOutput`/`SetArtifact` keys; intended for development and testing
+- `StageContext.CollisionErrors() []error` — snapshot of all collision errors; `nil` in production mode or when none occurred
+- `KeyCollisionError` — error type with `Key string` and `Namespace string` (`"output"` or `"artifact"`)
+- `StageContext.RequireOutput(key) (string, error)` — explicit error when a key is absent, instead of a silent empty string
+- `StageContext.Outputs() map[string]string` — snapshot copy of all text outputs; safe for concurrent use
+- `StageContext.Artifacts() map[string]any` — snapshot copy of all typed artifacts; safe for concurrent use
+
+**ParallelGroup additions**
+- `WithStrictKeys() ParallelGroupOption` — creates the `StageContext` in strict mode; key collisions returned as `KeyCollisionError` values alongside stage errors
+- `WithMaxConcurrency(n) ParallelGroupOption` — limits concurrent stages via a buffered-channel semaphore; `0` means no limit
+- `WithParallelTimeout(d) ParallelGroupOption` — wall-clock deadline for the entire parallel group run
+- `PanicError` — returned when a stage panics; carries `StageName string` and `Value any`; supports `errors.As`
+
+**Examples**
+- `examples/graph-conditional-parallel` — `Graph` with in-node conditional parallelism
+- `examples/graph-loop-judge` — judge-loop pattern: `generate → review → generate` until approved or iterations exhausted
+- `examples/graph-nested` — nested `Pipeline` inside a `Graph` node via `ExecutorNode`
+- `examples/multi-agent` — `Supervisor` coordinating specialized worker agents with emergent parallel delegation
+
+### Changed
+
+- `ParallelGroup`: stages now share the **same** `StageContext` (mutex-protected via `sync.RWMutex`) rather than forking child contexts and merging; `WithStrictKeys` surfaces logical key conflicts during development
+- `check.sh`: orchestration added to `PURE_MODULES` and `ALL_MODULES` for lint, vulnerability scanning, and test coverage; `go mod tidy` now runs with `GOWORK=off` to avoid workspace interference
 
 ---
 
