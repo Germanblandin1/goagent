@@ -49,6 +49,7 @@ type ParallelGroup struct {
 	hooks          OrchestrationHooks
 	maxConcurrency int
 	timeout        time.Duration
+	strictKeys     bool
 }
 
 // WithParallelStages sets the stages of the parallel group.
@@ -79,6 +80,22 @@ func WithParallelTimeout(d time.Duration) ParallelGroupOption {
 	}
 }
 
+// WithStrictKeys enables collision detection for the parallel group.
+// When set, Run creates a StageContext in strict mode — any two stages writing
+// to the same output or artifact key cause a KeyCollisionError to be returned
+// alongside any other stage errors.
+//
+// For RunWithContext, enable strict mode on the StageContext itself:
+//
+//	sc := orchestration.NewStrictStageContext(goal)
+//	err := group.RunWithContext(ctx, sc)
+//	// collision errors are included in err
+func WithStrictKeys() ParallelGroupOption {
+	return func(g *ParallelGroup) {
+		g.strictKeys = true
+	}
+}
+
 // WithParallelHooks configures observability hooks for the parallel group.
 // Hooks are called around each stage execution.
 // The zero value of OrchestrationHooks is safe — unset fields are no-ops.
@@ -103,8 +120,15 @@ func NewParallelGroup(opts ...ParallelGroupOption) *ParallelGroup {
 // Constructs a StageContext with the given goal and executes all stages
 // concurrently. Returns the complete StageContext so the caller can inspect
 // all outputs and artifacts produced.
+// When WithStrictKeys was set, the StageContext is created in strict mode and
+// any key collisions are included in the returned error.
 func (g *ParallelGroup) Run(ctx context.Context, goal string) (*StageContext, error) {
-	sc := NewStageContext(goal)
+	var sc *StageContext
+	if g.strictKeys {
+		sc = NewStrictStageContext(goal)
+	} else {
+		sc = NewStageContext(goal)
+	}
 	return sc, g.RunWithContext(ctx, sc)
 }
 
@@ -176,5 +200,6 @@ func (g *ParallelGroup) RunWithContext(ctx context.Context, sc *StageContext) er
 		}
 	}
 
+	errs = append(errs, sc.CollisionErrors()...)
 	return errors.Join(errs...)
 }

@@ -1,6 +1,7 @@
 package orchestration_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/Germanblandin1/goagent/orchestration"
@@ -104,6 +105,81 @@ func TestGetArtifact_wrongType(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected type mismatch error, got nil")
+	}
+}
+
+func TestNewStrictStageContext_noCollision_nilErrors(t *testing.T) {
+	sc := orchestration.NewStrictStageContext("goal")
+	sc.SetOutput("a", "v1")
+	sc.SetArtifact("score", 0.9)
+
+	if cols := sc.CollisionErrors(); cols != nil {
+		t.Errorf("expected nil collisions, got: %v", cols)
+	}
+}
+
+func TestNewStrictStageContext_outputCollision_recordsError(t *testing.T) {
+	sc := orchestration.NewStrictStageContext("goal")
+	sc.SetOutput("result", "first")
+	sc.SetOutput("result", "second")
+
+	cols := sc.CollisionErrors()
+	if len(cols) != 1 {
+		t.Fatalf("expected 1 collision, got %d: %v", len(cols), cols)
+	}
+	var colErr *orchestration.KeyCollisionError
+	if !errors.As(cols[0], &colErr) {
+		t.Fatalf("expected *KeyCollisionError, got %T", cols[0])
+	}
+	if colErr.Key != "result" {
+		t.Errorf("Key: got %q, want %q", colErr.Key, "result")
+	}
+	if colErr.Namespace != "output" {
+		t.Errorf("Namespace: got %q, want %q", colErr.Namespace, "output")
+	}
+}
+
+func TestNewStrictStageContext_artifactCollision_recordsError(t *testing.T) {
+	sc := orchestration.NewStrictStageContext("goal")
+	sc.SetArtifact("score", 0.8)
+	sc.SetArtifact("score", 0.9)
+
+	cols := sc.CollisionErrors()
+	if len(cols) != 1 {
+		t.Fatalf("expected 1 collision, got %d: %v", len(cols), cols)
+	}
+	var colErr *orchestration.KeyCollisionError
+	if !errors.As(cols[0], &colErr) {
+		t.Fatalf("expected *KeyCollisionError, got %T", cols[0])
+	}
+	if colErr.Namespace != "artifact" {
+		t.Errorf("Namespace: got %q, want %q", colErr.Namespace, "artifact")
+	}
+}
+
+func TestNewStrictStageContext_multipleCollisions_allRecorded(t *testing.T) {
+	sc := orchestration.NewStrictStageContext("goal")
+	sc.SetOutput("x", "1")
+	sc.SetOutput("x", "2") // collision
+	sc.SetOutput("y", "3")
+	sc.SetOutput("y", "4") // collision
+
+	cols := sc.CollisionErrors()
+	if len(cols) != 2 {
+		t.Errorf("expected 2 collisions, got %d: %v", len(cols), cols)
+	}
+}
+
+func TestNewStageContext_nonStrict_noCollisionTracking(t *testing.T) {
+	sc := orchestration.NewStageContext("goal")
+	sc.SetOutput("result", "first")
+	sc.SetOutput("result", "second") // silent overwrite
+
+	if cols := sc.CollisionErrors(); cols != nil {
+		t.Errorf("non-strict StageContext must never record collisions, got: %v", cols)
+	}
+	if v, _ := sc.Output("result"); v != "second" {
+		t.Errorf("last write must win in non-strict mode, got %q", v)
 	}
 }
 

@@ -280,6 +280,127 @@ func TestParallelGroup_MaxConcurrency_zeroMeansUnlimited(t *testing.T) {
 	}
 }
 
+// --- WithStrictKeys ---
+
+func TestParallelGroup_WithStrictKeys_noCollision_noError(t *testing.T) {
+	group := orchestration.NewParallelGroup(
+		orchestration.WithParallelStages(
+			orchestration.Stage("a", &mockExecutor{outputKey: "a", value: "va"}),
+			orchestration.Stage("b", &mockExecutor{outputKey: "b", value: "vb"}),
+		),
+		orchestration.WithStrictKeys(),
+	)
+
+	_, err := group.Run(context.Background(), "goal")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParallelGroup_WithStrictKeys_collision_returnsKeyCollisionError(t *testing.T) {
+	group := orchestration.NewParallelGroup(
+		orchestration.WithParallelStages(
+			orchestration.Stage("a", executorFunc(func(_ context.Context, sc *orchestration.StageContext) error {
+				sc.SetOutput("result", "from-a")
+				return nil
+			})),
+			orchestration.Stage("b", executorFunc(func(_ context.Context, sc *orchestration.StageContext) error {
+				sc.SetOutput("result", "from-b")
+				return nil
+			})),
+		),
+		orchestration.WithStrictKeys(),
+	)
+
+	_, err := group.Run(context.Background(), "goal")
+
+	if err == nil {
+		t.Fatal("expected KeyCollisionError, got nil")
+	}
+	var colErr *orchestration.KeyCollisionError
+	if !errors.As(err, &colErr) {
+		t.Fatalf("expected *KeyCollisionError in chain, got: %T — %v", err, err)
+	}
+	if colErr.Key != "result" {
+		t.Errorf("Key: got %q, want %q", colErr.Key, "result")
+	}
+}
+
+func TestParallelGroup_WithStrictKeys_collisionAndStageError_bothReported(t *testing.T) {
+	errBoom := errors.New("boom")
+	group := orchestration.NewParallelGroup(
+		orchestration.WithParallelStages(
+			orchestration.Stage("a", executorFunc(func(_ context.Context, sc *orchestration.StageContext) error {
+				sc.SetOutput("shared", "from-a")
+				return nil
+			})),
+			orchestration.Stage("b", executorFunc(func(_ context.Context, sc *orchestration.StageContext) error {
+				sc.SetOutput("shared", "from-b")
+				return errBoom
+			})),
+		),
+		orchestration.WithStrictKeys(),
+	)
+
+	_, err := group.Run(context.Background(), "goal")
+
+	if !errors.Is(err, errBoom) {
+		t.Errorf("expected errBoom in chain, got: %v", err)
+	}
+	var colErr *orchestration.KeyCollisionError
+	if !errors.As(err, &colErr) {
+		t.Errorf("expected *KeyCollisionError in chain, got: %v", err)
+	}
+}
+
+func TestParallelGroup_WithoutStrictKeys_silentOverwrite(t *testing.T) {
+	group := orchestration.NewParallelGroup(
+		orchestration.WithParallelStages(
+			orchestration.Stage("a", executorFunc(func(_ context.Context, sc *orchestration.StageContext) error {
+				sc.SetOutput("shared", "from-a")
+				return nil
+			})),
+			orchestration.Stage("b", executorFunc(func(_ context.Context, sc *orchestration.StageContext) error {
+				sc.SetOutput("shared", "from-b")
+				return nil
+			})),
+		),
+	)
+
+	_, err := group.Run(context.Background(), "goal")
+
+	if err != nil {
+		t.Fatalf("non-strict mode must not return collision errors, got: %v", err)
+	}
+}
+
+func TestParallelGroup_WithStrictKeys_RunWithContext_strictSc(t *testing.T) {
+	group := orchestration.NewParallelGroup(
+		orchestration.WithParallelStages(
+			orchestration.Stage("a", executorFunc(func(_ context.Context, sc *orchestration.StageContext) error {
+				sc.SetOutput("key", "from-a")
+				return nil
+			})),
+			orchestration.Stage("b", executorFunc(func(_ context.Context, sc *orchestration.StageContext) error {
+				sc.SetOutput("key", "from-b")
+				return nil
+			})),
+		),
+	)
+
+	sc := orchestration.NewStrictStageContext("goal")
+	err := group.RunWithContext(context.Background(), sc)
+
+	if err == nil {
+		t.Fatal("expected KeyCollisionError via strict StageContext, got nil")
+	}
+	var colErr *orchestration.KeyCollisionError
+	if !errors.As(err, &colErr) {
+		t.Fatalf("expected *KeyCollisionError in chain, got: %T — %v", err, err)
+	}
+}
+
 // TestParallelGroup_RaceDetector verifies there are no race conditions when
 // parallel stages write to different keys via the thread-safe StageContext API.
 // Run with: go test -race ./...
