@@ -1053,3 +1053,243 @@ func TestPipeline_BulkFallbackWhenNotSupported(t *testing.T) {
 	}
 }
 
+// ── Reranker tests ────────────────────────────────────────────────────────────
+
+// recordingStore wraps basicStore and records the topK argument passed to Search.
+type recordingStore struct {
+	mu       sync.Mutex
+	lastTopK int
+	msgs     []goagent.ScoredMessage
+}
+
+func (s *recordingStore) Upsert(_ context.Context, _ string, _ []float32, _ goagent.Message) error {
+	return nil
+}
+
+func (s *recordingStore) Search(_ context.Context, _ []float32, topK int, _ ...goagent.SearchOption) ([]goagent.ScoredMessage, error) {
+	s.mu.Lock()
+	s.lastTopK = topK
+	s.mu.Unlock()
+	n := topK
+	if n > len(s.msgs) {
+		n = len(s.msgs)
+	}
+	return s.msgs[:n], nil
+}
+
+func (s *recordingStore) Delete(_ context.Context, _ string) error { return nil }
+
+// passThroughReranker returns the input unchanged (identity reranker for testing).
+type passThroughReranker struct{}
+
+func (r *passThroughReranker) Rerank(_ context.Context, _ string, results []rag.SearchResult, topK int) ([]rag.SearchResult, error) {
+	if len(results) > topK {
+		results = results[:topK]
+	}
+	return results, nil
+}
+
+// fixedReranker returns a pre-configured slice, ignoring the input entirely.
+type fixedReranker struct {
+	results []rag.SearchResult
+	err     error
+}
+
+func (r *fixedReranker) Rerank(_ context.Context, _ string, _ []rag.SearchResult, _ int) ([]rag.SearchResult, error) {
+	return r.results, r.err
+}
+
+// TestPipeline_WithoutRerankerRerankScoreIsZero verifies that when no reranker
+// is configured, all returned SearchResults have RerankScore == 0.0.
+func TestPipeline_WithoutRerankerRerankScoreIsZero(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	store := vector.NewInMemoryStore()
+	p, err := rag.NewPipeline(
+		vector.NewNoOpChunker(),
+		&stubEmbedder{vec: []float32{1, 0}},
+		store,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.Index(ctx, rag.Document{
+		Source:  "a.md",
+		Content: []goagent.ContentBlock{goagent.TextBlock("text")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := p.Search(ctx, "text", 1)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	for _, r := range results {
+		if r.RerankScore != 0.0 {
+			t.Errorf("RerankScore = %.3f, want 0.0 when no reranker configured", r.RerankScore)
+		}
+	}
+}
+
+// TestPipeline_WithRerankerUsesRerankerOutput verifies that when a reranker is
+// configured, Search returns the slice produced by the reranker.
+func TestPipeline_WithRerankerUsesRerankerOutput(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	expectedSource := "reranked-source"
+	fixed := &fixedReranker{
+		results: []rag.SearchResult{
+			{
+				Message: goagent.Message{
+					Role:    goagent.RoleDocument,
+					Content: []goagent.ContentBlock{goagent.TextBlock("reranked text")},
+					Metadata: map[string]any{"source": expectedSource},
+				},
+				Score:       0.4,
+				RerankScore: 0.9,
+				Source:      expectedSource,
+			},
+		},
+	}
+
+	store := vector.NewInMemoryStore()
+	p, err := rag.NewPipeline(
+		vector.NewNoOpChunker(),
+		&stubEmbedder{vec: []float32{1, 0}},
+		store,
+		rag.WithReranker(fixed, 10),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.Index(ctx, rag.Document{
+		Source:  "a.md",
+		Content: []goagent.ContentBlock{goagent.TextBlock("text")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := p.Search(ctx, "text", 1)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	if results[0].Source != expectedSource {
+		t.Errorf("Source = %q, want %q", results[0].Source, expectedSource)
+	}
+	if results[0].RerankScore != 0.9 {
+		t.Errorf("RerankScore = %.2f, want 0.9", results[0].RerankScore)
+	}
+}
+
+// TestPipeline_OverFetchPassesRerankNToStore verifies that when rerankN > topK,
+// the store's Search is called with rerankN instead of topK.
+func TestPipeline_OverFetchPassesRerankNToStore(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	store := &recordingStore{}
+	p, err := rag.NewPipeline(
+		vector.NewNoOpChunker(),
+		&stubEmbedder{vec: []float32{1, 0}},
+		store,
+		rag.WithReranker(&passThroughReranker{}, 50),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := p.Search(ctx, "query", 5); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	store.mu.Lock()
+	got := store.lastTopK
+	store.mu.Unlock()
+
+	if got != 50 {
+		t.Errorf("store.Search called with topK=%d, want 50 (rerankN)", got)
+	}
+}
+
+// TestPipeline_OverFetchNotAppliedWhenRerankNSmallerThanTopK verifies that when
+// rerankN <= topK, the store is queried with topK (no over-fetch).
+func TestPipeline_OverFetchNotAppliedWhenRerankNSmallerThanTopK(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	store := &recordingStore{}
+	p, err := rag.NewPipeline(
+		vector.NewNoOpChunker(),
+		&stubEmbedder{vec: []float32{1, 0}},
+		store,
+		rag.WithReranker(&passThroughReranker{}, 3), // rerankN=3 < topK=5
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := p.Search(ctx, "query", 5); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	store.mu.Lock()
+	got := store.lastTopK
+	store.mu.Unlock()
+
+	if got != 5 {
+		t.Errorf("store.Search called with topK=%d, want 5 (topK, not rerankN)", got)
+	}
+}
+
+// TestPipeline_RerankerErrorPropagates verifies that a reranker failure is
+// returned as an error from Search and the observer is notified.
+func TestPipeline_RerankerErrorPropagates(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	rerankErr := errors.New("reranker failed")
+	var observerErr error
+
+	store := vector.NewInMemoryStore()
+	p, err := rag.NewPipeline(
+		vector.NewNoOpChunker(),
+		&stubEmbedder{vec: []float32{1, 0}},
+		store,
+		rag.WithReranker(&fixedReranker{err: rerankErr}, 10),
+		rag.WithSearchObserver(func(_ context.Context, _ string, _ []rag.SearchResult, _ time.Duration, err error) {
+			observerErr = err
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.Index(ctx, rag.Document{
+		Source:  "a.md",
+		Content: []goagent.ContentBlock{goagent.TextBlock("text")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, searchErr := p.Search(ctx, "query", 1)
+	if searchErr == nil {
+		t.Fatal("expected Search to return error")
+	}
+	if !errors.Is(searchErr, rerankErr) {
+		t.Errorf("error chain does not wrap rerankErr: %v", searchErr)
+	}
+	if observerErr == nil {
+		t.Fatal("observer was not called with reranker error")
+	}
+	if !errors.Is(observerErr, rerankErr) {
+		t.Errorf("observer error does not wrap rerankErr: %v", observerErr)
+	}
+}
+

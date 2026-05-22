@@ -22,11 +22,14 @@ type Document struct {
 // SearchResult is the enriched result of a [Pipeline.Search] call.
 // Score is the cosine similarity in [0.0, 1.0] for embedders that produce
 // normalised vectors (most modern text embedders do).
+// RerankScore is the relevance score assigned by a Reranker; it is 0.0 when no
+// reranker is configured, allowing callers to distinguish the two signal sources.
 // Source identifies the origin document, extracted from the chunk's Metadata.
 type SearchResult struct {
-	Message goagent.Message
-	Score   float64
-	Source  string
+	Message     goagent.Message
+	Score       float64 // cosine similarity from the bi-encoder
+	RerankScore float64 // relevance score from the reranker (0.0 if not reranked)
+	Source      string
 }
 
 // SearchObserver is a callback invoked after every [Pipeline.Search] call.
@@ -158,6 +161,8 @@ type Pipeline struct {
 	store         goagent.VectorStore
 	observer      SearchObserver // nil = no-op
 	indexObserver IndexObserver  // nil = no-op
+	reranker      Reranker       // nil = zero-cost path, no reranking
+	rerankN       int            // candidates to fetch from store before reranking
 }
 
 // PipelineOption configures a Pipeline at construction time.
@@ -173,6 +178,24 @@ func WithSearchObserver(obs SearchObserver) PipelineOption {
 // When not configured, Index has no callback overhead.
 func WithIndexObserver(obs IndexObserver) PipelineOption {
 	return func(p *Pipeline) { p.indexObserver = obs }
+}
+
+// WithReranker configures a Reranker and the number of candidates to fetch from
+// the store before reranking (over-fetch pattern).
+//
+// rerankN should be greater than the topK passed to Search so the reranker has
+// sufficient candidates to improve precision. If rerankN <= topK, the store is
+// queried for topK results directly (no over-fetch overhead).
+//
+// Example for production:
+//
+//	rag.WithReranker(rag.NewLLMReranker(provider, "claude-haiku-4-5-20251001"), 50)
+//	// Search(ctx, q, 5) → fetches 50 from store → reranker selects 5
+func WithReranker(r Reranker, rerankN int) PipelineOption {
+	return func(p *Pipeline) {
+		p.reranker = r
+		p.rerankN = rerankN
+	}
 }
 
 // NewPipeline constructs a Pipeline with the given components.
@@ -354,7 +377,10 @@ func (p *Pipeline) indexOne(ctx context.Context, doc Document) error {
 // Search embeds query, retrieves the topK most similar chunks from the
 // VectorStore, and returns SearchResults with similarity scores and source info.
 //
-// Scores are the similarity values returned directly by the VectorStore.
+// When a Reranker is configured via [WithReranker], Search applies the over-fetch
+// pattern: it requests rerankN candidates from the store and then lets the reranker
+// select the topK most relevant. The SearchObserver receives results after reranking,
+// so both Score and RerankScore are available for comparison.
 //
 // The SearchObserver (if configured) is invoked after every Search, including
 // on error — it receives the error as its last argument.
@@ -367,34 +393,48 @@ func (p *Pipeline) Search(
 
 	vec, err := p.embedder.Embed(ctx, []goagent.ContentBlock{goagent.TextBlock(query)})
 	if err != nil {
-		if p.observer != nil {
-			p.observer(ctx, query, nil, time.Since(start), err)
-		}
+		p.notifyObserver(ctx, query, nil, time.Since(start), err)
 		return nil, fmt.Errorf("rag: embedding query: %w", err)
 	}
 
-	scored, err := p.store.Search(ctx, vec, topK)
-	dur := time.Since(start)
-	var results []SearchResult
-	if err == nil {
-		results = make([]SearchResult, len(scored))
-		for i, s := range scored {
-			results[i] = SearchResult{
-				Message: s.Message,
-				Score:   s.Score,
-				Source:  extractSource(s.Message),
-			}
+	// Over-fetch: when a reranker is configured and rerankN > topK, request more
+	// candidates from the store so the reranker has enough to work with.
+	fetchN := topK
+	if p.reranker != nil && p.rerankN > topK {
+		fetchN = p.rerankN
+	}
+
+	scored, err := p.store.Search(ctx, vec, fetchN)
+	if err != nil {
+		p.notifyObserver(ctx, query, nil, time.Since(start), err)
+		return nil, fmt.Errorf("rag: vector search: %w", err)
+	}
+
+	results := make([]SearchResult, len(scored))
+	for i, s := range scored {
+		results[i] = SearchResult{
+			Message: s.Message,
+			Score:   s.Score,
+			Source:  extractSource(s.Message),
 		}
 	}
 
+	if p.reranker != nil {
+		results, err = p.reranker.Rerank(ctx, query, results, topK)
+		if err != nil {
+			p.notifyObserver(ctx, query, nil, time.Since(start), err)
+			return nil, fmt.Errorf("rag: reranking: %w", err)
+		}
+	}
+
+	p.notifyObserver(ctx, query, results, time.Since(start), nil)
+	return results, nil
+}
+
+func (p *Pipeline) notifyObserver(ctx context.Context, query string, results []SearchResult, dur time.Duration, err error) {
 	if p.observer != nil {
 		p.observer(ctx, query, results, dur, err)
 	}
-
-	if err != nil {
-		return nil, fmt.Errorf("rag: vector search: %w", err)
-	}
-	return results, nil
 }
 
 // chunkToMessage builds a Message from a chunk, populating Metadata["source"]
