@@ -1,71 +1,127 @@
-# goagent — Especificaciones para agentes IA
+# goagent — Specifications for AI Agents
 
-Documento de referencia prescriptivo. Orientado a un agente IA que necesita escribir código correcto para este proyecto sin leer el código fuente completo.
+Prescriptive reference document. Intended for an AI agent that needs to write correct code for this project without reading the full source.
 
-**Complementa a [`ARCHITECTURE.md`](ARCHITECTURE.md)** — ese documento explica *cómo funciona internamente*. Este explica *qué reglas seguir para contribuir*.
+**Complements [`ARCHITECTURE.md`](ARCHITECTURE.md)** — that document explains *how it works internally*. This one explains *what rules to follow when contributing*.
 
 ---
 
-## 1. Reglas no-negociables
+## 0. Before Making Any Change
 
-Estas reglas se aplican a **todo** el código del proyecto. Violarlas es un error aunque el código compile.
+This section is mandatory. Read it before touching any code.
 
-### 1.1 Firmas de función
+### 0.1 When to ask first
 
-1. **`context.Context` es siempre el primer parámetro** en toda operación bloqueante (I/O, llamadas a LLM, acceso a memoria, ejecución de tools). Sin excepciones.
-2. **`error` es siempre el último valor de retorno** cuando una función puede fallar.
-3. Los parámetros variádicos de opciones (`...Option`) van siempre al final: `func New(required T, opts ...Option)`.
+**Always ask the user before proceeding** when a proposed change involves any of the following:
+
+| Trigger | Examples |
+|---------|---------|
+| Violates a rule in this document | Adding global state, using `panic`, ignoring `ctx` |
+| Modifies a public interface signature | Adding/removing methods, changing parameter types or return types |
+| Renames or removes exported symbols | Renaming `WithModel` → `WithModelID`, deleting `ToolBlocksFunc` |
+| Adds a new dependency | Any new entry in `go.mod` |
+| Changes a default behavior | Flipping a default from `true` to `false`, changing iteration budget |
+| Requires significant cross-package refactoring | Changes that touch ≥ 3 packages or affect the ReAct loop |
+| Is architecturally ambiguous | Multiple valid approaches with real trade-offs |
+
+**Never assume** that a behavior is desired just because it seems reasonable. When in doubt, ask.
+
+### 0.2 Required format when asking
+
+When a change requires user approval, present it in this structure:
+
+```
+**Problem**
+One paragraph describing what the current code does, what is missing or broken,
+and why a change is needed.
+
+**Proposal A — [short name]**
+Description of the approach.
+✅ Pros: ...
+❌ Cons / trade-offs: ...
+
+**Proposal B — [short name]**
+Description of the approach.
+✅ Pros: ...
+❌ Cons / trade-offs: ...
+
+**Recommendation:** Proposal X, because [one-sentence rationale].
+```
+
+Provide at least 2 proposals. If only one approach exists, say so explicitly and explain why.
+
+### 0.3 Changes that are safe to make without asking
+
+The following changes are low-risk and do not require prior approval:
+
+- Adding a new private (unexported) helper function
+- Adding a new test or example
+- Fixing a typo in a comment or doc string
+- Implementing a new `Tool`, `Provider`, or `VectorStore` that follows existing patterns exactly
+- Bug fixes that do not change the public API
+
+---
+
+## 1. Non-negotiable Rules
+
+These rules apply to **all** code in the project. Violating them is an error even if the code compiles.
+
+### 1.1 Function signatures
+
+1. **`context.Context` is always the first parameter** in every blocking operation (I/O, LLM calls, memory access, tool execution). No exceptions.
+2. **`error` is always the last return value** when a function can fail.
+3. **Variadic option parameters (`...Option`) always go last:** `func New(required T, opts ...Option)`.
 
 ### 1.2 Interfaces
 
-4. **Las interfaces tienen ≤ 3 métodos.** Si necesitas más, divide en interfaces más pequeñas que se composgan.
-5. **Las interfaces se definen donde se consumen**, no donde se implementan. El paquete `goagent` define `Provider`, `Tool`, `Embedder` — los paquetes `providers/` los implementan.
-6. **Solo exporta interfaces que el caller necesita implementar.** Interfaces puramente internas van en `internal/`.
-7. **Las extensiones opcionales van como interfaces separadas**, no en la interfaz principal. El caller hace type assertion en runtime. Ejemplo: `BulkVectorStore` extiende `VectorStore`; `BatchEmbedder` extiende `Embedder`.
+4. **Interfaces have ≤ 3 methods.** If you need more, split into smaller composable interfaces.
+5. **Interfaces are defined where they are consumed**, not where they are implemented. The `goagent` package defines `Provider`, `Tool`, `Embedder` — the `providers/` packages implement them.
+6. **Only export interfaces that callers need to implement.** Purely internal interfaces go in `internal/`.
+7. **Optional extensions are separate interfaces**, not additions to the main interface. The caller type-asserts at runtime. Example: `BulkVectorStore` extends `VectorStore`; `BatchEmbedder` extends `Embedder`.
 
-### 1.3 Configuración
+### 1.3 Configuration
 
-8. **Functional options** es el único patrón de configuración. Los constructores reciben `...Option`; las opciones son `func(*options)`.
-9. **El zero-value de structs de configuración debe ser funcional** o equivalente al default documentado. Ejemplo: `Hooks{}` es un no-op válido.
-10. **Los valores por defecto se documentan en el GoDoc de la opción**, no en el nombre ni en el tipo.
+8. **Functional options** is the only configuration pattern. Constructors accept `...Option`; options are `func(*options)`.
+9. **The zero-value of configuration structs must be functional** or equivalent to the documented default. Example: `Hooks{}` is a valid no-op.
+10. **Default values are documented in the GoDoc of the option**, not in the name or type.
 
-### 1.4 Errores
+### 1.4 Errors
 
-11. **Todos los errores del paquete son tipados** — sentinel (`var ErrX = errors.New(...)`) o struct (`type XError struct{...}`). Nunca `fmt.Errorf("...")` directo en código de biblioteca.
-12. **Los errores wrapeables implementan `Unwrap() error`** para compatibilidad con `errors.Is` / `errors.As`.
-13. **Los errores se envuelven con contexto usando `%w`**: `fmt.Errorf("operacion: %w", err)`.
-14. **Nunca uses `panic`** en código de biblioteca. Si una función no puede continuar, devuelve `error`.
+11. **All package errors are typed** — sentinel (`var ErrX = errors.New(...)`) or struct (`type XError struct{...}`). Never a bare `fmt.Errorf("...")` in library code.
+12. **Wrappable errors implement `Unwrap() error`** for compatibility with `errors.Is` / `errors.As`.
+13. **Errors are wrapped with context using `%w`:** `fmt.Errorf("operation: %w", err)`.
+14. **Never use `panic`** in library code. If a function cannot continue, return an `error`.
 
-### 1.5 Estado y concurrencia
+### 1.5 State and concurrency
 
-15. **Cero estado global mutable.** Sin `var` de paquete que se modifiquen en runtime. Sin `init()`.
-16. **`Agent` es inmutable después de `New()`**. Todos los campos se escriben una vez; `Run` es seguro para llamadas concurrentes.
-17. **Las goroutines deben tener ciclo de vida documentado.** Si lanzas una goroutine, documenta cuándo termina y cómo se cancela.
-18. **Respeta `ctx.Done()`** en bucles y operaciones largas. La cancelación debe propagarse.
+15. **Zero global mutable state.** No package-level `var` modified at runtime. No `init()`.
+16. **`Agent` is immutable after `New()`**. All fields are written once; `Run` is safe for concurrent calls.
+17. **Goroutines must have documented lifecycles.** If you launch a goroutine, document when it exits and how it is cancelled.
+18. **Respect `ctx.Done()`** in loops and long-running operations. Cancellation must propagate.
 
 ### 1.6 Testing
 
-19. **Tests con race detector:** `go test -race ./...`. Todo commit debe pasar.
-20. **Tests table-driven** como patrón principal. Cada caso tiene nombre descriptivo.
-21. **Black-box preferred:** `package foo_test` salvo que necesites acceso a internals.
-22. **Sin frameworks externos de mocking.** Implementa las interfaces directamente en `internal/testutil/`.
-23. **Cobertura mínima:** ≥ 80 % en paquetes core, ≥ 70 % en sub-paquetes.
+19. **Race detector on all tests:** `go test -race ./...`. Every commit must pass.
+20. **Table-driven tests** as the primary pattern. Each case has a descriptive name.
+21. **Black-box preferred:** `package foo_test` unless internal access is required.
+22. **No external mocking frameworks.** Implement interfaces directly in `internal/testutil/`.
+23. **Minimum coverage:** ≥ 80 % in core packages, ≥ 70 % in sub-packages.
 
-### 1.7 Documentación
+### 1.7 Documentation
 
-24. **Todo símbolo exportado tiene GoDoc.** El comentario empieza con el nombre del símbolo.
-25. **Sin comentarios que repitan el código.** El comentario explica el *por qué* o el *contrato de comportamiento*, no el *qué* hace el código.
-26. **`Example*` functions** para todo constructor y función principal exportada — aparecen en pkg.go.dev.
+24. **Every exported symbol has GoDoc.** The comment starts with the symbol name.
+25. **No comments that repeat the code.** Comments explain the *why* or the *behavioral contract*, not the *what*.
+26. **`Example*` functions** for every constructor and main exported function — they appear on pkg.go.dev.
 
 ### 1.8 Imports
 
-27. **Tres grupos, separados por línea en blanco:** stdlib / dependencias externas / paquetes internos del proyecto.
+27. **Three groups, separated by blank lines:** stdlib / external dependencies / internal project packages.
 
 ---
 
-## 2. Interfaces — registro completo
+## 2. Interfaces — complete registry
 
-### 2.1 Interfaces principales (paquete `goagent`)
+### 2.1 Core interfaces (package `goagent`)
 
 #### `Provider`
 ```go
@@ -73,15 +129,15 @@ type Provider interface {
     Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error)
 }
 ```
-Abstracción del backend LLM. `req.Model` nunca está vacío — el agent lo establece antes de llamar.
+LLM backend abstraction. `req.Model` is never empty — the agent sets it before calling.
 
-#### `StreamingProvider` _(opcional — type assertion)_
+#### `StreamingProvider` _(optional — type assertion)_
 ```go
 type StreamingProvider interface {
     CompleteStream(ctx context.Context, req CompletionRequest) (Stream, error)
 }
 ```
-El agent detecta soporte en runtime: `if sp, ok := provider.(StreamingProvider); ok { ... }`. No implementarlo no es un error; el agent hace fallback a `Provider.Complete`.
+The agent detects support at runtime: `if sp, ok := provider.(StreamingProvider); ok { ... }`. Not implementing it is not an error; the agent falls back to `Provider.Complete`.
 
 #### `Stream`
 ```go
@@ -92,14 +148,14 @@ type Stream interface {
     Close() error
 }
 ```
-Iterador de eventos de streaming. Patrón de uso:
+Event iterator for streaming. Usage pattern:
 ```go
 for stream.Next(ctx) {
     ev := stream.Event()
 }
 if err := stream.Err(); err != nil { ... }
 ```
-`Close()` debe llamarse siempre (defer). Seguro llamar múltiples veces.
+`Close()` must always be called (defer). Safe to call multiple times.
 
 #### `Tool`
 ```go
@@ -108,7 +164,7 @@ type Tool interface {
     Execute(ctx context.Context, args map[string]any) ([]ContentBlock, error)
 }
 ```
-`Definition()` no recibe ctx — es una constante. `Execute` recibe `args` ya deserializados del JSON del modelo. Los errores de `Execute` se reportan al modelo como texto; no abortan el loop ni los otros tools.
+`Definition()` takes no ctx — it is a constant. `Execute` receives `args` already deserialized from the model's JSON. Errors from `Execute` are reported to the model as text; they do not abort the loop or other tools.
 
 #### `ShortTermMemory`
 ```go
@@ -117,7 +173,7 @@ type ShortTermMemory interface {
     Append(ctx context.Context, msgs ...Message) error
 }
 ```
-Historia de conversación dentro de una sesión. El filtrado (FixedWindow, TokenWindow) ocurre en `Messages`, nunca en `Append`.
+Conversation history within a session. Filtering (FixedWindow, TokenWindow) happens in `Messages`, never in `Append`.
 
 #### `LongTermMemory`
 ```go
@@ -126,7 +182,7 @@ type LongTermMemory interface {
     Retrieve(ctx context.Context, query []ContentBlock, topK int, opts ...SearchOption) ([]ScoredMessage, error)
 }
 ```
-Recuperación semántica entre sesiones. `opts` se pasan al `VectorStore.Search` subyacente.
+Semantic retrieval across sessions. `opts` are forwarded to the underlying `VectorStore.Search` call.
 
 #### `VectorStore`
 ```go
@@ -136,7 +192,7 @@ type VectorStore interface {
     Delete(ctx context.Context, id string) error
 }
 ```
-`Delete` es no-op si el ID no existe. `Search` devuelve score en [0.0, 1.0] para vectores normalizados con cosine similarity.
+`Delete` is a no-op if the ID does not exist. `Search` returns scores in [0.0, 1.0] for normalized vectors with cosine similarity.
 
 #### `Embedder`
 ```go
@@ -144,47 +200,47 @@ type Embedder interface {
     Embed(ctx context.Context, content []ContentBlock) ([]float32, error)
 }
 ```
-Recibe `[]ContentBlock` completo para soporte multimodal. Devuelve `vector.ErrNoEmbeddeableContent` cuando no hay bloques embeddables.
+Receives the full `[]ContentBlock` for multimodal support. Returns `vector.ErrNoEmbeddeableContent` when there are no embeddable blocks.
 
-#### `TransientError` _(clasificación de errores — type assertion)_
+#### `TransientError` _(error classification — type assertion)_
 ```go
 type TransientError interface {
     IsTransient() bool
 }
 ```
-Los providers pueden implementarla en sus errores para que `RetryProvider` sepa si reintentar.
+Providers can implement this on their error types so that `RetryProvider` knows whether to retry.
 
-### 2.2 Interfaces opcionales (extensión por type assertion)
+### 2.2 Optional interfaces (extension by type assertion)
 
 ```go
-// BulkVectorStore — operaciones batch; más barato que N Upsert individuales
+// BulkVectorStore — batch operations; cheaper than N individual Upserts
 type BulkVectorStore interface {
     VectorStore
     BulkUpsert(ctx context.Context, entries []UpsertEntry) error
     BulkDelete(ctx context.Context, ids []string) error
 }
 
-// BatchEmbedder — N embeddings en una sola llamada HTTP
+// BatchEmbedder — N embeddings in a single HTTP round-trip
 type BatchEmbedder interface {
     Embedder
     BatchEmbed(ctx context.Context, inputs [][]ContentBlock) ([][]float32, error)
 }
 
-// CountableStore — count sin query vectorial (health checks, monitoreo)
+// CountableStore — count without a vector query (health checks, monitoring)
 type CountableStore interface {
     Count(ctx context.Context, opts ...SearchOption) (int64, error)
 }
 ```
 
-**Regla:** el código que las usa siempre hace fallback si la assertion falla:
+**Rule:** code that uses these always falls back gracefully when the assertion fails:
 ```go
 if bulk, ok := store.(BulkVectorStore); ok {
     return bulk.BulkUpsert(ctx, entries)
 }
-// fallback: loop de Upsert individuales
+// fallback: loop of individual Upsert calls
 ```
 
-### 2.3 Interfaces de sub-paquetes
+### 2.3 Sub-package interfaces
 
 #### `memory/storage.Storage`
 ```go
@@ -201,7 +257,7 @@ type Policy interface {
     Apply(ctx context.Context, msgs []Message) []Message
 }
 ```
-Lee el historial, devuelve el subconjunto que verá el provider. Nunca modifica en escritura.
+Reads the history, returns the subset the provider will see. Never modifies at write time.
 
 #### `memory/vector.Chunker`
 ```go
@@ -230,107 +286,107 @@ type Executor interface {
     RunWithContext(ctx context.Context, sc *StageContext) error
 }
 ```
-Toda primitiva de orquestación implementa `Executor`. Hace composición posible sin type assertions.
+Every orchestration primitive implements `Executor`. This enables composition without type assertions.
 
-#### `orchestration.NodeFunc` _(tipo función, no interface)_
+#### `orchestration.NodeFunc` _(function type, not interface)_
 ```go
 type NodeFunc func(ctx context.Context, sc *StageContext) (next string, err error)
 ```
-Devolver `""` como `next` termina el grafo.
+Returning `""` as `next` terminates the graph.
 
 ---
 
-## 3. Opciones de configuración
+## 3. Configuration options
 
-### 3.1 Opciones del Agent (`goagent.Option`)
+### 3.1 Agent options (`goagent.Option`)
 
-| Opción | Tipo del valor | Default | Descripción |
-|--------|---------------|---------|-------------|
-| `WithProvider(p)` | `Provider` | — | **Requerido.** Backend LLM |
-| `WithModel(m)` | `string` | `""` | **Requerido.** ID del modelo enviado en `CompletionRequest` |
-| `WithTool(t)` | `Tool` | — | Registra un tool (repetible) |
-| `WithSystemPrompt(s)` | `string` | `""` | Instrucción de sistema para cada run |
-| `WithMaxIterations(n)` | `int` | `10` | Presupuesto de iteraciones del loop ReAct |
-| `WithName(name)` | `string` | `""` | Identidad del agente; namespace de sesión para LongTermMemory |
-| `WithLogger(l)` | `*slog.Logger` | `slog.Default()` | Logger estructurado |
-| `WithShortTermMemory(m)` | `ShortTermMemory` | `nil` | Historia de conversación |
-| `WithLongTermMemory(m)` | `LongTermMemory` | `nil` | Recuperación semántica entre sesiones |
-| `WithWritePolicy(p)` | `WritePolicy` | `StoreAlways` | Qué persiste en LongTermMemory |
-| `WithLongTermTopK(k)` | `int` | `3` | Mensajes a recuperar de LongTermMemory por run |
-| `WithShortTermTraceTools(b)` | `bool` | `true` | Incluir traza completa de tools en memoria |
-| `WithThinking(budget)` | `int` | — | Extended thinking, budget fijo en tokens |
-| `WithAdaptiveThinking()` | — | — | Extended thinking, budget decidido por el modelo |
-| `WithEffort(level)` | `string` | `""` | `"high"` / `"medium"` / `"low"` / `""` (default del modelo) |
-| `WithToolTimeout(d)` | `time.Duration` | `0` (off) | Deadline por tool; cancela ctx del tool tras `d` |
-| `WithCircuitBreaker(n, d)` | `int, time.Duration` | — | Abre el circuito tras `n` fallos consecutivos; resetea tras `d` |
-| `WithDispatchMiddleware(mw)` | `DispatchMiddleware` | — | Middleware custom en la cadena de dispatch (repetible) |
-| `WithHooks(h)` | `Hooks` | `Hooks{}` | Callbacks de observabilidad |
-| `WithRunResult(dst)` | `*RunResult` | `nil` | Destino síncrono de métricas del run |
-| `WithMCPConnector(fn)` | `MCPConnectorFn` | — | Conexión MCP de bajo nivel |
+| Option | Value type | Default | Description |
+|--------|-----------|---------|-------------|
+| `WithProvider(p)` | `Provider` | — | **Required.** LLM backend |
+| `WithModel(m)` | `string` | `""` | **Required.** Model ID sent in `CompletionRequest` |
+| `WithTool(t)` | `Tool` | — | Register a tool (repeatable) |
+| `WithSystemPrompt(s)` | `string` | `""` | System instruction for every run |
+| `WithMaxIterations(n)` | `int` | `10` | ReAct loop iteration budget |
+| `WithName(name)` | `string` | `""` | Agent identity; session namespace for LongTermMemory |
+| `WithLogger(l)` | `*slog.Logger` | `slog.Default()` | Structured logger |
+| `WithShortTermMemory(m)` | `ShortTermMemory` | `nil` | Conversation history |
+| `WithLongTermMemory(m)` | `LongTermMemory` | `nil` | Semantic retrieval across sessions |
+| `WithWritePolicy(p)` | `WritePolicy` | `StoreAlways` | What to persist to LongTermMemory |
+| `WithLongTermTopK(k)` | `int` | `3` | Messages to retrieve from LongTermMemory per run |
+| `WithShortTermTraceTools(b)` | `bool` | `true` | Include full tool trace in short-term history |
+| `WithThinking(budget)` | `int` | — | Extended thinking, fixed token budget |
+| `WithAdaptiveThinking()` | — | — | Extended thinking, model-chosen budget |
+| `WithEffort(level)` | `string` | `""` | `"high"` / `"medium"` / `"low"` / `""` (model default) |
+| `WithToolTimeout(d)` | `time.Duration` | `0` (off) | Per-tool deadline; cancels the tool's ctx after `d` |
+| `WithCircuitBreaker(n, d)` | `int, time.Duration` | — | Open circuit after `n` consecutive failures; reset after `d` |
+| `WithDispatchMiddleware(mw)` | `DispatchMiddleware` | — | Custom middleware in the dispatch chain (repeatable) |
+| `WithHooks(h)` | `Hooks` | `Hooks{}` | Observability callbacks |
+| `WithRunResult(dst)` | `*RunResult` | `nil` | Synchronous metrics destination after each run |
+| `WithMCPConnector(fn)` | `MCPConnectorFn` | — | Low-level MCP connection function |
 
-### 3.2 Opciones de búsqueda (`SearchOption`)
+### 3.2 Search options (`SearchOption`)
 
-| Opción | Descripción |
+| Option | Description |
 |--------|-------------|
-| `WithScoreThreshold(min float64)` | Descarta resultados con score < min |
-| `WithFilter(f map[string]any)` | Filtra por metadata (semántica AND) |
-| `WithTokenBudget(budget int, est func)` | Tope de tokens en resultados de `Retrieve` |
+| `WithScoreThreshold(min float64)` | Discard results with score < min |
+| `WithFilter(f map[string]any)` | Filter by metadata (AND semantics) |
+| `WithTokenBudget(budget int, est func)` | Cap total token cost of `Retrieve` results |
 
-### 3.3 Opciones de streaming (`StreamOption`)
+### 3.3 Streaming options (`StreamOption`)
 
-| Opción | Default | Descripción |
+| Option | Default | Description |
 |--------|---------|-------------|
-| `WithShowThinkingText(show bool)` | `true` | Reenvía tokens de razonamiento al handler |
+| `WithShowThinkingText(show bool)` | `true` | Forward reasoning tokens to the stream handler |
 
-### 3.4 Tipos de función reutilizables
+### 3.4 Reusable function types
 
 ```go
-// WritePolicy decide qué persiste en LongTermMemory tras cada turn.
-// nil → descartar; slice no-nil → almacenar exactamente esos mensajes.
+// WritePolicy decides what to persist in LongTermMemory after each turn.
+// nil → discard; non-nil slice → store exactly those messages.
 type WritePolicy func(prompt, response Message) []Message
 
-var StoreAlways WritePolicy  // siempre persiste [prompt, response]
-func MinLength(n int) WritePolicy  // solo persiste si texto combinado > n chars
+var StoreAlways WritePolicy       // always persists [prompt, response]
+func MinLength(n int) WritePolicy // only persists if combined text length > n chars
 
-// DispatchFunc es la firma base de la cadena de middleware de tools.
+// DispatchFunc is the base signature of the tool dispatch middleware chain.
 type DispatchFunc func(ctx context.Context, name string, args map[string]any) ([]ContentBlock, error)
 
-// DispatchMiddleware envuelve DispatchFunc.
+// DispatchMiddleware wraps DispatchFunc.
 type DispatchMiddleware func(next DispatchFunc) DispatchFunc
 
-// StreamHandler es el callback de RunStream por cada StreamEvent.
+// StreamHandler is the per-event callback for RunStream.
 type StreamHandler func(event StreamEvent) error
 
-// MCPConnectorFn es la firma de una función de conexión MCP de bajo nivel.
+// MCPConnectorFn is the signature of a low-level MCP connection function.
 type MCPConnectorFn func(ctx context.Context, logger *slog.Logger) ([]Tool, io.Closer, error)
 ```
 
 ---
 
-## 4. Tipos de error
+## 4. Error types
 
-### 4.1 Errores sentinela
+### 4.1 Sentinel errors
 
 ```go
-var ErrToolNotFound     = errors.New("tool not found")
+var ErrToolNotFound       = errors.New("tool not found")
 var ErrUnsupportedContent = errors.New("unsupported content type")
-var ErrInvalidMediaType = errors.New("invalid media type")
+var ErrInvalidMediaType   = errors.New("invalid media type")
 ```
 
-Uso: `errors.Is(err, goagent.ErrToolNotFound)`.
+Usage: `errors.Is(err, goagent.ErrToolNotFound)`.
 
-### 4.2 Errores tipados (struct)
+### 4.2 Typed errors (struct)
 
-| Tipo | Campos clave | Wrappable | Cuándo |
-|------|-------------|-----------|--------|
-| `MaxIterationsError` | `Iterations int`, `LastThought string` | No | El loop agotó su presupuesto |
-| `ToolExecutionError` | `ToolName string`, `Args map[string]any`, `Cause error` | Sí (`Unwrap`) | Un tool falló; envuelve `CircuitOpenError` cuando el circuito está abierto |
-| `CircuitOpenError` | `Tool string`, `OpenUntil time.Time` | No | Tool rechazado por circuit breaker |
-| `ToolPanicError` | `ToolName string`, `Value any`, `Stack []byte` | No | Tool entró en panic (recuperado) |
-| `ProviderError` | `Provider string`, `Cause error` | Sí (`Unwrap`) | El provider devolvió un error |
-| `UnsupportedContentError` | `ContentType`, `Provider string`, `Reason string` | Sí (`Unwrap`) | Content type no soportado por el provider |
+| Type | Key fields | Wrappable | When |
+|------|-----------|-----------|------|
+| `MaxIterationsError` | `Iterations int`, `LastThought string` | No | Loop exhausted its budget |
+| `ToolExecutionError` | `ToolName string`, `Args map[string]any`, `Cause error` | Yes (`Unwrap`) | A tool failed; wraps `CircuitOpenError` when the circuit is open |
+| `CircuitOpenError` | `Tool string`, `OpenUntil time.Time` | No | Tool call rejected by circuit breaker |
+| `ToolPanicError` | `ToolName string`, `Value any`, `Stack []byte` | No | Tool panicked (recovered) |
+| `ProviderError` | `Provider string`, `Cause error` | Yes (`Unwrap`) | Provider returned an error |
+| `UnsupportedContentError` | `ContentType`, `Provider string`, `Reason string` | Yes (`Unwrap`) | Content type not supported by the provider |
 
-Uso:
+Usage:
 ```go
 var toolErr *goagent.ToolExecutionError
 if errors.As(err, &toolErr) {
@@ -338,40 +394,40 @@ if errors.As(err, &toolErr) {
 }
 ```
 
-### 4.3 Errores de sub-paquetes
+### 4.3 Sub-package errors
 
-| Paquete | Error | Cuándo |
-|---------|-------|--------|
-| `mcp` | `*MCPConnectionError` | Handshake MCP fallido |
-| `mcp` | `*MCPDiscoveryError` | `tools/list` fallido |
-| `memory` | `ErrMissingVectorStore` | `NewLongTerm` sin store |
-| `memory` | `ErrMissingEmbedder` | `NewLongTerm` sin embedder |
-| `memory/vector` | `ErrNoEmbeddeableContent` | `Embed` sin bloques de texto |
-| `orchestration` | `PanicError` | Stage de ParallelGroup entró en panic |
-| `orchestration` | `MaxRetriesError` | RetryMiddleware agotó intentos |
+| Package | Error | When |
+|---------|-------|------|
+| `mcp` | `*MCPConnectionError` | MCP handshake failed |
+| `mcp` | `*MCPDiscoveryError` | `tools/list` call failed |
+| `memory` | `ErrMissingVectorStore` | `NewLongTerm` called without a store |
+| `memory` | `ErrMissingEmbedder` | `NewLongTerm` called without an embedder |
+| `memory/vector` | `ErrNoEmbeddeableContent` | `Embed` received no text blocks |
+| `orchestration` | `PanicError` | A `ParallelGroup` stage panicked |
+| `orchestration` | `MaxRetriesError` | `RetryMiddleware` exhausted all attempts |
 
 ---
 
-## 5. Patrones de código (recetas)
+## 5. Code patterns (recipes)
 
-### 5.1 Implementar un `Tool`
+### 5.1 Implementing a `Tool`
 
 ```go
-// Opción A: ToolFunc para tools que devuelven texto
-calc := goagent.ToolFunc("calculator", "Evalúa expresiones aritméticas",
+// Option A: ToolFunc for tools that return plain text
+calc := goagent.ToolFunc("calculator", "Evaluates arithmetic expressions",
     goagent.SchemaFrom(struct {
         Op string  `json:"op"  jsonschema_enum:"add,sub,mul,div"`
         A  float64 `json:"a"`
         B  float64 `json:"b"`
     }{}),
     func(ctx context.Context, args map[string]any) (string, error) {
-        // args ya están deserializados
+        // args are already deserialized from the model's JSON
         return compute(args), nil
     },
 )
 
-// Opción B: ToolBlocksFunc para tools que devuelven ContentBlock (multimodal)
-img := goagent.ToolBlocksFunc("screenshot", "Captura la pantalla",
+// Option B: ToolBlocksFunc for tools that return ContentBlocks (multimodal)
+img := goagent.ToolBlocksFunc("screenshot", "Captures the screen",
     goagent.SchemaFrom(struct{}{}),
     func(ctx context.Context, args map[string]any) ([]goagent.ContentBlock, error) {
         data, err := captureScreen()
@@ -382,28 +438,28 @@ img := goagent.ToolBlocksFunc("screenshot", "Captura la pantalla",
     },
 )
 
-// Opción C: struct que implementa Tool directamente
+// Option C: struct that directly implements Tool
 type MyTool struct{ client *http.Client }
 
 func (t *MyTool) Definition() goagent.ToolDefinition {
     return goagent.ToolDefinition{
         Name:        "my_tool",
-        Description: "Descripción para el modelo.",
+        Description: "Description for the model.",
         Parameters:  goagent.SchemaFrom(myParams{}),
     }
 }
 
 func (t *MyTool) Execute(ctx context.Context, args map[string]any) ([]goagent.ContentBlock, error) {
-    // respeta ctx.Done()
+    // respect ctx.Done()
     result, err := t.client.Get(ctx, args["url"].(string))
     if err != nil {
-        return nil, err  // el agent reporta el error al modelo como texto
+        return nil, err  // the agent reports the error to the model as text
     }
     return []goagent.ContentBlock{goagent.TextBlock(result)}, nil
 }
 ```
 
-### 5.2 Implementar un `Provider`
+### 5.2 Implementing a `Provider`
 
 ```go
 type MyProvider struct {
@@ -411,9 +467,9 @@ type MyProvider struct {
 }
 
 func (p *MyProvider) Complete(ctx context.Context, req goagent.CompletionRequest) (goagent.CompletionResponse, error) {
-    // req.Model nunca está vacío
-    // req.Tools es nil si no hay tools registrados
-    // req.Thinking.Enabled indica si usar extended thinking
+    // req.Model is never empty
+    // req.Tools is nil when no tools are registered
+    // req.Thinking.Enabled indicates whether to use extended thinking
     resp, err := p.client.Chat(ctx, toSDKRequest(req))
     if err != nil {
         return goagent.CompletionResponse{}, &goagent.ProviderError{
@@ -424,7 +480,7 @@ func (p *MyProvider) Complete(ctx context.Context, req goagent.CompletionRequest
     return fromSDKResponse(resp), nil
 }
 
-// StreamingProvider es opcional — no implementarlo es válido
+// StreamingProvider is optional — not implementing it is valid
 func (p *MyProvider) CompleteStream(ctx context.Context, req goagent.CompletionRequest) (goagent.Stream, error) {
     stream, err := p.client.ChatStream(ctx, toSDKRequest(req))
     if err != nil {
@@ -434,7 +490,7 @@ func (p *MyProvider) CompleteStream(ctx context.Context, req goagent.CompletionR
 }
 ```
 
-### 5.3 Implementar un `VectorStore`
+### 5.3 Implementing a `VectorStore`
 
 ```go
 type MyStore struct {
@@ -450,21 +506,20 @@ func (s *MyStore) Upsert(ctx context.Context, id string, vector []float32, msg g
 }
 
 func (s *MyStore) Search(ctx context.Context, vector []float32, topK int, opts ...goagent.SearchOption) ([]goagent.ScoredMessage, error) {
-    o := goagent.ApplySearchOptions(opts) // usa el helper del paquete si existe, o aplica manualmente
     s.mu.RLock()
     defer s.mu.RUnlock()
-    // ... cosine similarity, aplicar o.ScoreThreshold, o.Filter, limitar a topK
+    // ... cosine similarity, apply ScoreThreshold and Filter from opts, limit to topK
     return results, nil
 }
 
 func (s *MyStore) Delete(ctx context.Context, id string) error {
     s.mu.Lock()
     defer s.mu.Unlock()
-    delete(s.data, id) // no-op si no existe
+    delete(s.data, id) // no-op if id does not exist
     return nil
 }
 
-// Extensión opcional: BulkVectorStore
+// Optional extension: BulkVectorStore
 func (s *MyStore) BulkUpsert(ctx context.Context, entries []goagent.UpsertEntry) error {
     s.mu.Lock()
     defer s.mu.Unlock()
@@ -475,10 +530,10 @@ func (s *MyStore) BulkUpsert(ctx context.Context, entries []goagent.UpsertEntry)
 }
 ```
 
-### 5.4 Agregar un `DispatchMiddleware`
+### 5.4 Adding a `DispatchMiddleware`
 
 ```go
-// La cadena (outermost → innermost): logging → timeout → circuit breaker → custom → Execute
+// Chain order (outermost → innermost): logging → timeout → circuit breaker → custom → Execute
 func metricsMiddleware(next goagent.DispatchFunc) goagent.DispatchFunc {
     return func(ctx context.Context, name string, args map[string]any) ([]goagent.ContentBlock, error) {
         start := time.Now()
@@ -494,13 +549,13 @@ agent, _ := goagent.New(
 )
 ```
 
-### 5.5 Implementar un `WritePolicy`
+### 5.5 Implementing a `WritePolicy`
 
 ```go
-// Solo persiste turns que mencionan al usuario por nombre
-func onlyPersonalized(prompt, response goagent.Message) []goagent.Message {
-    if !strings.Contains(goagent.TextFrom(prompt.Content), "German") {
-        return nil // descarta
+// Only persist turns that mention a specific keyword
+func onlySubstantive(prompt, response goagent.Message) []goagent.Message {
+    if len(goagent.TextFrom(prompt.Content)) < 50 {
+        return nil // discard short exchanges
     }
     return []goagent.Message{prompt, response}
 }
@@ -508,16 +563,16 @@ func onlyPersonalized(prompt, response goagent.Message) []goagent.Message {
 agent, _ := goagent.New(
     goagent.WithProvider(provider),
     goagent.WithLongTermMemory(ltm),
-    goagent.WithWritePolicy(onlyPersonalized),
+    goagent.WithWritePolicy(onlySubstantive),
 )
 ```
 
-### 5.6 Extender con interface opcional
+### 5.6 Extending with an optional interface
 
-Patrón estándar para no romper implementaciones existentes:
+Standard pattern to avoid breaking existing implementations:
 
 ```go
-// Al llamar:
+// At the call site:
 if bulk, ok := store.(goagent.BulkVectorStore); ok {
     if err := bulk.BulkUpsert(ctx, entries); err != nil {
         return err
@@ -531,7 +586,7 @@ if bulk, ok := store.(goagent.BulkVectorStore); ok {
 }
 ```
 
-### 5.7 Implementar un `NodeFunc` en orchestration
+### 5.7 Implementing a `NodeFunc` in orchestration
 
 ```go
 graph, err := orchestration.NewGraph(
@@ -542,12 +597,12 @@ graph, err := orchestration.NewGraph(
             return "", err
         }
         sc.SetOutput("code", output)
-        return "review", nil         // nombre del siguiente nodo
+        return "review", nil         // name of the next node
     }, orchestration.WithToNodes("review")),
     orchestration.WithNode("review", func(ctx context.Context, sc *orchestration.StageContext) (string, error) {
         // ...
         if approved {
-            return "", nil           // "" termina el grafo
+            return "", nil           // "" terminates the graph
         }
         return "generate", nil
     }, orchestration.WithToNodes("generate", "")),
@@ -556,99 +611,99 @@ graph, err := orchestration.NewGraph(
 
 ---
 
-## 6. Anti-patrones
+## 6. Anti-patterns
 
-### ❌ No hagas esto
+### ❌ Do not do this
 
 ```go
-// 1. Estado global mutable
+// 1. Global mutable state
 var globalProvider Provider  // ❌
 
-// 2. panic en código de biblioteca  
+// 2. panic in library code
 func mustLoad(path string) []byte {
     data, err := os.ReadFile(path)
     if err != nil {
-        panic(err)  // ❌ devuelve error
+        panic(err)  // ❌ return error instead
     }
     return data
 }
 
-// 3. Interface con demasiados métodos
+// 3. Interface with too many methods
 type Memory interface {
     Load(ctx) error
     Save(ctx) error
     Append(ctx) error
     Clear(ctx) error
-    Export(ctx) error  // ❌ divide en interfaces más pequeñas
+    Export(ctx) error  // ❌ split into smaller interfaces
 }
 
-// 4. Contexto ignorado en operaciones bloqueantes
-func (p *MyProvider) Complete(req CompletionRequest) (CompletionResponse, error) {  // ❌ falta ctx
+// 4. Context omitted from blocking operations
+func (p *MyProvider) Complete(req CompletionRequest) (CompletionResponse, error) {  // ❌ missing ctx
     return callHTTP(req)
 }
 
-// 5. Error sin tipo en código de biblioteca
-return fmt.Errorf("tool failed: %s", name)  // ❌ usa ToolExecutionError
+// 5. Untyped error in library code
+return fmt.Errorf("tool failed: %s", name)  // ❌ use ToolExecutionError
 
-// 6. Modificar args antes de pasarlos downstream
+// 6. Mutating args before passing them downstream
 func (mw myMiddleware) Execute(ctx context.Context, args map[string]any) ([]ContentBlock, error) {
-    args["injected"] = "value"  // ❌ args es del modelo; no lo mutes
+    args["injected"] = "value"  // ❌ args belong to the model; do not mutate
     return mw.next.Execute(ctx, args)
 }
 
-// 7. Constructor sin functional options
+// 7. Constructor without functional options
 func NewTool(name, desc string, timeout int) *MyTool {  // ❌
     return &MyTool{name: name, desc: desc, timeout: timeout}
 }
-// ✅ correcto:
+// ✅ correct:
 func NewTool(name, desc string, opts ...ToolOption) *MyTool { ... }
 
-// 8. Usar RoleDocument en mensajes que van al provider
-messages = append(messages, Message{Role: RoleDocument, ...})  // ❌ RoleDocument solo vive en VectorStore
-provider.Complete(ctx, CompletionRequest{Messages: messages})   // el provider devuelve error
+// 8. Using RoleDocument in messages sent to a provider
+messages = append(messages, Message{Role: RoleDocument, ...})  // ❌ RoleDocument lives only in VectorStore
+provider.Complete(ctx, CompletionRequest{Messages: messages})   // provider returns an error
 
-// 9. Compartir *RunResult entre runs concurrentes
+// 9. Sharing *RunResult across concurrent runs
 var result goagent.RunResult
 go agent.Run(ctx1, "query1")  // ❌ data race
 go agent.Run(ctx2, "query2")
-// WithRunResult apunta al mismo *result
+// WithRunResult points to the same *result
 
-// 10. Silenciar errores de memoria
-_ = mem.Append(ctx, msgs...)  // ❌ loguea o devuelve el error
+// 10. Silencing memory errors
+_ = mem.Append(ctx, msgs...)  // ❌ log or propagate the error
 ```
 
 ---
 
-## Apéndice — Tipos clave de datos
+## Appendix — Key data types
 
 ```go
-// Mensaje en el historial de conversación
+// Message in the conversation history
 type Message struct {
     Role       Role           // RoleUser, RoleAssistant, RoleTool, RoleSystem, RoleDocument
-    Content    []ContentBlock // texto, imagen o documento
-    ToolCalls  []ToolCall     // solo en mensajes assistant con tool_use
-    ToolCallID string         // solo en mensajes RoleTool — enlaza resultado con request
-    Metadata   map[string]any // opcional; usado por chunks de RAG (source, chunk_index)
+    Content    []ContentBlock // text, image, or document
+    ToolCalls  []ToolCall     // only in assistant messages with tool_use
+    ToolCallID string         // only in RoleTool messages — links result to request
+    Metadata   map[string]any // optional; used by RAG chunks (source, chunk_index)
 }
 
-// Bloque de contenido (union type)
-// Constructores: TextBlock(s), ImageBlock(data, mimeType), DocumentBlock(data, mimeType)
-type ContentBlock struct { /* opaco */ }
+// Content block (union type)
+// Constructors: TextBlock(s), ImageBlock(data, mimeType), DocumentBlock(data, mimeType)
+type ContentBlock struct { /* opaque */ }
 
-// Resultado con score de similitud
+// Similarity-scored message
 type ScoredMessage struct {
     Message Message
-    Score   float64  // [0.0, 1.0] para cosine similarity con vectores normalizados
+    Score   float64  // [0.0, 1.0] for cosine similarity with normalized vectors
 }
 
-// Definición de tool (enviada al modelo)
+// Tool definition (sent to the model)
 type ToolDefinition struct {
     Name        string
     Description string
-    Parameters  map[string]any  // JSON Schema válido
+    Parameters  map[string]any  // valid JSON Schema
 }
 
-// Métricas de un run completo
+// Metrics for a complete run
 type RunResult struct {
     Duration   time.Duration
     Iterations int
@@ -658,19 +713,19 @@ type RunResult struct {
     Err        error
 }
 
-// Roles válidos
+// Valid roles
 const (
     RoleUser      Role = "user"
     RoleAssistant Role = "assistant"
     RoleTool      Role = "tool"
     RoleSystem    Role = "system"
-    RoleDocument  Role = "document"  // solo en VectorStore — nunca al provider
+    RoleDocument  Role = "document"  // VectorStore only — never send to a provider
 )
 ```
 
 ---
 
-> **Relación con otros documentos:**
-> - [`ARCHITECTURE.md`](ARCHITECTURE.md) — cómo funciona el ReAct loop, el dispatcher, la memoria y la orquestación internamente
-> - [`CLAUDE.md`](CLAUDE.md) — instrucciones específicas para Claude Code en este repo
-> - [`README.md`](README.md) — guía de uso para consumidores del framework
+> **Related documents:**
+> - [`ARCHITECTURE.md`](ARCHITECTURE.md) — how the ReAct loop, dispatcher, memory, and orchestration work internally
+> - [`CLAUDE.md`](CLAUDE.md) — Claude Code-specific instructions for this repo
+> - [`README.md`](README.md) — usage guide for framework consumers
