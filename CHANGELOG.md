@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `StreamHandler` — `func(event StreamEvent) error` callback invoked per event by `RunStream`/`RunStreamBlocks`; returning a non-nil error aborts the stream
 - `TextHandler(w io.Writer) StreamHandler` — built-in handler that writes `StreamEventText` tokens to any `io.Writer`; ignores all other event types
 - `StreamOptions` / `StreamOption` — functional options for streaming behaviour; constructed via variadic `...StreamOption` on `RunStream`/`RunStreamBlocks`
-- `WithShowThinkingText(show bool) StreamOption` — controls whether model reasoning tokens emitted before a tool call are forwarded to the handler; default false
+- `WithShowThinkingText(show bool) StreamOption` — controls whether model reasoning tokens emitted before a tool call are forwarded to the handler; default true
 - `Agent.RunStream(ctx, prompt, handler, ...StreamOption) (string, error)` — streaming counterpart to `Run`; delivers tokens in real time via `handler`; returns the final accumulated text
 - `Agent.RunStreamBlocks(ctx, []ContentBlock, handler, ...StreamOption) (string, error)` — multimodal variant of `RunStream`
 - `Hooks.OnThinkingText func(ctx, token string)` — new hook fired per token when the model reasons before a tool call and `WithShowThinkingText(true)` is set; complements the existing `OnThinking` hook (which fires once with the full thinking block)
@@ -137,7 +137,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 **`VectorStoreObserver` decorator (`goagent`)**
-- `NewObservableStore(store, observer)` — wraps any `VectorStore` (including `BulkVectorStore`) and fires optional callbacks after each operation (`AfterUpsert`, `AfterSearch`, `AfterDelete`, `AfterCount`, `AfterBulkUpsert`, `AfterBulkDelete`) with elapsed duration and error
+- `NewObservableStore(store, observer)` — wraps any `VectorStore` (including `BulkVectorStore`) and fires optional callbacks after each operation (`OnUpsert`, `OnSearch`, `OnDelete`, `OnBulkUpsert`, `OnBulkDelete`) with elapsed duration and error
 - `VectorStoreObserver` — struct of optional callbacks; unset fields are no-ops
 - `MergeVectorStoreObservers(a, b, ...)` — composes multiple observer sets in order; each callback fires sequentially
 
@@ -156,7 +156,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **OTel vector store instrumentation (`goagent/otel`)**
 - `otel.NewVectorStoreObserver(tracer, meter)` — returns a `VectorStoreObserver` that records retroactive spans and RED metrics for every `VectorStore` and `BulkVectorStore` operation; plug it into any store via `goagent.NewObservableStore`
-- New metrics: `goagent.vector.upsert.duration`, `goagent.vector.search.duration`, `goagent.vector.search.results`, `goagent.vector.delete.duration`, `goagent.vector.bulk_upsert.duration`, `goagent.vector.bulk_upsert.batch_size`, `goagent.vector.errors` (by `operation`)
+- New metrics: `goagent.vector.upsert.duration`, `goagent.vector.search.duration`, `goagent.vector.search.results`, `goagent.vector.delete.duration`, `goagent.vector.bulk.size`, `goagent.vector.errors` (by `operation`)
 - Complements the existing `otel.NewHooks` agent instrumentation without requiring changes to the agent or store implementations
 
 **Examples**

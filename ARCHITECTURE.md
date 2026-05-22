@@ -11,12 +11,18 @@ goagent/                      Root package — Agent, ReAct loop, core interface
 │   ├── storage/              Message persistence (InMemory, etc.)
 │   ├── policy/               Read-time message filtering (FixedWindow, TokenWindow, NoOp)
 │   └── vector/               VectorStore, chunkers, similarity functions, size estimators
+│       ├── pgvector/         Persistent VectorStore — PostgreSQL + pgvector (HNSW)
+│       ├── qdrant/           Persistent VectorStore — Qdrant
+│       ├── sqlitevec/        Persistent VectorStore — SQLite + sqlite-vec (CGO)
+│       └── tiktoken/         Exact token-count SizeEstimator via tiktoken
 ├── orchestration/            Multi-agent coordination — Pipeline, Graph, ParallelGroup, Supervisor
+├── otel/                     OpenTelemetry spans and RED metrics
 ├── providers/
 │   ├── anthropic/            Provider for Claude (Anthropic API)
 │   ├── ollama/               Provider for local models (OpenAI-compatible API) + embedder
 │   └── voyage/               Voyage AI embedder
 ├── rag/                      RAG pipeline — Pipeline, Document, NewTool, observers, formatters
+├── ratelimit/                Token-bucket rate limiters for tool dispatch
 ├── examples/
 │   ├── calculator/           Example: agent with a calculator tool
 │   ├── chatbot/              Example: multi-turn conversation with memory
@@ -25,8 +31,13 @@ goagent/                      Root package — Agent, ReAct loop, core interface
 │   ├── graph-conditional-parallel/ Example: Graph with in-node conditional parallelism
 │   ├── graph-loop-judge/     Example: judge-loop pattern with a Graph
 │   ├── graph-nested/         Example: nested Pipeline inside a Graph node
+│   ├── mini-code-agent/      Example: minimal coding agent
 │   ├── multi-agent/          Example: Supervisor coordinating worker agents
-│   └── rag_docs/             Example: RAG over local Markdown files with Ollama
+│   ├── multimodal-chatbot/   Example: multimodal chatbot with image and document support
+│   ├── rag_batch_index/      Example: RAG chatbot — BatchEmbedder + Qdrant
+│   ├── rag_docs/             Example: RAG over local Markdown files with Ollama
+│   ├── rag_sqlite_observable/ Example: RAG with SQLite and VectorStore observability
+│   └── streaming/            Example: real-time token streaming
 └── internal/
     └── testutil/             Provider, Tool and Memory mocks for tests
 ```
@@ -847,55 +858,67 @@ Thinking and effort are **orthogonal** and can be combined freely. On models tha
 agent, _ := goagent.New(
     goagent.WithProvider(provider),
     goagent.WithHooks(goagent.Hooks{
-        OnRunStart: func() {
+        OnRunStart: func(ctx context.Context) context.Context {
             fmt.Println("run started")
+            return ctx
         },
-        OnRunEnd: func(result goagent.RunResult) {
+        OnRunEnd: func(ctx context.Context, result goagent.RunResult) {
             fmt.Printf("run ended in %s (%d iterations, %d tool calls)\n",
                 result.Duration, result.Iterations, result.ToolCalls)
         },
-        OnProviderRequest: func(iteration int, model string, messageCount int) {
+        OnProviderRequest: func(ctx context.Context, iteration int, model string, messageCount int) {
             fmt.Printf("provider request: iter=%d model=%s messages=%d\n", iteration, model, messageCount)
         },
-        OnProviderResponse: func(iteration int, event goagent.ProviderEvent) {
+        OnProviderResponse: func(ctx context.Context, iteration int, event goagent.ProviderEvent) {
             fmt.Printf("provider response: iter=%d duration=%s stop=%s\n",
                 iteration, event.Duration, event.StopReason)
         },
-        OnIterationStart: func(iteration int) {
+        OnIterationStart: func(ctx context.Context, iteration int) {
             fmt.Printf("iteration %d\n", iteration)
         },
-        OnThinking: func(text string) {
+        OnThinking: func(ctx context.Context, text string) {
             fmt.Printf("thinking: %s\n", text)
         },
-        OnToolCall: func(name string, args map[string]any) {
+        OnToolCall: func(ctx context.Context, name string, args map[string]any) {
             fmt.Printf("→ %s(%v)\n", name, args)
         },
-        OnToolResult: func(name string, content []ContentBlock, d time.Duration, err error) {
+        OnToolResult: func(ctx context.Context, name string, content []goagent.ContentBlock, d time.Duration, err error) {
             fmt.Printf("← %s in %s\n", name, d)
         },
-        OnResponse: func(text string, iterations int) {
+        OnResponse: func(ctx context.Context, text string, iterations int) {
             fmt.Printf("final response (%d iterations)\n", iterations)
+        },
+        OnStreamStart: func(ctx context.Context, iteration int) {
+            fmt.Printf("stream started (iter=%d)\n", iteration)
+        },
+        OnStreamToken: func(ctx context.Context, token string) {
+            fmt.Print(token)
         },
     }),
 )
 ```
 
+All hook callbacks receive `ctx context.Context` as their first argument. `OnRunStart` returns an enriched `context.Context` forwarded to every subsequent hook in the same run.
+
 | Hook | When it fires |
 |------|--------------|
-| `OnRunStart()` | At the start of each `Run`/`RunBlocks` call, before loading memory |
-| `OnRunEnd(result RunResult)` | At the end of each `Run`/`RunBlocks` call, always (success or error) |
-| `OnProviderRequest(iteration, model, messageCount)` | Before each `Provider.Complete` call |
-| `OnProviderResponse(iteration, event)` | After each `Provider.Complete` call, on success or error |
-| `OnIterationStart(iteration int)` | At the start of each iteration, before calling the provider |
-| `OnThinking(text string)` | Once per thinking block in the model's response |
-| `OnToolCall(name, args)` | When the model requests a tool, before dispatch |
-| `OnToolResult(name, content, duration, err)` | After each tool execution (even on failure) |
-| `OnCircuitOpen(toolName, openUntil)` | When a tool call is rejected because the circuit breaker is open |
-| `OnResponse(text, iterations)` | Just before `Run` returns, including on MaxIterationsError |
-| `OnShortTermLoad(results, duration, err)` | After loading history from `ShortTermMemory` at run start |
-| `OnShortTermAppend(msgs, duration, err)` | After persisting the turn to `ShortTermMemory` at run end |
-| `OnLongTermRetrieve(results []ScoredMessage, duration, err)` | After retrieving context from `LongTermMemory` at run start; results carry individual similarity scores |
-| `OnLongTermStore(msgs, duration, err)` | After storing the turn in `LongTermMemory` at run end (when policy permits) |
+| `OnRunStart(ctx) context.Context` | At the start of each `Run`/`RunBlocks` call, before loading memory |
+| `OnRunEnd(ctx, result RunResult)` | At the end of each `Run`/`RunBlocks` call, always (success or error) |
+| `OnProviderRequest(ctx, iteration, model, messageCount)` | Before each `Provider.Complete` call |
+| `OnProviderResponse(ctx, iteration, event)` | After each `Provider.Complete` call, on success or error |
+| `OnIterationStart(ctx, iteration int)` | At the start of each iteration, before calling the provider |
+| `OnThinking(ctx, text string)` | Once per thinking block in the model's response |
+| `OnThinkingText(ctx, token string)` | Per reasoning token when `WithShowThinkingText(true)` is active in `RunStream` |
+| `OnToolCall(ctx, name, args)` | When the model requests a tool, before dispatch |
+| `OnToolResult(ctx, name, content, duration, err)` | After each tool execution (even on failure) |
+| `OnCircuitOpen(ctx, toolName, openUntil)` | When a tool call is rejected because the circuit breaker is open |
+| `OnResponse(ctx, text, iterations)` | Just before `Run` returns, including on MaxIterationsError |
+| `OnShortTermLoad(ctx, results, duration, err)` | After loading history from `ShortTermMemory` at run start |
+| `OnShortTermAppend(ctx, msgs, duration, err)` | After persisting the turn to `ShortTermMemory` at run end |
+| `OnLongTermRetrieve(ctx, results []ScoredMessage, duration, err)` | After retrieving context from `LongTermMemory` at run start; results carry individual similarity scores |
+| `OnLongTermStore(ctx, msgs, duration, err)` | After storing the turn in `LongTermMemory` at run end (when policy permits) |
+| `OnStreamStart(ctx, iteration int)` | When `RunStream` initiates a streaming completion for a given iteration |
+| `OnStreamToken(ctx, token string)` | For each text delta received from the stream; not called for thinking text |
 
 Hooks are invoked **synchronously** inside the loop. For heavy work (sending to external services, distributed logging), the hook should spawn a goroutine internally to avoid blocking the loop.
 

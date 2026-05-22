@@ -56,13 +56,17 @@ goagent/              Core — Agent, ReAct loop, interfaces
 │   ├── policy/       FixedWindow, TokenWindow, NoOp
 │   └── vector/       VectorStore, chunkers, similarity, size estimators
 │       ├── pgvector/ Persistent VectorStore — PostgreSQL + pgvector (HNSW)
-│       └── sqlitevec/ Persistent VectorStore — SQLite + sqlite-vec (CGO)
+│       ├── qdrant/   Persistent VectorStore — Qdrant
+│       ├── sqlitevec/ Persistent VectorStore — SQLite + sqlite-vec (CGO)
+│       └── tiktoken/ Exact token-count SizeEstimator via tiktoken
 ├── orchestration/    Multi-agent coordination — Pipeline, Graph, ParallelGroup, Supervisor
+├── otel/             OpenTelemetry spans and RED metrics
 ├── providers/
 │   ├── anthropic/    Anthropic Messages API (Claude)
 │   ├── ollama/       Local Ollama via OpenAI-compatible API (+ embedder)
 │   └── voyage/       Voyage AI embedder
 ├── rag/              RAG pipeline — Pipeline, NewTool, observers, formatters
+├── ratelimit/        Token-bucket rate limiters for tool dispatch
 ├── examples/
 │   ├── calculator/              Tool use with arithmetic
 │   ├── chatbot/                 Multi-turn conversation
@@ -71,8 +75,12 @@ goagent/              Core — Agent, ReAct loop, interfaces
 │   ├── graph-conditional-parallel/ Graph with in-node conditional parallelism
 │   ├── graph-loop-judge/        Judge-loop pattern with a Graph
 │   ├── graph-nested/            Nested Pipeline inside a Graph node
+│   ├── mini-code-agent/         Minimal coding agent example
 │   ├── multi-agent/             Supervisor coordinating worker agents
+│   ├── multimodal-chatbot/      Multimodal chatbot with image and document support
 │   ├── rag_batch_index/         Interactive RAG chatbot — BatchEmbedder + Qdrant
+│   ├── rag_docs/                RAG over local Markdown files with Ollama
+│   ├── rag_sqlite_observable/   RAG with SQLite and VectorStore observability
 │   └── streaming/               Real-time token streaming — text and tool-call paths
 └── internal/testutil/           Shared mocks
 ```
@@ -124,6 +132,21 @@ agent, _ := goagent.New(
     goagent.WithProvider(ollama.New()),
     goagent.WithModel("qwen3"),
     goagent.WithTool(echo),
+)
+```
+
+For tools that need to return multimodal content (images, structured blocks), use `ToolBlocksFunc`:
+
+```go
+screenshotter := goagent.ToolBlocksFunc("screenshot", "Captures the current screen.",
+    goagent.SchemaFrom(struct{}{}),
+    func(ctx context.Context, args map[string]any) ([]goagent.ContentBlock, error) {
+        data, err := captureScreen()
+        if err != nil {
+            return nil, err
+        }
+        return []goagent.ContentBlock{goagent.ImageBlock(data, "image/png")}, nil
+    },
 )
 ```
 
@@ -380,10 +403,11 @@ Useful for health checks, monitoring store growth, or debugging index state with
 ```go
 observed := goagent.NewObservableStore(store,
     goagent.VectorStoreObserver{
-        AfterUpsert: func(ctx context.Context, d time.Duration, err error) { /* ... */ },
-        AfterSearch: func(ctx context.Context, results int, d time.Duration, err error) { /* ... */ },
-        AfterDelete: func(ctx context.Context, d time.Duration, err error) { /* ... */ },
-        AfterCount:  func(ctx context.Context, n int, d time.Duration, err error) { /* ... */ },
+        OnUpsert:     func(ctx context.Context, id string, d time.Duration, err error) { /* ... */ },
+        OnSearch:     func(ctx context.Context, topK int, results int, d time.Duration, err error) { /* ... */ },
+        OnDelete:     func(ctx context.Context, id string, d time.Duration, err error) { /* ... */ },
+        OnBulkUpsert: func(ctx context.Context, count int, d time.Duration, err error) { /* ... */ },
+        OnBulkDelete: func(ctx context.Context, count int, d time.Duration, err error) { /* ... */ },
     },
 )
 ```
@@ -699,7 +723,7 @@ Circuit-breaker state persists across `Run` calls on the same agent. Use `OnCirc
 
 ```go
 goagent.WithHooks(goagent.Hooks{
-    OnCircuitOpen: func(toolName string, openUntil time.Time) {
+    OnCircuitOpen: func(ctx context.Context, toolName string, openUntil time.Time) {
         log.Printf("tool %s disabled until %s", toolName, openUntil.Format(time.RFC3339))
     },
 })
@@ -747,6 +771,8 @@ goagent.WithHooks(goagent.Hooks{
     OnShortTermAppend:   func(ctx context.Context, msgs int, d time.Duration, err error)                        { /* ... */ },
     OnLongTermRetrieve:  func(ctx context.Context, results []goagent.ScoredMessage, d time.Duration, err error) { /* ... */ },
     OnLongTermStore:     func(ctx context.Context, msgs int, d time.Duration, err error)                        { /* ... */ },
+    OnStreamStart:       func(ctx context.Context, iteration int)                                               { /* ... */ },
+    OnStreamToken:       func(ctx context.Context, token string)                                                { /* ... */ },
 })
 ```
 
@@ -830,7 +856,7 @@ if err != nil {
 store = goagent.NewObservableStore(store, observer)
 ```
 
-This records spans and RED metrics for every `Upsert`, `Search`, `Delete`, `Count`, `BulkUpsert`, and `BulkDelete` call. Additional metrics recorded:
+This records spans and RED metrics for every `Upsert`, `Search`, `Delete`, `BulkUpsert`, and `BulkDelete` call. Additional metrics recorded:
 
 | Metric | Instrument | Unit | Useful for |
 |---|---|---|---|
@@ -838,8 +864,7 @@ This records spans and RED metrics for every `Upsert`, `Search`, `Delete`, `Coun
 | `goagent.vector.search.duration` | Histogram | s | Query latency per backend |
 | `goagent.vector.search.results` | Histogram | {result} | Result set size distribution |
 | `goagent.vector.delete.duration` | Histogram | s | Delete latency |
-| `goagent.vector.bulk_upsert.duration` | Histogram | s | Bulk write latency |
-| `goagent.vector.bulk_upsert.batch_size` | Histogram | {entry} | Entries per bulk call |
+| `goagent.vector.bulk.size` | Histogram | {entry} | Entries per BulkUpsert or BulkDelete call |
 | `goagent.vector.errors` | Counter | {error} | Error rate by `operation` |
 
 ### Streaming
