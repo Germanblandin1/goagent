@@ -22,7 +22,7 @@ import (
 	"github.com/Germanblandin1/goagent/memory"
 	"github.com/Germanblandin1/goagent/memory/policy"
 	"github.com/Germanblandin1/goagent/memory/storage"
-	"github.com/Germanblandin1/goagent/providers/ollama"
+	"github.com/Germanblandin1/goagent/providers/openai"
 )
 
 func main() {
@@ -30,10 +30,10 @@ func main() {
 		memory.WithStorage(storage.NewInMemory()),
 		memory.WithPolicy(policy.NewFixedWindow(20)),
 	)
-
+	provider := openai.New(openai.WithAPIKey(os.Getenv("OPENIA_KEY_2")))
 	agent, err := goagent.New(
-		goagent.WithProvider(ollama.New()),
-		goagent.WithModel("gpt-oss:120b-cloud"),
+		goagent.WithProvider(provider),
+		goagent.WithModel("gpt-5.4-mini"),
 		goagent.WithShortTermMemory(mem),
 		goagent.WithSystemPrompt("You are a helpful and concise assistant. Your name is GoAgentBot."),
 		goagent.WithHooks(goagent.Hooks{
