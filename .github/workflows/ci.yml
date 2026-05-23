@@ -19,7 +19,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
           cache: true
 
       - name: Verify go.sum is tidy (all modules)
@@ -110,7 +110,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
           cache: true
 
       - name: Install govulncheck
@@ -149,7 +149,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
           cache: true
 
       - name: Build + test root module
@@ -221,7 +221,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
           cache: true
 
       - name: Download coverage artifacts
@@ -292,7 +292,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.3"
           cache: true
 
       - name: Test pgvector (testcontainers — no sidecar needed)
