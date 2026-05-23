@@ -15,18 +15,11 @@ const defaultMaxTokens = 4096
 
 // Provider implements goagent.Provider using the Anthropic Messages API.
 type Provider struct {
-	client    *AnthropicClient
-	maxTokens int64
+	client *AnthropicClient
 }
 
 // ProviderOption is a functional option for configuring a Provider.
 type ProviderOption func(*Provider)
-
-// WithMaxTokens sets the maximum number of tokens the model may generate per
-// completion. Default: 4096.
-func WithMaxTokens(n int64) ProviderOption {
-	return func(p *Provider) { p.maxTokens = n }
-}
 
 // New creates a Provider with a default AnthropicClient.
 // The API key is read from the ANTHROPIC_API_KEY environment variable by
@@ -40,10 +33,7 @@ func New(opts ...ProviderOption) *Provider {
 // Use this when you need to share a client across multiple providers, supply
 // a custom base URL, or inject a test server.
 func NewWithClient(client *AnthropicClient, opts ...ProviderOption) *Provider {
-	p := &Provider{
-		client:    client,
-		maxTokens: defaultMaxTokens,
-	}
+	p := &Provider{client: client}
 	for _, o := range opts {
 		o(p)
 	}
@@ -78,15 +68,24 @@ func (p *Provider) Complete(ctx context.Context, req goagent.CompletionRequest) 
 // buildMessageParams converts a CompletionRequest to the Anthropic SDK params.
 // Used by both Complete and CompleteStream.
 func (p *Provider) buildMessageParams(req goagent.CompletionRequest) (sdk.MessageNewParams, error) {
+	if req.Thinking != nil && req.Thinking.Enabled && req.Temperature != nil {
+		return sdk.MessageNewParams{}, fmt.Errorf("anthropic: temperature cannot be set when extended thinking is enabled")
+	}
+
 	messages, err := toAnthropicMessages(req.Messages)
 	if err != nil {
 		return sdk.MessageNewParams{}, fmt.Errorf("building messages: %w", err)
 	}
 
+	maxTokens := int64(defaultMaxTokens) // Anthropic requires an explicit value
+	if req.MaxTokens > 0 {
+		maxTokens = int64(req.MaxTokens)
+	}
+
 	params := sdk.MessageNewParams{
 		Model:     sdk.Model(req.Model),
 		Messages:  messages,
-		MaxTokens: p.maxTokens,
+		MaxTokens: maxTokens,
 	}
 
 	if req.SystemPrompt != "" {
@@ -98,6 +97,10 @@ func (p *Provider) buildMessageParams(req goagent.CompletionRequest) (sdk.Messag
 		params.ToolChoice = sdk.ToolChoiceUnionParam{
 			OfAuto: &sdk.ToolChoiceAutoParam{},
 		}
+	}
+
+	if req.Temperature != nil {
+		params.Temperature = sdk.Float(*req.Temperature)
 	}
 
 	params.Thinking = buildThinkingParam(req.Thinking)

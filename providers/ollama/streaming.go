@@ -13,10 +13,16 @@ import (
 // ollamaStreamRequest is the body sent to Ollama's native /api/chat endpoint
 // with streaming enabled.
 type ollamaStreamRequest struct {
-	Model    string              `json:"model"`
-	Messages []ollamaNativeMsg   `json:"messages"`
-	Stream   bool                `json:"stream"`
-	Tools    []ollamaNativeTool  `json:"tools,omitempty"`
+	Model    string             `json:"model"`
+	Messages []ollamaNativeMsg  `json:"messages"`
+	Stream   bool               `json:"stream"`
+	Tools    []ollamaNativeTool `json:"tools,omitempty"`
+	Options  *ollamaOptions     `json:"options,omitempty"`
+}
+
+// ollamaOptions carries per-request generation parameters for Ollama's native API.
+type ollamaOptions struct {
+	NumPredict int `json:"num_predict,omitempty"`
 }
 
 type ollamaNativeMsg struct {
@@ -177,6 +183,9 @@ func (p *Provider) CompleteStream(ctx context.Context, req goagent.CompletionReq
 	body := ollamaStreamRequest{
 		Model:  req.Model,
 		Stream: true,
+	}
+	if req.MaxTokens > 0 {
+		body.Options = &ollamaOptions{NumPredict: req.MaxTokens}
 	}
 
 	if req.SystemPrompt != "" {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Germanblandin1/goagent"
@@ -557,7 +558,7 @@ func TestProvider_ThinkingBlocksPassedBackToAPI(t *testing.T) {
 	}
 }
 
-// ── New and WithMaxTokens ────────────────────────────────────────────────────
+// ── New ──────────────────────────────────────────────────────────────────────
 
 func TestNew_ReturnsNonNilProvider(t *testing.T) {
 	t.Parallel()
@@ -566,29 +567,6 @@ func TestNew_ReturnsNonNilProvider(t *testing.T) {
 	p := provider.New()
 	if p == nil {
 		t.Fatal("New() returned nil")
-	}
-}
-
-func TestWithMaxTokens_SentInRequest(t *testing.T) {
-	t.Parallel()
-
-	var captured map[string]any
-	srv := capturingServer(t, textResponse, &captured)
-
-	client := provider.NewClient(
-		provider.WithBaseURL(srv.URL),
-		provider.WithAPIKey("test-key"),
-	)
-	p := provider.NewWithClient(client, provider.WithMaxTokens(8192))
-
-	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
-		Model:    "claude-sonnet-4-6",
-		Messages: []goagent.Message{goagent.UserMessage("hi")},
-	})
-
-	maxTokens, _ := captured["max_tokens"].(float64)
-	if maxTokens != 8192 {
-		t.Errorf("max_tokens = %v, want 8192", maxTokens)
 	}
 }
 
@@ -796,6 +774,130 @@ func TestProvider_ToolWithAdditionalProperties(t *testing.T) {
 	schema, _ := tool["input_schema"].(map[string]any)
 	if schema["additionalProperties"] != false {
 		t.Errorf("additionalProperties = %v, want false", schema["additionalProperties"])
+	}
+}
+
+// ── MaxTokens per-request override ──────────────────────────────────────────
+
+func TestProvider_MaxTokensFromRequest_OverridesProviderDefault(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, textResponse, &captured)
+	p := newTestProvider(t, srv)
+
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:     "claude-sonnet-4-6",
+		Messages:  []goagent.Message{goagent.UserMessage("hi")},
+		MaxTokens: 1024,
+	})
+
+	maxTokens, _ := captured["max_tokens"].(float64)
+	if maxTokens != 1024 {
+		t.Errorf("max_tokens = %v, want 1024", maxTokens)
+	}
+}
+
+func TestProvider_MaxTokensZero_UsesInternalDefault(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, textResponse, &captured)
+	p := newTestProvider(t, srv)
+
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:     "claude-sonnet-4-6",
+		Messages:  []goagent.Message{goagent.UserMessage("hi")},
+		MaxTokens: 0, // not set — must use provider's internal default (4096)
+	})
+
+	maxTokens, _ := captured["max_tokens"].(float64)
+	if maxTokens != 4096 {
+		t.Errorf("max_tokens = %v, want 4096 (internal default)", maxTokens)
+	}
+}
+
+// ── Temperature ─────────────────────────────────────────────────────────────
+
+func TestProvider_Temperature_SentInRequest(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, textResponse, &captured)
+	p := newTestProvider(t, srv)
+
+	temp := 0.7
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:       "claude-sonnet-4-6",
+		Messages:    []goagent.Message{goagent.UserMessage("hi")},
+		Temperature: &temp,
+	})
+
+	got, _ := captured["temperature"].(float64)
+	if got != 0.7 {
+		t.Errorf("temperature = %v, want 0.7", got)
+	}
+}
+
+func TestProvider_TemperatureZero_SentInRequest(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, textResponse, &captured)
+	p := newTestProvider(t, srv)
+
+	temp := 0.0
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:       "claude-sonnet-4-6",
+		Messages:    []goagent.Message{goagent.UserMessage("hi")},
+		Temperature: &temp,
+	})
+
+	if _, present := captured["temperature"]; !present {
+		t.Error("temperature field missing when set to 0.0; 0.0 is a valid explicit value")
+	}
+	got, _ := captured["temperature"].(float64)
+	if got != 0.0 {
+		t.Errorf("temperature = %v, want 0.0", got)
+	}
+}
+
+func TestProvider_TemperatureNil_FieldOmitted(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, textResponse, &captured)
+	p := newTestProvider(t, srv)
+
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:    "claude-sonnet-4-6",
+		Messages: []goagent.Message{goagent.UserMessage("hi")},
+		// Temperature not set (nil).
+	})
+
+	if _, present := captured["temperature"]; present {
+		t.Errorf("temperature should be omitted when nil, but was: %v", captured["temperature"])
+	}
+}
+
+func TestProvider_ThinkingAndTemperature_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	srv := fakeAnthropicServer(t, textResponse)
+	p := newTestProvider(t, srv)
+
+	temp := 0.7
+	_, err := p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:       "claude-sonnet-4-6",
+		Messages:    []goagent.Message{goagent.UserMessage("hi")},
+		Thinking:    &goagent.ThinkingConfig{Enabled: true, BudgetTokens: 4096},
+		Temperature: &temp,
+	})
+	if err == nil {
+		t.Fatal("expected error when thinking and temperature are both set, got nil")
+	}
+	if !strings.Contains(err.Error(), "temperature") {
+		t.Errorf("error = %q, want it to mention 'temperature'", err.Error())
 	}
 }
 

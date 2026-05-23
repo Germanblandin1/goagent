@@ -36,6 +36,8 @@ type options struct {
 	cbMaxFailures  int
 	cbResetTimeout time.Duration
 	dispatchMWs    []DispatchMiddleware
+	maxTokens      int
+	temperature    *float64
 }
 
 // Option is a functional option for configuring an Agent.
@@ -244,6 +246,29 @@ func WithCircuitBreaker(maxFailures int, resetTimeout time.Duration) Option {
 // Multiple calls append in order: first call = outermost custom middleware.
 func WithDispatchMiddleware(mw DispatchMiddleware) Option {
 	return func(o *options) { o.dispatchMWs = append(o.dispatchMWs, mw) }
+}
+
+// WithMaxTokens sets the maximum number of tokens the model may generate in
+// a single completion. 0 (default) defers to the provider's built-in default,
+// which varies by model.
+//
+// Note: Anthropic's API requires an explicit value; if left at 0 the Anthropic
+// provider substitutes its own default (typically 4096).
+func WithMaxTokens(n int) Option {
+	return func(o *options) { o.maxTokens = n }
+}
+
+// WithTemperature sets the sampling temperature forwarded to the model.
+// Valid range is [0.0, 1.0] for Anthropic and [0.0, 2.0] for most others.
+//
+// 0.0 produces deterministic (greedy) outputs.
+// Higher values increase randomness and creativity.
+// nil (default) defers to the model's default temperature.
+//
+// Note: Anthropic's API does not allow temperature when extended thinking is
+// enabled; the Anthropic provider returns an error in that case.
+func WithTemperature(t float64) Option {
+	return func(o *options) { o.temperature = &t }
 }
 
 // WithMCPConnector registers an MCP connector that is called during New to

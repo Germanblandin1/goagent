@@ -88,8 +88,13 @@ func (p *Provider) Complete(ctx context.Context, req goagent.CompletionRequest) 
 	}
 
 	chatReq := openai.ChatCompletionRequest{
-		Model:    model,
-		Messages: messages,
+		Model:     model,
+		Messages:  messages,
+		MaxTokens: req.MaxTokens, // 0 means no restriction (Ollama uses model context length)
+	}
+
+	if req.Temperature != nil {
+		chatReq.Temperature = float32(*req.Temperature)
 	}
 
 	if len(req.Tools) > 0 {

@@ -158,6 +158,21 @@ type CompletionRequest struct {
 	// each can be set independently.
 	// Providers that do not support effort must ignore this field.
 	Effort string
+
+	// MaxTokens limits how many tokens the model may generate in a single
+	// completion. 0 (default) defers to the provider's built-in default.
+	// Providers that require an explicit value (e.g. Anthropic) substitute
+	// their own default when this field is 0.
+	MaxTokens int
+
+	// Temperature sets the sampling temperature. nil (default) defers to
+	// the model's default. 0.0 is a valid value (deterministic output) and
+	// is distinct from "not set", which is why a pointer is used.
+	// Valid range: [0.0, 1.0] for Anthropic, [0.0, 2.0] for most others.
+	// Providers that do not support temperature must ignore this field.
+	// Note: Anthropic does not allow temperature when extended thinking is
+	// enabled; the Anthropic provider returns an error in that case.
+	Temperature *float64
 }
 
 // CompletionResponse is the output from a provider's Complete call.

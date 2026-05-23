@@ -317,6 +317,8 @@ Returning `""` as `next` terminates the graph.
 | `WithThinking(budget)` | `int` | — | Extended thinking, fixed token budget |
 | `WithAdaptiveThinking()` | — | — | Extended thinking, model-chosen budget |
 | `WithEffort(level)` | `string` | `""` | `"high"` / `"medium"` / `"low"` / `""` (model default) |
+| `WithMaxTokens(n)` | `int` | `0` | Max tokens to generate; `0` defers to the provider's built-in default |
+| `WithTemperature(t)` | `float64` | `nil` | Sampling temperature; `nil` = model default. Anthropic: error if thinking is also enabled |
 | `WithToolTimeout(d)` | `time.Duration` | `0` (off) | Per-tool deadline; cancels the tool's ctx after `d` |
 | `WithCircuitBreaker(n, d)` | `int, time.Duration` | — | Open circuit after `n` consecutive failures; reset after `d` |
 | `WithDispatchMiddleware(mw)` | `DispatchMiddleware` | — | Custom middleware in the dispatch chain (repeatable) |

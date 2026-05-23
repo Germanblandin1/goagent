@@ -347,6 +347,8 @@ func (a *Agent) run(ctx context.Context, content []ContentBlock) (string, error)
 			Tools:        toolDefs,
 			Thinking:     a.opts.thinking,
 			Effort:       a.opts.effort,
+			MaxTokens:    a.opts.maxTokens,
+			Temperature:  a.opts.temperature,
 		}
 
 		if fn := a.opts.hooks.OnProviderRequest; fn != nil {
@@ -713,6 +715,8 @@ func (a *Agent) runStream(ctx context.Context, content []ContentBlock, handler S
 			Tools:        toolDefs,
 			Thinking:     a.opts.thinking,
 			Effort:       a.opts.effort,
+			MaxTokens:    a.opts.maxTokens,
+			Temperature:  a.opts.temperature,
 		}
 
 		if fn := a.opts.hooks.OnProviderRequest; fn != nil {

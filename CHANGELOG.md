@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `WithMaxTokens(n int) Option` — sets `CompletionRequest.MaxTokens`; `0` (default) defers to the provider's built-in default. The Anthropic provider uses 4096 when the field is 0; the Ollama provider uses the model's context length.
+- `WithTemperature(t float64) Option` — sets `CompletionRequest.Temperature` via a `*float64` pointer so that `0.0` (deterministic output) is distinguishable from "not set" (`nil`). Valid range: `[0.0, 1.0]` for Anthropic, `[0.0, 2.0]` for most others.
+- `CompletionRequest.MaxTokens int` — new field on the shared request type; `0` means "use provider default".
+- `CompletionRequest.Temperature *float64` — new field; `nil` means "use model default".
+- Anthropic provider: returns an error if both `Thinking.Enabled` and `Temperature` are set (Anthropic API restriction).
+- Anthropic provider: per-request `MaxTokens` overrides the provider-level `WithMaxTokens` when `> 0`.
+- Ollama provider: per-request `MaxTokens` and `Temperature` are forwarded to the OpenAI-compatible endpoint.
+
 ## [0.7.0] - 2026-05-06
 
 ### Added

@@ -430,6 +430,88 @@ func TestProvider_ThinkingAndEffortIgnored(t *testing.T) {
 	}
 }
 
+// ── MaxTokens & Temperature ──────────────────────────────────────────────────
+
+func TestProvider_MaxTokensFromRequest_OverridesProviderDefault(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, stopResponse, &captured)
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
+
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:     "llama3",
+		Messages:  []goagent.Message{goagent.UserMessage("hi")},
+		MaxTokens: 512,
+	})
+
+	maxTokens, _ := captured["max_tokens"].(float64)
+	if maxTokens != 512 {
+		t.Errorf("max_tokens = %v, want 512", maxTokens)
+	}
+}
+
+func TestProvider_MaxTokensZero_SendsZero(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, stopResponse, &captured)
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
+
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:     "llama3",
+		Messages:  []goagent.Message{goagent.UserMessage("hi")},
+		MaxTokens: 0, // not set — Ollama uses model context length
+	})
+
+	// go-openai omits zero-value int fields, so max_tokens should be absent.
+	maxTokens, _ := captured["max_tokens"].(float64)
+	if maxTokens != 0 {
+		t.Errorf("max_tokens = %v, want 0 (absent/unrestricted)", maxTokens)
+	}
+}
+
+func TestProvider_Temperature_SentInRequest(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, stopResponse, &captured)
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
+
+	temp := 0.8
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:       "llama3",
+		Messages:    []goagent.Message{goagent.UserMessage("hi")},
+		Temperature: &temp,
+	})
+
+	got, _ := captured["temperature"].(float64)
+	if got != 0.8 {
+		t.Errorf("temperature = %v, want 0.8", got)
+	}
+}
+
+func TestProvider_TemperatureNil_FieldNotSet(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, stopResponse, &captured)
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
+
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:    "llama3",
+		Messages: []goagent.Message{goagent.UserMessage("hi")},
+		// Temperature not set.
+	})
+
+	// When temperature is nil, the field should be absent or zero in the
+	// serialised request (go-openai omits zero float32 values).
+	got, _ := captured["temperature"].(float64)
+	if got != 0 {
+		t.Errorf("temperature = %v, want 0 (absent) when not configured", got)
+	}
+}
+
 // jsonString encodes s as a JSON string literal, e.g. `"hello"`.
 func jsonString(s string) string {
 	b, _ := json.Marshal(s)
