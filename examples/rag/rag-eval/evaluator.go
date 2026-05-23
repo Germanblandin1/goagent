@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/Germanblandin1/goagent"
@@ -55,7 +56,7 @@ func Evaluate(ctx context.Context, provider goagent.Provider,
 	)
 
 	resp, err := provider.Complete(ctx, goagent.CompletionRequest{
-		Model:        evalModel,
+		Model:        ragasModel,
 		SystemPrompt: ragasEvaluatorPrompt,
 		Messages: []goagent.Message{
 			{
@@ -120,6 +121,13 @@ func RunEvalSuite(ctx context.Context,
 		if err != nil {
 			return nil, fmt.Errorf("eval suite: ragas %q: %w", sample.Question, err)
 		}
+		slog.Info("ragas scores",
+			"question", sample.Question,
+			"faithfulness", ragasScores.Faithfulness,
+			"answer_relevancy", ragasScores.AnswerRelevancy,
+			"context_precision", ragasScores.ContextPrecision,
+			"context_recall", ragasScores.ContextRecall,
+		)
 
 		results = append(results, EvalResult{
 			Sample:     sample,
