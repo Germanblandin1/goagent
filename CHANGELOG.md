@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Anthropic provider: returns an error if both `Thinking.Enabled` and `Temperature` are set (Anthropic API restriction).
 - Anthropic provider: per-request `MaxTokens` overrides the provider-level `WithMaxTokens` when `> 0`.
 - Ollama provider: per-request `MaxTokens` and `Temperature` are forwarded to the OpenAI-compatible endpoint.
+- `StreamEventThinking` — new `StreamEventType` for native reasoning tokens delivered on a channel separate from the final response text; the token is carried in `StreamEvent.Text`. `RunStream` routes it to `OnThinkingText` (and the handler) without writing it to the final text buffer and without depending on the tool-call heuristic that `StreamEventText` thinking relies on.
+- Ollama provider: streaming now surfaces reasoning tokens. `CompleteStream` reads Ollama's `message.thinking` field and emits `StreamEventThinking` events, so `RunStream` fires `OnThinkingText` for the reasoning stream and `OnStreamToken` for the answer, without mixing them.
+- Ollama provider: `WithEffort` and `WithThinking` now reach the model. Requests set Ollama's native `think` parameter — the effort level string (`"low"`/`"medium"`/`"high"`, e.g. gpt-oss) when `Effort` is set, otherwise `true` when `Thinking.Enabled` — and the field is omitted entirely when neither is requested, leaving non-reasoning models unaffected. Applies to both streaming (`/api/chat`) and non-streaming (`/v1/chat/completions`) paths.
+- Ollama provider: the non-streaming response now decodes reasoning from the current `thinking` field (falling back to `reasoning`) into a `ContentThinking` block.
 
 ## [0.7.0] - 2026-05-06
 

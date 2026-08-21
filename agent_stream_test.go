@@ -46,6 +46,117 @@ func TestRunStream_TextSimple(t *testing.T) {
 	}
 }
 
+// TestRunStream_ThinkingEvent verifies that StreamEventThinking is routed to
+// OnThinkingText (and the handler) but never contaminates the final response
+// text — and, unlike thinking *text*, does not require a preceding ToolStart.
+func TestRunStream_ThinkingEvent(t *testing.T) {
+	events := []goagent.StreamEvent{
+		{Type: goagent.StreamEventThinking, Text: "let me "},
+		{Type: goagent.StreamEventThinking, Text: "think"},
+		{Type: goagent.StreamEventText, Text: "the answer"},
+		{Type: goagent.StreamEventDone, StopReason: goagent.StopReasonEndTurn},
+	}
+	mock := testutil.NewMockStreamingProvider(events)
+
+	var thinkingTokens []string
+	var streamTokens []string
+	hooks := goagent.Hooks{
+		OnThinkingText: func(_ context.Context, token string) {
+			thinkingTokens = append(thinkingTokens, token)
+		},
+		OnStreamToken: func(_ context.Context, token string) {
+			streamTokens = append(streamTokens, token)
+		},
+	}
+
+	agent, err := goagent.New(
+		goagent.WithProvider(mock),
+		goagent.WithModel("test-model"),
+		goagent.WithHooks(hooks),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var handlerText string
+	handler := func(ev goagent.StreamEvent) error {
+		if ev.Type == goagent.StreamEventText {
+			handlerText += ev.Text
+		}
+		return nil
+	}
+
+	result, err := agent.RunStream(context.Background(), "hi", handler)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Final text must exclude the reasoning tokens.
+	if result != "the answer" {
+		t.Errorf("result = %q, want %q", result, "the answer")
+	}
+	if handlerText != "the answer" {
+		t.Errorf("handler text = %q, want %q", handlerText, "the answer")
+	}
+	// Thinking tokens reach OnThinkingText, not OnStreamToken.
+	if len(thinkingTokens) != 2 || thinkingTokens[0] != "let me " || thinkingTokens[1] != "think" {
+		t.Errorf("OnThinkingText tokens = %v, want [\"let me \" \"think\"]", thinkingTokens)
+	}
+	if len(streamTokens) != 1 || streamTokens[0] != "the answer" {
+		t.Errorf("OnStreamToken tokens = %v, want [\"the answer\"]", streamTokens)
+	}
+}
+
+// TestRunStream_ThinkingEventSuppressed verifies WithShowThinkingText(false)
+// suppresses StreamEventThinking from both the handler and OnThinkingText.
+func TestRunStream_ThinkingEventSuppressed(t *testing.T) {
+	events := []goagent.StreamEvent{
+		{Type: goagent.StreamEventThinking, Text: "secret reasoning"},
+		{Type: goagent.StreamEventText, Text: "answer"},
+		{Type: goagent.StreamEventDone, StopReason: goagent.StopReasonEndTurn},
+	}
+	mock := testutil.NewMockStreamingProvider(events)
+
+	var thinkingCalls int
+	hooks := goagent.Hooks{
+		OnThinkingText: func(_ context.Context, _ string) { thinkingCalls++ },
+	}
+
+	agent, err := goagent.New(
+		goagent.WithProvider(mock),
+		goagent.WithModel("test-model"),
+		goagent.WithHooks(hooks),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var handlerSawThinking bool
+	handler := func(ev goagent.StreamEvent) error {
+		if ev.Type == goagent.StreamEventThinking {
+			handlerSawThinking = true
+		}
+		return nil
+	}
+
+	result, err := agent.RunStream(
+		context.Background(), "hi", handler,
+		goagent.WithShowThinkingText(false),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "answer" {
+		t.Errorf("result = %q, want %q", result, "answer")
+	}
+	if thinkingCalls != 0 {
+		t.Errorf("OnThinkingText fired %d times, want 0 when suppressed", thinkingCalls)
+	}
+	if handlerSawThinking {
+		t.Error("handler received a thinking event with showThinkingText=false")
+	}
+}
+
 func TestRunStream_FallbackNoStreaming(t *testing.T) {
 	mock := testutil.NewMockProvider(goagent.CompletionResponse{
 		Message:    goagent.AssistantMessage("full response"),

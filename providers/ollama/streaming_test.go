@@ -2,6 +2,7 @@ package ollama_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -69,6 +70,101 @@ func TestOllamaCompleteStream_TextTokens(t *testing.T) {
 	}
 	if events[2].Usage.InputTokens != 5 || events[2].Usage.OutputTokens != 3 {
 		t.Errorf("event[2].Usage = %+v, want {5, 3}", events[2].Usage)
+	}
+}
+
+// capturingStreamServer serves NDJSON on POST /api/chat and saves the decoded
+// request body into out.
+func capturingStreamServer(t *testing.T, ndjson string, out *map[string]any) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/chat" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(out)
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte(ndjson))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestOllamaCompleteStream_ThinkingTokens verifies reasoning tokens arriving under
+// `thinking` are emitted as StreamEventThinking (separate from StreamEventText),
+// and that WithEffort adds the native `think` level to the request.
+func TestOllamaCompleteStream_ThinkingTokens(t *testing.T) {
+	t.Parallel()
+
+	ndjson := "" +
+		`{"message":{"role":"assistant","content":"","thinking":"The user"},"done":false}` + "\n" +
+		`{"message":{"role":"assistant","content":"","thinking":" asks"},"done":false}` + "\n" +
+		`{"message":{"role":"assistant","content":"Because"},"done":false}` + "\n" +
+		`{"message":{"role":"assistant","content":" sky"},"done":false}` + "\n" +
+		`{"message":{"content":""},"done":true,"done_reason":"stop","eval_count":4,"prompt_eval_count":2}` + "\n"
+
+	var captured map[string]any
+	srv := capturingStreamServer(t, ndjson, &captured)
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
+
+	stream, err := p.CompleteStream(context.Background(), goagent.CompletionRequest{
+		Model:  "gpt-oss",
+		Effort: "high",
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream error: %v", err)
+	}
+	defer stream.Close()
+
+	var thinking, text string
+	for stream.Next(context.Background()) {
+		ev := stream.Event()
+		switch ev.Type {
+		case goagent.StreamEventThinking:
+			thinking += ev.Text
+		case goagent.StreamEventText:
+			text += ev.Text
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+
+	if thinking != "The user asks" {
+		t.Errorf("thinking = %q, want %q", thinking, "The user asks")
+	}
+	if text != "Because sky" {
+		t.Errorf("text = %q, want %q", text, "Because sky")
+	}
+	if got := captured["think"]; got != "high" {
+		t.Errorf("request think = %v, want \"high\"", got)
+	}
+}
+
+// TestOllamaCompleteStream_NoThinkWhenNotRequested verifies the `think` field is
+// omitted from the streaming request for ordinary (non-reasoning) completions.
+func TestOllamaCompleteStream_NoThinkWhenNotRequested(t *testing.T) {
+	t.Parallel()
+
+	ndjson := `{"message":{"content":"hi"},"done":true,"done_reason":"stop"}` + "\n"
+
+	var captured map[string]any
+	srv := capturingStreamServer(t, ndjson, &captured)
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
+
+	stream, err := p.CompleteStream(context.Background(), goagent.CompletionRequest{Model: "llama3"})
+	if err != nil {
+		t.Fatalf("CompleteStream error: %v", err)
+	}
+	defer stream.Close()
+	for stream.Next(context.Background()) {
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+
+	if _, present := captured["think"]; present {
+		t.Errorf("'think' should be absent when reasoning is not requested, got: %v", captured["think"])
 	}
 }
 

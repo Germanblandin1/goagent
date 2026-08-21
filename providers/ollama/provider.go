@@ -41,13 +41,47 @@ func NewWithClient(client *OllamaClient, opts ...ProviderOption) *Provider {
 }
 
 // ollamaMessage is a raw Ollama API message that captures the reasoning field
-// which the go-openai SDK silently drops.
+// which the go-openai SDK silently drops. Ollama's current API returns the
+// reasoning under `thinking`; older/other models may use `reasoning`, so both
+// are decoded and `thinking` takes precedence.
 type ollamaMessage struct {
 	Role       string            `json:"role"`
 	Content    string            `json:"content"`
-	Reasoning  string            `json:"reasoning,omitempty"` // Ollama-specific thinking field
+	Thinking   string            `json:"thinking,omitempty"`  // Ollama-specific thinking field (current)
+	Reasoning  string            `json:"reasoning,omitempty"` // fallback field name used by some models
 	ToolCalls  []openai.ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string            `json:"tool_call_id,omitempty"`
+}
+
+// ollamaChatRequest wraps the go-openai chat request to add Ollama's native
+// `think` parameter, which the go-openai SDK does not model. The embedded
+// struct's fields are promoted and marshaled inline, so the wire format is the
+// standard OpenAI-compatible body plus an optional `think` field.
+type ollamaChatRequest struct {
+	openai.ChatCompletionRequest
+	Think any `json:"think,omitempty"`
+}
+
+// ollamaThink maps goagent's thinking controls to Ollama's native `think`
+// request parameter. Ollama accepts either a level string (gpt-oss: "low",
+// "medium", "high") or a boolean (deepseek-r1, qwen3), so the return type is
+// any:
+//
+//   - Effort set       → the level string (takes precedence over Thinking).
+//   - Thinking enabled → true.
+//   - neither          → nil, so the field is omitted entirely and models that
+//     do not support reasoning behave exactly as before.
+//
+// The field is only populated when the caller explicitly asked for reasoning,
+// which keeps it off requests to models that would reject an unknown field.
+func ollamaThink(req goagent.CompletionRequest) any {
+	if req.Effort != "" {
+		return req.Effort
+	}
+	if req.Thinking != nil && req.Thinking.Enabled {
+		return true
+	}
+	return nil
 }
 
 type ollamaChoice struct {
@@ -102,8 +136,13 @@ func (p *Provider) Complete(ctx context.Context, req goagent.CompletionRequest) 
 		chatReq.ToolChoice = "auto"
 	}
 
+	body := ollamaChatRequest{
+		ChatCompletionRequest: chatReq,
+		Think:                 ollamaThink(req),
+	}
+
 	var resp ollamaResponse
-	if err := p.client.do(ctx, "/v1/chat/completions", chatReq, &resp); err != nil {
+	if err := p.client.do(ctx, "/v1/chat/completions", body, &resp); err != nil {
 		return goagent.CompletionResponse{}, err
 	}
 
@@ -254,13 +293,19 @@ func toGoAgentResponse(resp ollamaResponse) (goagent.CompletionResponse, error) 
 
 	choice := resp.Choices[0]
 
-	// Build content blocks. The reasoning field takes priority over <think>
-	// tags in the content text — some Ollama models use one mechanism, some
-	// use the other, and some use both. We avoid duplicating the thinking.
+	// Build content blocks. A dedicated thinking field takes priority over
+	// <think> tags in the content text — some Ollama models use one mechanism,
+	// some use the other, and some use both. We avoid duplicating the thinking.
+	// `thinking` is the current API field name; `reasoning` is a fallback for
+	// models that still use it.
+	reasoning := choice.Message.Thinking
+	if reasoning == "" {
+		reasoning = choice.Message.Reasoning
+	}
 	var content []goagent.ContentBlock
-	if choice.Message.Reasoning != "" {
-		// Model returned thinking in the dedicated reasoning field.
-		content = append(content, goagent.ThinkingBlock(strings.TrimSpace(choice.Message.Reasoning), ""))
+	if reasoning != "" {
+		// Model returned thinking in the dedicated field.
+		content = append(content, goagent.ThinkingBlock(strings.TrimSpace(reasoning), ""))
 		if text := strings.TrimSpace(choice.Message.Content); text != "" {
 			content = append(content, goagent.TextBlock(text))
 		}

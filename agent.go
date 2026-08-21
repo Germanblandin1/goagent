@@ -999,6 +999,24 @@ func (a *Agent) completeWithStream(
 				fn(rctx.hook, ev.Text)
 			}
 
+		case StreamEventThinking:
+			// Native reasoning token (e.g. Ollama's message.thinking). It is
+			// delivered to the thinking handler/hook but never written to
+			// textBuf and never flips hasTools — so it cannot contaminate the
+			// final response text or the tool-call heuristic. Unlike the
+			// StreamEventText path, this does not depend on a preceding
+			// StreamEventToolStart to be recognised as thinking.
+			if opts.showThinkingText {
+				if handler != nil {
+					if herr := handler(ev); herr != nil {
+						return "", nil, Usage{}, StopReasonEndTurn, herr
+					}
+				}
+				if fn := a.opts.hooks.OnThinkingText; fn != nil {
+					fn(rctx.hook, ev.Text)
+				}
+			}
+
 		case StreamEventToolDelta:
 			if acc, ok := toolBuf[ev.ToolID]; ok {
 				acc.inputJSON = ev.InputDelta

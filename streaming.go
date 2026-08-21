@@ -22,6 +22,13 @@ const (
 
 	// StreamEventDone is the final event, carrying Usage and StopReason.
 	StreamEventDone
+
+	// StreamEventThinking is a reasoning ("thinking") token emitted on a channel
+	// separate from the final response text. Providers that surface thinking
+	// natively (e.g. Ollama's message.thinking field) use it so the reasoning
+	// stream reaches OnThinkingText without relying on the tool-call heuristic.
+	// The token is carried in the Text field.
+	StreamEventThinking
 )
 
 // StreamEvent is the atomic unit delivered to a StreamHandler.
@@ -29,7 +36,7 @@ const (
 type StreamEvent struct {
 	Type StreamEventType
 
-	// StreamEventText
+	// StreamEventText and StreamEventThinking
 	Text string
 
 	// StreamEventToolStart — the model declared it will call a tool

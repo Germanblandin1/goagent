@@ -18,6 +18,10 @@ type ollamaStreamRequest struct {
 	Stream   bool               `json:"stream"`
 	Tools    []ollamaNativeTool `json:"tools,omitempty"`
 	Options  *ollamaOptions     `json:"options,omitempty"`
+	// Think enables native reasoning. It is a level string (gpt-oss) or a
+	// boolean (deepseek-r1, qwen3); omitted when the caller did not request
+	// reasoning. See ollamaThink.
+	Think any `json:"think,omitempty"`
 }
 
 // ollamaOptions carries per-request generation parameters for Ollama's native API.
@@ -55,6 +59,7 @@ type ollamaNativeCallFunc struct {
 type ollamaStreamChunk struct {
 	Message struct {
 		Content   string             `json:"content"`
+		Thinking  string             `json:"thinking,omitempty"`
 		ToolCalls []ollamaNativeCall `json:"tool_calls,omitempty"`
 	} `json:"message"`
 	Done            bool   `json:"done"`
@@ -146,6 +151,17 @@ func (s *ollamaStream) Next(_ context.Context) bool {
 			}
 			return true
 		}
+		// Reasoning tokens arrive under `thinking`, separate from `content` (and,
+		// per Ollama's stream, before it). Emit them as StreamEventThinking so the
+		// agent routes them to OnThinkingText without mixing them into the final
+		// text. Checked before Content: a chunk carries one or the other.
+		if chunk.Message.Thinking != "" {
+			s.current = goagent.StreamEvent{
+				Type: goagent.StreamEventThinking,
+				Text: chunk.Message.Thinking,
+			}
+			return true
+		}
 		if chunk.Message.Content != "" {
 			s.current = goagent.StreamEvent{
 				Type: goagent.StreamEventText,
@@ -183,6 +199,9 @@ func (s *ollamaStream) Close() error               { return s.resp.Body.Close() 
 // endpoint with stream:true.
 //
 // Text tokens are delivered as StreamEventText events as they arrive.
+// Reasoning tokens (when the request enables thinking via WithEffort or
+// WithThinking) arrive under Ollama's `thinking` field and are delivered as
+// StreamEventThinking events, keeping them separate from the final text.
 // Tool calls appear in the final done chunk and are translated to
 // StreamEventToolStart + StreamEventToolDelta events before StreamEventDone,
 // so the agent loop handles them the same way as Anthropic streaming.
@@ -194,6 +213,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req goagent.CompletionReq
 	body := ollamaStreamRequest{
 		Model:  req.Model,
 		Stream: true,
+		Think:  ollamaThink(req),
 	}
 	if req.MaxTokens > 0 {
 		body.Options = &ollamaOptions{NumPredict: req.MaxTokens}

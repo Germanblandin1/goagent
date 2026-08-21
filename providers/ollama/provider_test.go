@@ -408,7 +408,29 @@ func TestProvider_ThinkingBlocksDiscardedInRequest(t *testing.T) {
 	}
 }
 
-func TestProvider_ThinkingAndEffortIgnored(t *testing.T) {
+// TestProvider_EffortSendsThinkLevel verifies that WithEffort maps to Ollama's
+// native `think` level string (gpt-oss accepts "low"/"medium"/"high").
+func TestProvider_EffortSendsThinkLevel(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, stopResponse, &captured)
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
+
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:    "gpt-oss",
+		Messages: []goagent.Message{goagent.UserMessage("hi")},
+		Effort:   "high",
+	})
+
+	if got := captured["think"]; got != "high" {
+		t.Errorf("think = %v, want \"high\"", got)
+	}
+}
+
+// TestProvider_ThinkingSendsThinkBool verifies that WithThinking (no effort)
+// maps to the boolean `think` used by deepseek-r1/qwen3.
+func TestProvider_ThinkingSendsThinkBool(t *testing.T) {
 	t.Parallel()
 
 	var captured map[string]any
@@ -419,14 +441,64 @@ func TestProvider_ThinkingAndEffortIgnored(t *testing.T) {
 		Model:    "qwq",
 		Messages: []goagent.Message{goagent.UserMessage("hi")},
 		Thinking: &goagent.ThinkingConfig{Enabled: true, BudgetTokens: 4096},
-		Effort:   "high",
 	})
 
-	if _, present := captured["thinking"]; present {
-		t.Errorf("'thinking' field should not be sent to Ollama, but was present: %v", captured["thinking"])
+	if got := captured["think"]; got != true {
+		t.Errorf("think = %v, want true", got)
 	}
-	if _, present := captured["output_config"]; present {
-		t.Errorf("'output_config' field should not be sent to Ollama, but was present: %v", captured["output_config"])
+}
+
+// TestProvider_NoThinkWhenNotRequested verifies the `think` field is omitted for
+// ordinary requests, so models that do not support reasoning are unaffected.
+func TestProvider_NoThinkWhenNotRequested(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingServer(t, stopResponse, &captured)
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
+
+	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:    "llama3",
+		Messages: []goagent.Message{goagent.UserMessage("hi")},
+	})
+
+	if _, present := captured["think"]; present {
+		t.Errorf("'think' should be absent when reasoning is not requested, got: %v", captured["think"])
+	}
+}
+
+// TestProvider_ThinkingFromThinkingField verifies the non-streaming path decodes
+// reasoning from Ollama's current `thinking` field into a ContentThinking block.
+func TestProvider_ThinkingFromThinkingField(t *testing.T) {
+	t.Parallel()
+
+	body := `{
+	  "choices":[{"message":{"role":"assistant","content":"4","thinking":"two plus two"},"finish_reason":"stop"}]
+	}`
+	srv := fakeServer(t, body)
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
+
+	resp, err := p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:    "gpt-oss",
+		Messages: []goagent.Message{goagent.UserMessage("2+2?")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.Message.HasContentType(goagent.ContentThinking) {
+		t.Fatal("expected a thinking block from the `thinking` field, got none")
+	}
+	var thinking string
+	for _, b := range resp.Message.Content {
+		if b.Type == goagent.ContentThinking && b.Thinking != nil {
+			thinking = b.Thinking.Thinking
+		}
+	}
+	if thinking != "two plus two" {
+		t.Errorf("thinking = %q, want %q", thinking, "two plus two")
+	}
+	if resp.Message.TextContent() != "4" {
+		t.Errorf("text = %q, want %q", resp.Message.TextContent(), "4")
 	}
 }
 
