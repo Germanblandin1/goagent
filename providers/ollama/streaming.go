@@ -70,6 +70,10 @@ type ollamaStream struct {
 	// pending holds events queued from a done chunk (tool events + done) so
 	// that Next can return them one at a time without buffering the whole stream.
 	pending []goagent.StreamEvent
+	// tools accumulates tool calls seen across chunks. Ollama emits tool calls in
+	// an intermediate chunk (done:false, empty content), separate from the final
+	// done:true chunk — so we collect from every chunk and flush on done.
+	tools   []ollamaNativeCall
 	current goagent.StreamEvent
 	err     error
 	done    bool
@@ -100,9 +104,16 @@ func (s *ollamaStream) Next(_ context.Context) bool {
 			s.err = fmt.Errorf("ollama: decoding stream chunk: %w", err)
 			return false
 		}
+		// Accumulate tool calls from any chunk. Ollama delivers them in an
+		// intermediate chunk (done:false, empty content), NOT in the final done
+		// chunk — reading them only under `chunk.Done` would silently drop every
+		// tool call and the agent would appear to "do nothing" for tool tasks.
+		if len(chunk.Message.ToolCalls) > 0 {
+			s.tools = append(s.tools, chunk.Message.ToolCalls...)
+		}
 		if chunk.Done {
-			// Emit one ToolStart + one ToolDelta per tool call, then Done.
-			for i, tc := range chunk.Message.ToolCalls {
+			// Emit one ToolStart + one ToolDelta per accumulated tool call, then Done.
+			for i, tc := range s.tools {
 				toolID := fmt.Sprintf("ollama-tool-%d", i)
 				args := tc.Function.Arguments
 				if args == nil {
@@ -122,7 +133,7 @@ func (s *ollamaStream) Next(_ context.Context) bool {
 			}
 			s.pending = append(s.pending, goagent.StreamEvent{
 				Type:       goagent.StreamEventDone,
-				StopReason: ollamaStopReason(chunk.DoneReason, len(chunk.Message.ToolCalls) > 0),
+				StopReason: ollamaStopReason(chunk.DoneReason, len(s.tools) > 0),
 				Usage: goagent.Usage{
 					InputTokens:  chunk.PromptEvalCount,
 					OutputTokens: chunk.EvalCount,

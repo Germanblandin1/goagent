@@ -131,6 +131,52 @@ func TestOllamaCompleteStream_ToolCalls(t *testing.T) {
 	}
 }
 
+// TestOllamaCompleteStream_ToolCallsInIntermediateChunk cubre el comportamiento REAL
+// de Ollama con stream:true: las tool calls llegan en un chunk done:false (content
+// vacío) y el chunk done:true final viene sin tool_calls. El stream debe acumularlas
+// del chunk intermedio y emitirlas igual — no leerlas solo bajo `done` (si no, se
+// pierden en silencio y el agente parece "no hacer nada" en tareas con tools).
+func TestOllamaCompleteStream_ToolCallsInIntermediateChunk(t *testing.T) {
+	t.Parallel()
+
+	ndjson := `{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_x","function":{"name":"calc","arguments":{"x":21,"y":19}}}]},"done":false}` + "\n" +
+		`{"message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","eval_count":5,"prompt_eval_count":3}` + "\n"
+
+	srv := fakeStreamServer(t, ndjson)
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
+
+	stream, err := p.CompleteStream(context.Background(), goagent.CompletionRequest{Model: "qwen2.5"})
+	if err != nil {
+		t.Fatalf("CompleteStream error: %v", err)
+	}
+	defer stream.Close()
+
+	var events []goagent.StreamEvent
+	for stream.Next(context.Background()) {
+		events = append(events, stream.Event())
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+
+	// Expect: ToolStart, ToolDelta, Done — la tool call del chunk intermedio no se pierde.
+	if len(events) != 3 {
+		t.Fatalf("got %d events, want 3 (ToolStart, ToolDelta, Done)", len(events))
+	}
+	if events[0].Type != goagent.StreamEventToolStart || events[0].ToolName != "calc" {
+		t.Errorf("event[0] = %+v, want ToolStart calc", events[0])
+	}
+	if events[1].Type != goagent.StreamEventToolDelta || events[1].InputDelta == "" {
+		t.Errorf("event[1] = %+v, want ToolDelta con args", events[1])
+	}
+	if events[2].Type != goagent.StreamEventDone {
+		t.Errorf("event[2].Type = %v, want Done", events[2].Type)
+	}
+	if events[2].StopReason != goagent.StopReasonToolUse {
+		t.Errorf("event[2].StopReason = %v, want ToolUse", events[2].StopReason)
+	}
+}
+
 func TestOllamaCompleteStream_MultipleToolCalls(t *testing.T) {
 	t.Parallel()
 
