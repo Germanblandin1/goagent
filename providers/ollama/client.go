@@ -65,7 +65,7 @@ func (c *OllamaClient) doStream(ctx context.Context, path string, reqBody any) (
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, wrapTransport(err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -74,10 +74,7 @@ func (c *OllamaClient) doStream(ctx context.Context, path string, reqBody any) (
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&errBody)
 		resp.Body.Close()
-		if errBody.Error != "" {
-			return nil, fmt.Errorf("ollama: status %d: %s", resp.StatusCode, errBody.Error)
-		}
-		return nil, fmt.Errorf("ollama: status %d", resp.StatusCode)
+		return nil, &StatusError{StatusCode: resp.StatusCode, Body: errBody.Error}
 	}
 	return resp, nil
 }
@@ -92,7 +89,7 @@ func (c *OllamaClient) doGet(ctx context.Context, path string, out any) error {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return err
+		return wrapTransport(err)
 	}
 	defer resp.Body.Close()
 
@@ -101,10 +98,7 @@ func (c *OllamaClient) doGet(ctx context.Context, path string, out any) error {
 			Error string `json:"error"`
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&errBody)
-		if errBody.Error != "" {
-			return fmt.Errorf("ollama: status %d: %s", resp.StatusCode, errBody.Error)
-		}
-		return fmt.Errorf("ollama: status %d", resp.StatusCode)
+		return &StatusError{StatusCode: resp.StatusCode, Body: errBody.Error}
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
@@ -131,7 +125,7 @@ func (c *OllamaClient) do(ctx context.Context, path string, reqBody any, out any
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return err
+		return wrapTransport(err)
 	}
 	defer resp.Body.Close()
 
@@ -140,10 +134,7 @@ func (c *OllamaClient) do(ctx context.Context, path string, reqBody any, out any
 			Error string `json:"error"`
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&errBody)
-		if errBody.Error != "" {
-			return fmt.Errorf("ollama: status %d: %s", resp.StatusCode, errBody.Error)
-		}
-		return fmt.Errorf("ollama: status %d", resp.StatusCode)
+		return &StatusError{StatusCode: resp.StatusCode, Body: errBody.Error}
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {

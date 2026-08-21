@@ -117,3 +117,28 @@ func TestProviderError_Unwrap(t *testing.T) {
 		t.Error("errors.Is should match the cause")
 	}
 }
+
+func TestHTTPStatusIsTransient(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		code int
+		want bool
+	}{
+		{200, false},
+		{400, false},
+		{401, false},
+		{404, false},
+		{429, true},
+		{500, true},
+		{502, true},
+		{503, true},
+		{504, true},
+		{599, true},
+	}
+	for _, tc := range tests {
+		if got := goagent.HTTPStatusIsTransient(tc.code); got != tc.want {
+			t.Errorf("HTTPStatusIsTransient(%d) = %v, want %v", tc.code, got, tc.want)
+		}
+	}
+}

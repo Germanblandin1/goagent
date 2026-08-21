@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ModelCatalog` — optional provider interface (`Models(ctx) ([]ModelInfo, error)` and `ModelInfo(ctx, model) (ModelInfo, error)`) for enumerating a provider's models and resolving per-model capabilities at runtime; detected via type assertion like `StreamingProvider`.
 - `Capability` string type with `CapabilityCompletion`, `CapabilityTools`, `CapabilityThinking`, `CapabilityVision`, `CapabilityEmbedding` constants, and `ModelInfo{Name, Capabilities}` with a `Supports(Capability) bool` method — the shared vocabulary reported by `ModelCatalog`.
 - Ollama provider: implements `ModelCatalog`. `Models` lists installed models via `/api/tags` (names only); `ModelInfo` reports capabilities via `/api/show`, cached per model.
+- `HTTPStatusIsTransient(code int) bool` — core helper mapping 429 and 5xx to transient (retryable) and all other codes (notably 4xx) to permanent, so HTTP providers can implement `TransientError` without duplicating the mapping.
+- Ollama provider: `StatusError{StatusCode, Body}` — typed error returned for non-200 responses; renders the same message as before (`ollama: status <code>[: <body>]`) and implements `TransientError.IsTransient` (429/5xx → retry, 4xx → no retry).
+- Ollama provider: `TransportError{Cause}` — wraps transport-level failures (connection refused, timeout, EOF) and implements `TransientError.IsTransient` (transient for everything except `context.Canceled`, which is caller intent). Preserves the underlying message and unwraps to the cause.
+
+### Fixed
+
+- Ollama provider: HTTP errors are now classified for retry. Previously non-200 responses and transport failures were returned as plain strings, so `RetryProvider`'s default policy retried everything — including permanent 4xx errors. It now retries only transient failures (429, 5xx, network errors) and fails fast on permanent ones (4xx).
 
 ## [0.7.0] - 2026-05-06
 

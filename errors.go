@@ -3,6 +3,7 @@ package goagent
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"runtime/debug"
 	"time"
 )
@@ -24,6 +25,20 @@ var ErrToolNotFound = errors.New("tool not found")
 // free without any caller configuration.
 type TransientError interface {
 	IsTransient() bool
+}
+
+// HTTPStatusIsTransient reports whether an HTTP status code is worth retrying.
+// It maps 429 (Too Many Requests) and any 5xx server error to true, and every
+// other code — notably 4xx client errors — to false.
+//
+// Providers that surface HTTP failures can use it to implement
+// TransientError.IsTransient without each duplicating the mapping, so
+// RetryProvider gets correct behaviour with no caller configuration.
+func HTTPStatusIsTransient(code int) bool {
+	if code == http.StatusTooManyRequests {
+		return true
+	}
+	return code >= 500 && code <= 599
 }
 
 // MaxIterationsError is returned by Run when the agent exhausts its iteration
