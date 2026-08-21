@@ -213,7 +213,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req goagent.CompletionReq
 	body := ollamaStreamRequest{
 		Model:  req.Model,
 		Stream: true,
-		Think:  ollamaThink(req),
+		Think:  p.thinkParam(ctx, req),
 	}
 	if req.MaxTokens > 0 {
 		body.Options = &ollamaOptions{NumPredict: req.MaxTokens}

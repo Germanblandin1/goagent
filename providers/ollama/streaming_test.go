@@ -103,8 +103,7 @@ func TestOllamaCompleteStream_ThinkingTokens(t *testing.T) {
 		`{"message":{"role":"assistant","content":" sky"},"done":false}` + "\n" +
 		`{"message":{"content":""},"done":true,"done_reason":"stop","eval_count":4,"prompt_eval_count":2}` + "\n"
 
-	var captured map[string]any
-	srv := capturingStreamServer(t, ndjson, &captured)
+	srv := newMockServer(t, []string{"completion", "thinking"}, "/api/chat", ndjson)
 	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
 
 	stream, err := p.CompleteStream(context.Background(), goagent.CompletionRequest{
@@ -136,7 +135,7 @@ func TestOllamaCompleteStream_ThinkingTokens(t *testing.T) {
 	if text != "Because sky" {
 		t.Errorf("text = %q, want %q", text, "Because sky")
 	}
-	if got := captured["think"]; got != "high" {
+	if got := srv.ChatBody()["think"]; got != "high" {
 		t.Errorf("request think = %v, want \"high\"", got)
 	}
 }

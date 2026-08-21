@@ -139,6 +139,15 @@ type StreamingProvider interface {
 ```
 The agent detects support at runtime: `if sp, ok := provider.(StreamingProvider); ok { ... }`. Not implementing it is not an error; the agent falls back to `Provider.Complete`.
 
+#### `ModelCatalog` _(optional — type assertion)_
+```go
+type ModelCatalog interface {
+    Models(ctx context.Context) ([]ModelInfo, error)
+    ModelInfo(ctx context.Context, model string) (ModelInfo, error)
+}
+```
+Providers that can introspect their models at runtime implement this so callers can discover models and adapt to per-model capabilities (via `ModelInfo.Supports(CapabilityThinking)` etc.). Detected via type assertion; not implementing it is not an error. `Models` returns at least `Name` per model; `Capabilities` may be empty from the cheap listing, so call `ModelInfo` to resolve a specific model (implementations should cache). Providers must degrade — never break the run — when they gate a request feature on a capability they cannot resolve.
+
 #### `Stream`
 ```go
 type Stream interface {

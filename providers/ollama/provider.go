@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	openai "github.com/sashabaranov/go-openai"
 
@@ -15,8 +16,15 @@ import (
 )
 
 // Provider implements goagent.Provider using Ollama's OpenAI-compatible endpoint.
+// It also implements goagent.ModelCatalog, enumerating installed models and
+// reporting per-model capabilities via Ollama's /api/tags and /api/show.
 type Provider struct {
 	client *OllamaClient
+
+	// capsMu guards capsCache, a per-model cache of capabilities resolved from
+	// /api/show so repeated requests do not hit the network each time.
+	capsMu    sync.RWMutex
+	capsCache map[string]goagent.ModelInfo
 }
 
 // ProviderOption is a functional option for configuring a Provider.
@@ -33,7 +41,10 @@ func New(opts ...ProviderOption) *Provider {
 // Use this when you need to share a client between Provider and OllamaEmbedder,
 // or when the default OllamaClient settings are not sufficient.
 func NewWithClient(client *OllamaClient, opts ...ProviderOption) *Provider {
-	p := &Provider{client: client}
+	p := &Provider{
+		client:    client,
+		capsCache: make(map[string]goagent.ModelInfo),
+	}
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -62,18 +73,17 @@ type ollamaChatRequest struct {
 	Think any `json:"think,omitempty"`
 }
 
-// ollamaThink maps goagent's thinking controls to Ollama's native `think`
-// request parameter. Ollama accepts either a level string (gpt-oss: "low",
-// "medium", "high") or a boolean (deepseek-r1, qwen3), so the return type is
-// any:
+// ollamaThink maps goagent's thinking controls to the value the caller wants
+// for Ollama's native `think` request parameter. Ollama accepts either a level
+// string (gpt-oss: "low", "medium", "high") or a boolean (deepseek-r1, qwen3),
+// so the return type is any:
 //
 //   - Effort set       → the level string (takes precedence over Thinking).
 //   - Thinking enabled → true.
-//   - neither          → nil, so the field is omitted entirely and models that
-//     do not support reasoning behave exactly as before.
+//   - neither          → nil, meaning the caller did not request reasoning.
 //
-// The field is only populated when the caller explicitly asked for reasoning,
-// which keeps it off requests to models that would reject an unknown field.
+// This reports intent only; whether the field is actually sent is decided by
+// thinkParam, which also checks the model's capability.
 func ollamaThink(req goagent.CompletionRequest) any {
 	if req.Effort != "" {
 		return req.Effort
@@ -82,6 +92,24 @@ func ollamaThink(req goagent.CompletionRequest) any {
 		return true
 	}
 	return nil
+}
+
+// thinkParam returns the value for Ollama's native `think` request parameter,
+// or nil when reasoning was not requested or the target model does not support
+// it. Gating on the model's advertised capability avoids Ollama's HTTP 400 for
+// models without the thinking capability: sending `think` to, say, llama3.2
+// fails the whole request. When capability cannot be resolved (network error,
+// unknown model) supportsThinking returns false, so we degrade to omitting
+// `think` rather than breaking the run (GA-004).
+func (p *Provider) thinkParam(ctx context.Context, req goagent.CompletionRequest) any {
+	want := ollamaThink(req)
+	if want == nil {
+		return nil
+	}
+	if !p.supportsThinking(ctx, req.Model) {
+		return nil
+	}
+	return want
 }
 
 type ollamaChoice struct {
@@ -138,7 +166,7 @@ func (p *Provider) Complete(ctx context.Context, req goagent.CompletionRequest) 
 
 	body := ollamaChatRequest{
 		ChatCompletionRequest: chatReq,
-		Think:                 ollamaThink(req),
+		Think:                 p.thinkParam(ctx, req),
 	}
 
 	var resp ollamaResponse

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Germanblandin1/goagent"
@@ -50,6 +51,62 @@ const stopResponse = `{
   "choices":[{"message":{"role":"assistant","content":"hello from ollama"},"finish_reason":"stop"}],
   "usage":{"prompt_tokens":5,"completion_tokens":3}
 }`
+
+// mockServer serves POST /api/show (capability lookup) alongside a chat endpoint,
+// capturing the chat request body. It is used to exercise the capability-gated
+// `think` parameter, which consults /api/show before deciding to send `think`.
+type mockServer struct {
+	*httptest.Server
+	mu        sync.Mutex
+	chatBody  map[string]any
+	showCalls int
+}
+
+// ChatBody returns the last decoded chat request body.
+func (m *mockServer) ChatBody() map[string]any {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.chatBody
+}
+
+// ShowCalls returns how many times /api/show was hit.
+func (m *mockServer) ShowCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.showCalls
+}
+
+// newMockServer serves /api/show returning {"capabilities": caps} and chatPath
+// returning chatResp (capturing its body). When caps is nil, /api/show responds
+// 404 to simulate a capability-resolution failure.
+func newMockServer(t *testing.T, caps []string, chatPath, chatResp string) *mockServer {
+	t.Helper()
+	m := &mockServer{}
+	m.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/show":
+			m.mu.Lock()
+			m.showCalls++
+			m.mu.Unlock()
+			if caps == nil {
+				http.Error(w, `{"error":"model not found"}`, http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"capabilities": caps})
+		case chatPath:
+			m.mu.Lock()
+			_ = json.NewDecoder(r.Body).Decode(&m.chatBody)
+			m.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(chatResp))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(m.Server.Close)
+	return m
+}
 
 func TestProvider_SimpleResponse(t *testing.T) {
 	t.Parallel()
@@ -409,12 +466,12 @@ func TestProvider_ThinkingBlocksDiscardedInRequest(t *testing.T) {
 }
 
 // TestProvider_EffortSendsThinkLevel verifies that WithEffort maps to Ollama's
-// native `think` level string (gpt-oss accepts "low"/"medium"/"high").
+// native `think` level string (gpt-oss accepts "low"/"medium"/"high") when the
+// model advertises the thinking capability.
 func TestProvider_EffortSendsThinkLevel(t *testing.T) {
 	t.Parallel()
 
-	var captured map[string]any
-	srv := capturingServer(t, stopResponse, &captured)
+	srv := newMockServer(t, []string{"completion", "tools", "thinking"}, "/v1/chat/completions", stopResponse)
 	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
 
 	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
@@ -423,18 +480,17 @@ func TestProvider_EffortSendsThinkLevel(t *testing.T) {
 		Effort:   "high",
 	})
 
-	if got := captured["think"]; got != "high" {
+	if got := srv.ChatBody()["think"]; got != "high" {
 		t.Errorf("think = %v, want \"high\"", got)
 	}
 }
 
 // TestProvider_ThinkingSendsThinkBool verifies that WithThinking (no effort)
-// maps to the boolean `think` used by deepseek-r1/qwen3.
+// maps to the boolean `think` used by deepseek-r1/qwen3 on thinking-capable models.
 func TestProvider_ThinkingSendsThinkBool(t *testing.T) {
 	t.Parallel()
 
-	var captured map[string]any
-	srv := capturingServer(t, stopResponse, &captured)
+	srv := newMockServer(t, []string{"completion", "thinking"}, "/v1/chat/completions", stopResponse)
 	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
 
 	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
@@ -443,18 +499,18 @@ func TestProvider_ThinkingSendsThinkBool(t *testing.T) {
 		Thinking: &goagent.ThinkingConfig{Enabled: true, BudgetTokens: 4096},
 	})
 
-	if got := captured["think"]; got != true {
+	if got := srv.ChatBody()["think"]; got != true {
 		t.Errorf("think = %v, want true", got)
 	}
 }
 
 // TestProvider_NoThinkWhenNotRequested verifies the `think` field is omitted for
-// ordinary requests, so models that do not support reasoning are unaffected.
+// ordinary requests — and that no capability lookup is performed, since there is
+// nothing to gate.
 func TestProvider_NoThinkWhenNotRequested(t *testing.T) {
 	t.Parallel()
 
-	var captured map[string]any
-	srv := capturingServer(t, stopResponse, &captured)
+	srv := newMockServer(t, []string{"completion", "thinking"}, "/v1/chat/completions", stopResponse)
 	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
 
 	_, _ = p.Complete(context.Background(), goagent.CompletionRequest{
@@ -462,8 +518,81 @@ func TestProvider_NoThinkWhenNotRequested(t *testing.T) {
 		Messages: []goagent.Message{goagent.UserMessage("hi")},
 	})
 
-	if _, present := captured["think"]; present {
-		t.Errorf("'think' should be absent when reasoning is not requested, got: %v", captured["think"])
+	if _, present := srv.ChatBody()["think"]; present {
+		t.Errorf("'think' should be absent when reasoning is not requested, got: %v", srv.ChatBody()["think"])
+	}
+	if srv.ShowCalls() != 0 {
+		t.Errorf("/api/show called %d times, want 0 when reasoning is not requested", srv.ShowCalls())
+	}
+}
+
+// TestProvider_NoThinkWhenModelUnsupported is the GA-004 regression: a model
+// without the thinking capability (e.g. llama3.2) plus Effort must NOT send
+// `think` — Ollama would answer HTTP 400 — and the request must still succeed.
+func TestProvider_NoThinkWhenModelUnsupported(t *testing.T) {
+	t.Parallel()
+
+	srv := newMockServer(t, []string{"completion", "tools"}, "/v1/chat/completions", stopResponse)
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
+
+	resp, err := p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:    "llama3.2",
+		Messages: []goagent.Message{goagent.UserMessage("hi")},
+		Effort:   "high",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, present := srv.ChatBody()["think"]; present {
+		t.Errorf("'think' must be absent for a model without the thinking capability, got: %v", srv.ChatBody()["think"])
+	}
+	if resp.Message.TextContent() != "hello from ollama" {
+		t.Errorf("response text = %q, want the model's answer (run must not abort)", resp.Message.TextContent())
+	}
+}
+
+// TestProvider_ShowFailureDegradesGracefully verifies that when /api/show fails,
+// the provider omits `think` and completes the run instead of aborting.
+func TestProvider_ShowFailureDegradesGracefully(t *testing.T) {
+	t.Parallel()
+
+	srv := newMockServer(t, nil, "/v1/chat/completions", stopResponse) // caps=nil → /api/show 404
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
+
+	resp, err := p.Complete(context.Background(), goagent.CompletionRequest{
+		Model:    "mystery-model",
+		Messages: []goagent.Message{goagent.UserMessage("hi")},
+		Effort:   "high",
+	})
+	if err != nil {
+		t.Fatalf("run must not abort when capability lookup fails: %v", err)
+	}
+	if _, present := srv.ChatBody()["think"]; present {
+		t.Errorf("'think' must be absent when capability cannot be resolved, got: %v", srv.ChatBody()["think"])
+	}
+	if resp.Message.TextContent() != "hello from ollama" {
+		t.Errorf("response text = %q, want the model's answer", resp.Message.TextContent())
+	}
+}
+
+// TestProvider_CapabilityCached verifies the /api/show result is cached per
+// model: two completions for the same model trigger a single capability lookup.
+func TestProvider_CapabilityCached(t *testing.T) {
+	t.Parallel()
+
+	srv := newMockServer(t, []string{"completion", "thinking"}, "/v1/chat/completions", stopResponse)
+	p := ollama.NewWithClient(ollama.NewClient(ollama.WithBaseURL(srv.URL)))
+
+	req := goagent.CompletionRequest{
+		Model:    "gpt-oss",
+		Messages: []goagent.Message{goagent.UserMessage("hi")},
+		Effort:   "high",
+	}
+	_, _ = p.Complete(context.Background(), req)
+	_, _ = p.Complete(context.Background(), req)
+
+	if calls := srv.ShowCalls(); calls != 1 {
+		t.Errorf("/api/show called %d times, want 1 (cached after first lookup)", calls)
 	}
 }
 

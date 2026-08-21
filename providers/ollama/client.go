@@ -82,6 +82,37 @@ func (c *OllamaClient) doStream(ctx context.Context, path string, reqBody any) (
 	return resp, nil
 }
 
+// doGet issues a GET to baseURL+path, checks the HTTP status, and decodes the
+// response body into out. Used for read-only endpoints such as /api/tags.
+func (c *OllamaClient) doGet(ctx context.Context, path string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return fmt.Errorf("ollama: creating request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var errBody struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&errBody)
+		if errBody.Error != "" {
+			return fmt.Errorf("ollama: status %d: %s", resp.StatusCode, errBody.Error)
+		}
+		return fmt.Errorf("ollama: status %d", resp.StatusCode)
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("ollama: decoding response: %w", err)
+	}
+	return nil
+}
+
 // do marshals reqBody as JSON, POSTs it to baseURL+path, checks the HTTP
 // status, and decodes the response body into out.
 // On non-200 status it tries to decode {"error": "..."} from the body and
