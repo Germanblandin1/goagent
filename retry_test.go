@@ -227,6 +227,194 @@ func TestRetryProvider_NoRetryOnSuccess(t *testing.T) {
 	}
 }
 
+// --- RetryProvider streaming capability tests ---
+
+// flakyStreamProvider fails CompleteStream the first failFor times, then returns
+// a stream of the configured events. Implements goagent.StreamingProvider.
+type flakyStreamProvider struct {
+	mu      sync.Mutex
+	events  []goagent.StreamEvent
+	failFor int
+	calls   int
+	err     error
+}
+
+func (p *flakyStreamProvider) Complete(context.Context, goagent.CompletionRequest) (goagent.CompletionResponse, error) {
+	return goagent.CompletionResponse{}, errors.New("flakyStreamProvider: Complete not supported")
+}
+
+func (p *flakyStreamProvider) CompleteStream(_ context.Context, _ goagent.CompletionRequest) (goagent.Stream, error) {
+	p.mu.Lock()
+	n := p.calls
+	p.calls++
+	p.mu.Unlock()
+	if n < p.failFor {
+		return nil, p.err
+	}
+	return &testutil.MockStream{Events: p.events}, nil
+}
+
+func (p *flakyStreamProvider) callCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
+// TestRetryProvider_PreservesStreamingCapability is the regression test for the
+// bug where wrapping a StreamingProvider disabled streaming: the returned
+// wrapper must still satisfy StreamingProvider so Agent.RunStream detects it.
+func TestRetryProvider_PreservesStreamingCapability(t *testing.T) {
+	t.Parallel()
+
+	inner := testutil.NewMockStreamingProvider(nil)
+	provider := goagent.RetryProvider(inner, goagent.RetryPolicy{
+		MaxAttempts:  3,
+		InitialDelay: time.Millisecond,
+	})
+
+	if _, ok := provider.(goagent.StreamingProvider); !ok {
+		t.Fatal("RetryProvider over a streaming inner must implement StreamingProvider")
+	}
+}
+
+// TestRetryProvider_NonStreamingInner_NoStreamingCapability guards the fallback:
+// a non-streaming inner must not gain a fabricated CompleteStream, or RunStream
+// would try to stream a provider that cannot.
+func TestRetryProvider_NonStreamingInner_NoStreamingCapability(t *testing.T) {
+	t.Parallel()
+
+	inner := testutil.NewMockProvider(endTurnResp("ok"))
+	provider := goagent.RetryProvider(inner, goagent.RetryPolicy{
+		MaxAttempts:  3,
+		InitialDelay: time.Millisecond,
+	})
+
+	if _, ok := provider.(goagent.StreamingProvider); ok {
+		t.Fatal("RetryProvider over a non-streaming inner must not implement StreamingProvider")
+	}
+}
+
+// TestRetryProvider_MaxAttemptsOne_PreservesStreaming ensures the MaxAttempts<=1
+// short-circuit returns the inner untouched, keeping its StreamingProvider.
+func TestRetryProvider_MaxAttemptsOne_PreservesStreaming(t *testing.T) {
+	t.Parallel()
+
+	inner := testutil.NewMockStreamingProvider(nil)
+	provider := goagent.RetryProvider(inner, goagent.RetryPolicy{MaxAttempts: 1})
+
+	if _, ok := provider.(goagent.StreamingProvider); !ok {
+		t.Fatal("MaxAttempts<=1 must return the inner unchanged, preserving StreamingProvider")
+	}
+}
+
+// TestRetryProvider_CompleteStream_RetriesEstablishment verifies retry applies to
+// opening the stream: transient failures are retried until a stream is returned.
+func TestRetryProvider_CompleteStream_RetriesEstablishment(t *testing.T) {
+	t.Parallel()
+
+	events := []goagent.StreamEvent{
+		{Type: goagent.StreamEventText, Text: "hi"},
+		{Type: goagent.StreamEventDone, StopReason: goagent.StopReasonEndTurn},
+	}
+	fp := &flakyStreamProvider{events: events, failFor: 2, err: &transientErr{"503 service unavailable"}}
+
+	provider := goagent.RetryProvider(fp, goagent.RetryPolicy{
+		MaxAttempts:  3,
+		InitialDelay: time.Millisecond,
+	})
+	sp, ok := provider.(goagent.StreamingProvider)
+	if !ok {
+		t.Fatal("expected StreamingProvider")
+	}
+
+	stream, err := sp.CompleteStream(context.Background(), goagent.CompletionRequest{})
+	if err != nil {
+		t.Fatalf("expected a stream after retries, got: %v", err)
+	}
+	defer stream.Close()
+
+	if fp.callCount() != 3 {
+		t.Errorf("CompleteStream calls = %d, want 3", fp.callCount())
+	}
+}
+
+// TestRetryProvider_CompleteStream_PermanentErrorNoRetry verifies a permanent
+// error (IsTransient()=false) opening the stream is not retried.
+func TestRetryProvider_CompleteStream_PermanentErrorNoRetry(t *testing.T) {
+	t.Parallel()
+
+	fp := &flakyStreamProvider{failFor: 100, err: &permanentErr{"400 bad request"}}
+
+	provider := goagent.RetryProvider(fp, goagent.RetryPolicy{
+		MaxAttempts:  5,
+		InitialDelay: time.Millisecond,
+	})
+	sp := provider.(goagent.StreamingProvider)
+
+	_, err := sp.CompleteStream(context.Background(), goagent.CompletionRequest{})
+	if err == nil {
+		t.Fatal("expected error for permanent failure")
+	}
+	if fp.callCount() != 1 {
+		t.Errorf("CompleteStream calls = %d, want 1 (permanent error must not be retried)", fp.callCount())
+	}
+}
+
+// TestRetryProvider_RunStream_FiresStreamAndThinkingHooks is the end-to-end
+// acceptance test reproducing the original bug: Agent.RunStream over a
+// RetryProvider-wrapped streaming provider must still stream — firing
+// OnStreamToken and OnThinkingText — instead of falling back to Complete.
+func TestRetryProvider_RunStream_FiresStreamAndThinkingHooks(t *testing.T) {
+	t.Parallel()
+
+	events := []goagent.StreamEvent{
+		{Type: goagent.StreamEventThinking, Text: "reasoning"},
+		{Type: goagent.StreamEventText, Text: "answer"},
+		{Type: goagent.StreamEventDone, StopReason: goagent.StopReasonEndTurn},
+	}
+	inner := testutil.NewMockStreamingProvider(events)
+	provider := goagent.RetryProvider(inner, goagent.RetryPolicy{
+		MaxAttempts:  3,
+		InitialDelay: time.Millisecond,
+	})
+
+	var thinkingTokens, streamTokens []string
+	a, err := goagent.New(
+		goagent.WithProvider(provider),
+		goagent.WithModel("test-model"),
+		goagent.WithHooks(goagent.Hooks{
+			OnThinkingText: func(_ context.Context, tok string) { thinkingTokens = append(thinkingTokens, tok) },
+			OnStreamToken:  func(_ context.Context, tok string) { streamTokens = append(streamTokens, tok) },
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var handlerCalled bool
+	handler := func(goagent.StreamEvent) error {
+		handlerCalled = true
+		return nil
+	}
+
+	result, err := a.RunStream(context.Background(), "hi", handler)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "answer" {
+		t.Errorf("result = %q, want %q", result, "answer")
+	}
+	if !handlerCalled {
+		t.Error("stream handler was never called — RunStream fell back to Complete")
+	}
+	if len(thinkingTokens) != 1 || thinkingTokens[0] != "reasoning" {
+		t.Errorf("OnThinkingText tokens = %v, want [reasoning]", thinkingTokens)
+	}
+	if len(streamTokens) != 1 || streamTokens[0] != "answer" {
+		t.Errorf("OnStreamToken tokens = %v, want [answer]", streamTokens)
+	}
+}
+
 // --- RetryTool tests ---
 
 func TestRetryTool_SucceedsAfterTransientFailures(t *testing.T) {

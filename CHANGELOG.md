@@ -70,6 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Ollama provider: HTTP errors are now classified for retry. Previously non-200 responses and transport failures were returned as plain strings, so `RetryProvider`'s default policy retried everything — including permanent 4xx errors. It now retries only transient failures (429, 5xx, network errors) and fails fast on permanent ones (4xx).
 - Ollama provider: streaming tool calls are now accumulated across intermediate NDJSON chunks instead of only being read from the final `done` chunk, so multi-chunk tool-call arguments are no longer dropped.
+- `RetryProvider` no longer disables streaming. When the wrapped provider implements `StreamingProvider`, the returned wrapper now implements it too, so `Agent.RunStream` keeps streaming (firing `OnStreamToken`/`OnThinkingText`) instead of falling back to `Complete`. Retry applies only to establishing the stream (the `CompleteStream` call that opens it); errors surfaced mid-stream are not retried, since that would replay already-delivered tokens. Providers that do not implement `StreamingProvider` are unaffected.
 
 ## [0.7.0] - 2026-05-06
 
