@@ -62,7 +62,7 @@ func (s *openaiStream) Next(_ context.Context) bool {
 			return false
 		}
 		if err != nil {
-			s.err = fmt.Errorf("openai: stream recv: %w", err)
+			s.err = fmt.Errorf("openai: stream recv: %w", classifyError(err))
 			return false
 		}
 
@@ -192,7 +192,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req goagent.CompletionReq
 
 	inner, err := p.client.CreateChatCompletionStream(ctx, chatReq)
 	if err != nil {
-		return nil, fmt.Errorf("openai: creating stream: %w", err)
+		return nil, fmt.Errorf("openai: creating stream: %w", classifyError(err))
 	}
 
 	return &openaiStream{inner: inner}, nil

@@ -34,6 +34,20 @@
 //	    goagent.WithEffort("high"),
 //	)
 //
+// # Streaming
+//
+// The provider implements [goagent.StreamingProvider]: [Provider.CompleteStream]
+// delivers text tokens over SSE as they arrive and translates tool calls to the
+// shared stream events. The OpenAI API does not expose reasoning in the response,
+// so no [goagent.StreamEventThinking] events are emitted.
+//
+// # Retry classification
+//
+// API failures are returned as typed errors that implement
+// [goagent.TransientError]: [StatusError] (a non-2xx response, keyed on status)
+// and [TransportError] (a pre-status transport failure). A [goagent.RetryProvider]
+// wrapping this provider then retries only transient failures (429, 5xx, network).
+//
 // # Limitations
 //
 //   - Document content ([goagent.ContentDocument]) is not supported.

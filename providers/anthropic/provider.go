@@ -60,7 +60,7 @@ func (p *Provider) Complete(ctx context.Context, req goagent.CompletionRequest) 
 	}
 	resp, err := p.client.cl.Messages.New(ctx, params)
 	if err != nil {
-		return goagent.CompletionResponse{}, fmt.Errorf("anthropic completion: %w", err)
+		return goagent.CompletionResponse{}, fmt.Errorf("anthropic completion: %w", classifyError(err))
 	}
 	return toGoAgentResponse(resp), nil
 }

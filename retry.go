@@ -75,12 +75,21 @@ type retryProvider struct {
 //
 // Context cancellation is respected between retries: if ctx is cancelled
 // while waiting, the wait returns immediately with ctx.Err().
+//
+// Optional interfaces are preserved: when inner also implements
+// StreamingProvider, the returned wrapper implements it too, so wrapping a
+// streaming provider with RetryProvider does not disable streaming. See
+// retryStreamProvider for the streaming retry semantics.
 func RetryProvider(inner Provider, policy RetryPolicy) Provider {
 	p := policy.defaults()
 	if p.MaxAttempts <= 1 {
 		return inner
 	}
-	return &retryProvider{inner: inner, policy: p}
+	rp := &retryProvider{inner: inner, policy: p}
+	if _, ok := inner.(StreamingProvider); ok {
+		return &retryStreamProvider{retryProvider: rp}
+	}
+	return rp
 }
 
 func (r *retryProvider) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
@@ -108,6 +117,49 @@ func (r *retryProvider) Complete(ctx context.Context, req CompletionRequest) (Co
 	}
 
 	return lastResp, lastErr
+}
+
+// retryStreamProvider decorates retryProvider so that RetryProvider preserves
+// the optional StreamingProvider capability of its inner provider. It embeds
+// *retryProvider to promote Complete unchanged and adds CompleteStream.
+//
+// The constructor guarantees the inner provider implements StreamingProvider,
+// so this type is only ever created around a streaming inner.
+type retryStreamProvider struct {
+	*retryProvider
+}
+
+// CompleteStream retries only the establishment of the stream — the
+// CompleteStream call that opens it. Once a stream is returned successfully,
+// errors surfaced later via Stream.Next are NOT retried: replaying them would
+// duplicate tokens already delivered to the handler. It reuses the same
+// shouldRetry, backoffDelay and sleepCtx helpers as Complete.
+func (r *retryStreamProvider) CompleteStream(ctx context.Context, req CompletionRequest) (Stream, error) {
+	sp := r.inner.(StreamingProvider) // guaranteed by RetryProvider constructor
+
+	var lastErr error
+	for attempt := range r.policy.MaxAttempts {
+		stream, err := sp.CompleteStream(ctx, req)
+		if err == nil {
+			return stream, nil
+		}
+		lastErr = err
+
+		if !shouldRetry(err, r.policy.Retryable) {
+			return nil, err
+		}
+
+		if attempt == r.policy.MaxAttempts-1 {
+			break
+		}
+
+		delay := backoffDelay(attempt, err, r.policy)
+		if werr := sleepCtx(ctx, delay); werr != nil {
+			return nil, werr
+		}
+	}
+
+	return nil, lastErr
 }
 
 // retryTool wraps a Tool with retry logic.

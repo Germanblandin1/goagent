@@ -41,17 +41,37 @@
 //
 // # Configuration
 //
-// Use [WithMaxTokens] to control the maximum output length per completion
-// (default: 4096).
+// Use [goagent.WithMaxTokens] to control the maximum output length per
+// completion (default: 4096).
+//
+// # Streaming, thinking, and effort
+//
+// The provider implements [goagent.StreamingProvider]: [Provider.CompleteStream]
+// delivers text tokens over SSE as they arrive. Extended thinking
+// ([goagent.WithThinking]) and effort ([goagent.WithEffort]) are forwarded to
+// the API; during streaming, reasoning tokens are surfaced as
+// [goagent.StreamEventThinking] (with the block's signature) so a signed
+// thinking block round-trips across turns — required when thinking and tools are
+// combined.
+//
+// # Retry classification
+//
+// API failures are returned as typed errors that implement
+// [goagent.TransientError]: [StatusError] (a non-2xx response, keyed on status)
+// and [TransportError] (a pre-status transport failure). A [goagent.RetryProvider]
+// wrapping this provider then retries only transient failures (429, 5xx, network).
 //
 // # Usage
 //
 //	provider := anthropic.New()
 //
-//	agent := goagent.New(
+//	agent, err := goagent.New(
 //	    goagent.WithProvider(provider),
 //	    goagent.WithModel("claude-sonnet-4-6"),
 //	)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 //
 //	answer, err := agent.Run(ctx, "Summarize this document")
 package anthropic

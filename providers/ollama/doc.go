@@ -15,13 +15,16 @@
 // # Shared client
 //
 // All communication with Ollama goes through [OllamaClient]. Create one with
-// [NewClient] and pass it to [New] (Provider) and/or [NewEmbedder]:
+// [NewClient] and share it across a Provider and an Embedder via
+// [NewWithClient] and [NewEmbedderWithClient]:
 //
 //	client := ollama.NewClient()                             // http://localhost:11434
-//	provider := ollama.New(client)
-//	embedder := ollama.NewEmbedder(client,
+//	provider := ollama.NewWithClient(client)
+//	embedder := ollama.NewEmbedderWithClient(client,
 //	    ollama.WithEmbedModel("nomic-embed-text"),
 //	)
+//
+// For the default client, [New] and [NewEmbedder] take options directly.
 //
 // # Supported models
 //
@@ -45,13 +48,15 @@
 //
 // # Usage
 //
-//	client := ollama.NewClient()
-//	provider := ollama.New(client)
+//	provider := ollama.New()
 //
-//	agent := goagent.New(
+//	agent, err := goagent.New(
 //	    goagent.WithProvider(provider),
 //	    goagent.WithModel("qwen3"),
 //	)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 //
 //	answer, err := agent.Run(ctx, "Explain the ReAct pattern")
 package ollama

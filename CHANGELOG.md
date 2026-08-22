@@ -5,10 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0] - 2026-08-22
 
 ### Added
 
+**OpenAI provider (`goagent/providers/openai`)** — new sub-module
+- New sub-module `github.com/Germanblandin1/goagent/providers/openai` implementing `goagent.Provider` over the OpenAI Chat Completions API
+- `New(opts ...ProviderOption) *Provider` — reads the API key from `OPENAI_API_KEY` by default; the model is selected at the agent level via `goagent.WithModel`
+- `WithAPIKey(key string)`, `WithBaseURL(url string)` (defaults to `https://api.openai.com/v1`; override for a proxy, Azure OpenAI, or any OpenAI-compatible endpoint), and `WithHTTPClient(hc *http.Client)` options
+- Reasoning effort: `CompletionRequest.Effort` (`"low"`/`"medium"`/`"high"`) is forwarded as `reasoning_effort` for o-series models
+- Real streaming via `StreamingProvider`: `CompleteStream` maps SSE deltas to `StreamEventText`/`StreamEventToolDelta` and emits `StreamEventDone` with usage
+- Limitations: document content (`ContentDocument`) returns `*goagent.UnsupportedContentError`; `ThinkingConfig` is ignored (the API does not expose reasoning in the response); o-series `MaxCompletionTokens` is not yet wired (uses `MaxTokens`)
+
+**RAG reranking — over-fetch pattern (`goagent/rag`)**
+- `Reranker` — interface (`Rerank(ctx, query, results []SearchResult, topK) ([]SearchResult, error)`) that reorders retrieval results by relevance and returns the best `topK`; preserves the bi-encoder `Score` and populates `RerankScore`
+- `WithReranker(r Reranker, rerankN int) PipelineOption` — enables the over-fetch pattern: the pipeline fetches `rerankN` candidates from the store, then the reranker selects the final `topK`
+- `SearchResult.RerankScore float64` — new field; the relevance score assigned by a `Reranker` (`0.0` when no reranker is configured)
+- `LLMReranker` / `NewLLMReranker(p goagent.Provider, model string, opts ...LLMRerankerOption) *LLMReranker` — LLM-backed cross-encoder-style reranker that scores each candidate against the query
+- `WithLLMRerankerSystemPrompt(prompt string) LLMRerankerOption` — overrides the default relevance-scoring system prompt
+
+**RAG evaluation metrics (`goagent/rag`)**
+- `EvalCase` — struct pairing a `Query` with `Retrieved` (predicted IDs, ordered by descending relevance) and `Relevant` (ground-truth IDs); IDs use `SearchResult.Source`
+- `PrecisionAtK(retrieved, relevant []string, k int) float64` — fraction of the top-K retrieved documents that are relevant
+- `RecallAtK(retrieved, relevant []string, k int) float64` — fraction of relevant documents captured in the top-K
+- `ReciprocalRank(retrieved, relevant []string) float64` — reciprocal of the rank of the first relevant hit
+- `MRR(cases []EvalCase) float64` — mean reciprocal rank across a set of evaluation cases
+
+**Core options — sampling control (`goagent`)**
 - `WithMaxTokens(n int) Option` — sets `CompletionRequest.MaxTokens`; `0` (default) defers to the provider's built-in default. The Anthropic provider uses 4096 when the field is 0; the Ollama provider uses the model's context length.
 - `WithTemperature(t float64) Option` — sets `CompletionRequest.Temperature` via a `*float64` pointer so that `0.0` (deterministic output) is distinguishable from "not set" (`nil`). Valid range: `[0.0, 1.0]` for Anthropic, `[0.0, 2.0]` for most others.
 - `CompletionRequest.MaxTokens int` — new field on the shared request type; `0` means "use provider default".
@@ -27,10 +50,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `HTTPStatusIsTransient(code int) bool` — core helper mapping 429 and 5xx to transient (retryable) and all other codes (notably 4xx) to permanent, so HTTP providers can implement `TransientError` without duplicating the mapping.
 - Ollama provider: `StatusError{StatusCode, Body}` — typed error returned for non-200 responses; renders the same message as before (`ollama: status <code>[: <body>]`) and implements `TransientError.IsTransient` (429/5xx → retry, 4xx → no retry).
 - Ollama provider: `TransportError{Cause}` — wraps transport-level failures (connection refused, timeout, EOF) and implements `TransientError.IsTransient` (transient for everything except `context.Canceled`, which is caller intent). Preserves the underlying message and unwraps to the cause.
+- `StreamEvent.Signature string` — new field on the shared stream event; carries the opaque seal for a reasoning block (e.g. Anthropic's `signature_delta`), delivered separately from the reasoning `Text`. Providers that do not sign reasoning leave it empty.
+- Streaming reasoning is now rebuilt into the assistant turn. `RunStream` accumulates `StreamEventThinking` tokens (and any `Signature`) and prepends a `ContentThinking` block to the streamed assistant message, so reasoning can be echoed back in a later iteration — bringing streaming to parity with non-streaming. Providers that do not sign reasoning (Ollama, OpenAI) yield an unsigned block their own request conversion already ignores; only Anthropic consumes it.
+- Anthropic provider: streaming now surfaces extended-thinking reasoning tokens. `CompleteStream` maps the SDK's `thinking_delta` events to `StreamEventThinking` (previously discarded), so `RunStream` fires `OnThinkingText` during streaming, and emits `signature_delta` on `StreamEvent.Signature` so the signed thinking block round-trips. This fixes Anthropic's extended-thinking + tools + streaming combination, which previously failed on the follow-up request because the thinking block was not echoed back.
+- Anthropic provider: `StatusError{StatusCode, Cause}` and `TransportError{Cause}` — typed errors implementing `TransientError`, so a `RetryProvider` wrapping the provider retries transient failures (429, 5xx, network) and fails fast on permanent ones (4xx) instead of retrying every error. The SDK's own internal retry is unaffected.
+- OpenAI provider: `StatusError{StatusCode, Cause}` and `TransportError{Cause}` — typed errors implementing `TransientError`. `Complete` and `CompleteStream` classify SDK errors (`*openai.APIError` / `*openai.RequestError` by HTTP status, transport failures otherwise) so `RetryProvider` retries only transient failures.
+
+**Tooling**
+- Go toolchain bumped to `1.26.3` across all modules; CI workflow jobs updated to `go-version: 1.26.3`.
+
+**Examples**
+- `examples` reorganized into pattern subdirectories: `basics/`, `graph/`, `mcp/`, `memory/`, `orchestration/`, `rag/`, and `rag-advanced/`.
+- `examples/rag-advanced/agentic-rag` — single-agent iterative RAG pattern.
+- `examples/rag-advanced/multi-agent-rag` — Agentic RAG Pattern 3: multiple specialized agents coordinating retrieval, with parallel delegation.
+- `examples/rag/rag-eval` — retrieval evaluation harness (RAGAS-style) exercising the new `rag` metrics against a labelled dataset.
+- `examples/basics/chatbot` — switched to the new OpenAI provider.
 
 ### Fixed
 
 - Ollama provider: HTTP errors are now classified for retry. Previously non-200 responses and transport failures were returned as plain strings, so `RetryProvider`'s default policy retried everything — including permanent 4xx errors. It now retries only transient failures (429, 5xx, network errors) and fails fast on permanent ones (4xx).
+- Ollama provider: streaming tool calls are now accumulated across intermediate NDJSON chunks instead of only being read from the final `done` chunk, so multi-chunk tool-call arguments are no longer dropped.
+- `RetryProvider` no longer disables streaming. When the wrapped provider implements `StreamingProvider`, the returned wrapper now implements it too, so `Agent.RunStream` keeps streaming (firing `OnStreamToken`/`OnThinkingText`) instead of falling back to `Complete`. Retry applies only to establishing the stream (the `CompleteStream` call that opens it); errors surfaced mid-stream are not retried, since that would replay already-delivered tokens. Providers that do not implement `StreamingProvider` are unaffected.
 
 ## [0.7.0] - 2026-05-06
 

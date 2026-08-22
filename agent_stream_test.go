@@ -655,3 +655,88 @@ func (p *cyclingStreamProvider) CompleteStream(_ context.Context, _ goagent.Comp
 	p.pos++
 	return &testutil.MockStream{Events: events}, nil
 }
+
+// capturingStreamProvider records the CompletionRequest of every CompleteStream
+// call, so tests can assert on the message history sent in later iterations.
+// Implements StreamingProvider.
+type capturingStreamProvider struct {
+	streams  [][]goagent.StreamEvent
+	pos      int
+	requests []goagent.CompletionRequest
+}
+
+func (p *capturingStreamProvider) Complete(_ context.Context, _ goagent.CompletionRequest) (goagent.CompletionResponse, error) {
+	return goagent.CompletionResponse{}, errors.New("capturingStreamProvider: Complete not supported")
+}
+
+func (p *capturingStreamProvider) CompleteStream(_ context.Context, req goagent.CompletionRequest) (goagent.Stream, error) {
+	p.requests = append(p.requests, req)
+	if p.pos >= len(p.streams) {
+		return nil, errors.New("capturingStreamProvider: no more streams")
+	}
+	events := p.streams[p.pos]
+	p.pos++
+	return &testutil.MockStream{Events: events}, nil
+}
+
+// TestRunStream_ReconstructsThinkingBlock is the acceptance case for Proposal A:
+// when a streaming provider surfaces reasoning tokens plus a signature, the
+// agent rebuilds a signed ContentThinking block on the assistant turn and echoes
+// it back — as the first block — in the next iteration. This is what lets
+// Anthropic's thinking + tools + streaming combination round-trip.
+func TestRunStream_ReconstructsThinkingBlock(t *testing.T) {
+	toolStream := []goagent.StreamEvent{
+		{Type: goagent.StreamEventThinking, Text: "reason "},
+		{Type: goagent.StreamEventThinking, Text: "more"},
+		{Type: goagent.StreamEventThinking, Signature: "sig-1"},
+		{Type: goagent.StreamEventToolStart, ToolName: "calc", ToolID: "t1"},
+		{Type: goagent.StreamEventToolDelta, ToolID: "t1", InputDelta: `{"x":1}`},
+		{Type: goagent.StreamEventDone, StopReason: goagent.StopReasonToolUse},
+	}
+	finalStream := []goagent.StreamEvent{
+		{Type: goagent.StreamEventText, Text: "result"},
+		{Type: goagent.StreamEventDone, StopReason: goagent.StopReasonEndTurn},
+	}
+
+	prov := &capturingStreamProvider{streams: [][]goagent.StreamEvent{toolStream, finalStream}}
+	calc := testutil.NewMockTool("calc", "calculator", "1")
+
+	agent, err := goagent.New(
+		goagent.WithProvider(prov),
+		goagent.WithModel("test-model"),
+		goagent.WithTool(calc),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := agent.RunStream(context.Background(), "calc", nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(prov.requests) < 2 {
+		t.Fatalf("provider received %d requests, want at least 2", len(prov.requests))
+	}
+
+	// Find the assistant turn (the one carrying the tool call) in the second
+	// request's history.
+	var assistant *goagent.Message
+	for i := range prov.requests[1].Messages {
+		m := &prov.requests[1].Messages[i]
+		if m.Role == goagent.RoleAssistant && len(m.ToolCalls) > 0 {
+			assistant = m
+			break
+		}
+	}
+	if assistant == nil {
+		t.Fatal("no assistant tool-call message found in the second request")
+	}
+
+	if len(assistant.Content) == 0 || assistant.Content[0].Type != goagent.ContentThinking {
+		t.Fatalf("assistant Content[0] = %+v, want a ContentThinking block first", assistant.Content)
+	}
+	td := assistant.Content[0].Thinking
+	if td == nil || td.Thinking != "reason more" || td.Signature != "sig-1" {
+		t.Fatalf("thinking block = %+v, want {Thinking:%q Signature:%q}", td, "reason more", "sig-1")
+	}
+}

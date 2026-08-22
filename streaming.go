@@ -39,6 +39,13 @@ type StreamEvent struct {
 	// StreamEventText and StreamEventThinking
 	Text string
 
+	// StreamEventThinking — opaque signature for the reasoning block, delivered
+	// separately from the reasoning Text (e.g. Anthropic's signature_delta).
+	// Providers that do not sign reasoning leave it empty. RunStream uses it to
+	// reconstruct a signed ContentThinking block so the reasoning can be echoed
+	// back in a later turn; a signature-only event carries no Text.
+	Signature string
+
 	// StreamEventToolStart — the model declared it will call a tool
 	ToolName string
 	ToolID   string

@@ -19,25 +19,19 @@ goagent/                      Root package — Agent, ReAct loop, core interface
 ├── otel/                     OpenTelemetry spans and RED metrics
 ├── providers/
 │   ├── anthropic/            Provider for Claude (Anthropic API)
-│   ├── ollama/               Provider for local models (OpenAI-compatible API) + embedder
+│   ├── ollama/               Provider for local models (Ollama native + OpenAI-compatible API) + embedder
+│   ├── openai/               Provider for the OpenAI Chat Completions API
 │   └── voyage/               Voyage AI embedder
-├── rag/                      RAG pipeline — Pipeline, Document, NewTool, observers, formatters
+├── rag/                      RAG pipeline — Pipeline, Document, NewTool, Reranker, eval metrics, observers
 ├── ratelimit/                Token-bucket rate limiters for tool dispatch
-├── examples/
-│   ├── calculator/           Example: agent with a calculator tool
-│   ├── chatbot/              Example: multi-turn conversation with memory
-│   ├── chatbot-persistent/   Example: file-backed persistence
-│   ├── chatbot-mcp-fs/       Example: chatbot with filesystem access via MCP stdio
-│   ├── graph-conditional-parallel/ Example: Graph with in-node conditional parallelism
-│   ├── graph-loop-judge/     Example: judge-loop pattern with a Graph
-│   ├── graph-nested/         Example: nested Pipeline inside a Graph node
-│   ├── mini-code-agent/      Example: minimal coding agent
-│   ├── multi-agent/          Example: Supervisor coordinating worker agents
-│   ├── multimodal-chatbot/   Example: multimodal chatbot with image and document support
-│   ├── rag_batch_index/      Example: RAG chatbot — BatchEmbedder + Qdrant
-│   ├── rag_docs/             Example: RAG over local Markdown files with Ollama
-│   ├── rag_sqlite_observable/ Example: RAG with SQLite and VectorStore observability
-│   └── streaming/            Example: real-time token streaming
+├── examples/                 Grouped by pattern into subdirectories:
+│   ├── basics/               calculator, chatbot, streaming
+│   ├── graph/                graph-conditional-parallel, graph-loop-judge, graph-nested
+│   ├── mcp/                  chatbot-mcp-fs
+│   ├── memory/               chatbot-persistent, multimodal-chatbot
+│   ├── orchestration/        mini-code-agent, multi-agent
+│   ├── rag/                  rag_docs, rag_batch_index, rag_sqlite_observable, semantic_chunker, embedder-bench, rag-eval
+│   └── rag-advanced/         agentic-rag, multi-agent-rag
 └── internal/
     └── testutil/             Provider, Tool and Memory mocks for tests
 ```
@@ -799,12 +793,17 @@ All errors are typed and support `errors.Is` / `errors.As`:
 | `ErrToolNotFound` | A tool was requested that does not exist |
 | `ErrInvalidMediaType` | Invalid MIME type in a ContentBlock |
 
+### Retry classification — `TransientError`
+
+Errors may self-classify as retryable by implementing the `TransientError` interface (`IsTransient() bool`). `RetryProvider` consults it: transient errors are retried under the policy, permanent ones fail fast; an error that implements neither `TransientError` nor an explicit `Retryable` hook is retried by default. The `HTTPStatusIsTransient(code int) bool` helper is the shared mapping (429 and 5xx → transient, other 4xx → permanent) so HTTP providers classify consistently. Each HTTP provider ships two typed errors built on it: `StatusError` (a non-2xx response, keyed on status) and `TransportError` (a pre-status transport failure — transient except `context.Canceled`). Implemented by `providers/ollama`, `providers/openai`, and `providers/anthropic`.
+
 ## Providers
 
-Both `Provider` implementations are configured with their own functional options:
+Each `Provider` implementation is configured with its own functional options:
 
-- **`providers/anthropic`**: Uses the official Anthropic SDK. Supports text, images and documents.
-- **`providers/ollama`**: Uses the OpenAI-compatible API. Supports text and images (model-dependent). Does not support documents. Also exposes `NewEmbedder` (calls `/api/embeddings`) for long-term memory.
+- **`providers/anthropic`**: Uses the official Anthropic SDK. Supports text, images and documents. Extended thinking and effort. Streaming via `CompleteStream`.
+- **`providers/ollama`**: Local models. Uses Ollama's native `/api/chat` for streaming (reasoning via `message.thinking`, `think` gated by model capability) and the OpenAI-compatible API otherwise. Supports text and images (model-dependent); no documents. Exposes `ModelCatalog` and `NewEmbedder` (calls `/api/embeddings`).
+- **`providers/openai`**: Uses the OpenAI Chat Completions API (`New`, `WithAPIKey`, `WithBaseURL`, `WithHTTPClient`). Supports text and images; no documents; reasoning is not exposed. Reasoning effort maps to `reasoning_effort` for o-series models. Streaming via `CompleteStream`.
 - **`providers/voyage`**: Embedder-only package. Calls the Voyage AI `/embeddings` API. Reads `VOYAGE_API_KEY` from the environment. Options: `WithEmbedModel` (required), `WithInputType`, `WithMaxChars`.
 
 ---
@@ -833,6 +832,8 @@ type ThinkingConfig struct {
 ```
 
 When the model produces a thinking block, the `OnThinking` hook fires before the final text reaches the caller. Thinking blocks are **not included** in the text returned by `Run`.
+
+**Under `RunStream`**, providers that surface reasoning natively emit it as `StreamEventThinking` (the token in `StreamEvent.Text`; any seal in `StreamEvent.Signature`). These fire `OnThinkingText` and never contaminate the final answer text or the tool-call heuristic. `RunStream` accumulates them and prepends a signed `ContentThinking` block to the streamed assistant turn, so the reasoning round-trips on the next iteration — required by Anthropic when extended thinking and tools are combined. Providers that do not sign reasoning (Ollama, OpenAI) yield an unsigned block their own request conversion ignores.
 
 Supported models: `claude-sonnet-4-6`, `claude-opus-4-6`, `claude-sonnet-3-7`, `claude-opus-4`, `claude-opus-4-5`.
 
