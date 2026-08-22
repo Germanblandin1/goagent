@@ -11,7 +11,7 @@
 //
 // The framework is built around three small interfaces:
 //
-//   - [Provider] — wraps an LLM backend (Ollama, Anthropic, OpenAI-compatible, …).
+//   - [Provider] — wraps an LLM backend (Anthropic, Ollama, OpenAI, …).
 //   - [Tool] — a capability the model can invoke (calculator, web search, …).
 //   - [ShortTermMemory] / [LongTermMemory] — optional conversation persistence.
 //
@@ -33,11 +33,14 @@
 //	    },
 //	)
 //
-//	agent := goagent.New(
+//	agent, err := goagent.New(
 //	    goagent.WithProvider(provider),
 //	    goagent.WithTool(add),
 //	    goagent.WithMaxIterations(5),
 //	)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 //
 //	answer, err := agent.Run(ctx, "What is 2 + 3?")
 //
@@ -57,12 +60,22 @@
 // For semantic retrieval across sessions, add a [LongTermMemory] via
 // [WithLongTermMemory]. Implementations live in the memory sub-package.
 //
+// # Streaming
+//
+// [Agent.RunStream] delivers the model's output token by token via a
+// [StreamHandler] as it arrives, instead of returning only the final text.
+// Providers that surface reasoning natively deliver it as [StreamEventThinking]
+// events, routed to the OnThinkingText hook without contaminating the final
+// answer. Streaming is used automatically when the provider implements
+// [StreamingProvider]; otherwise the agent falls back to [Provider.Complete].
+//
 // # Sub-packages
 //
 //   - memory — ShortTermMemory and LongTermMemory with pluggable storage and policies.
 //   - memory/storage — persistence backends (in-memory; bring your own).
 //   - memory/policy — read-time filters: FixedWindow, TokenWindow, NoOp.
 //   - providers/anthropic — Provider for the Anthropic Messages API (Claude).
-//   - providers/ollama — Provider for Ollama (OpenAI-compatible API).
+//   - providers/ollama — Provider for Ollama (native + OpenAI-compatible API) + embedder.
+//   - providers/openai — Provider for the OpenAI Chat Completions API.
 //   - internal/testutil — mock implementations for testing agents.
 package goagent

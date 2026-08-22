@@ -22,6 +22,7 @@ Each sub-module is versioned and installed independently.
 | [orchestration](orchestration/) | Multi-agent coordination — Pipeline, Graph, ParallelGroup, Supervisor |
 | [providers/anthropic](providers/anthropic/README.md) | Anthropic Messages API provider (Claude) |
 | [providers/ollama](providers/ollama/README.md) | Local Ollama provider + embedder |
+| [providers/openai](providers/openai/README.md) | OpenAI Chat Completions API provider |
 | [providers/voyage](providers/voyage/README.md) | Voyage AI embedder |
 | [mcp](mcp/README.md) | MCP client + server integration |
 | [rag](rag/README.md) | RAG pipeline — chunking, embedding, retrieval |
@@ -63,25 +64,19 @@ goagent/              Core — Agent, ReAct loop, interfaces
 ├── otel/             OpenTelemetry spans and RED metrics
 ├── providers/
 │   ├── anthropic/    Anthropic Messages API (Claude)
-│   ├── ollama/       Local Ollama via OpenAI-compatible API (+ embedder)
+│   ├── ollama/       Local Ollama (native + OpenAI-compatible API, + embedder)
+│   ├── openai/       OpenAI Chat Completions API
 │   └── voyage/       Voyage AI embedder
-├── rag/              RAG pipeline — Pipeline, NewTool, observers, formatters
+├── rag/              RAG pipeline — Pipeline, NewTool, Reranker, eval metrics, observers
 ├── ratelimit/        Token-bucket rate limiters for tool dispatch
-├── examples/
-│   ├── calculator/              Tool use with arithmetic
-│   ├── chatbot/                 Multi-turn conversation
-│   ├── chatbot-persistent/      Persistent memory across sessions
-│   ├── chatbot-mcp-fs/          Filesystem access via MCP stdio
-│   ├── graph-conditional-parallel/ Graph with in-node conditional parallelism
-│   ├── graph-loop-judge/        Judge-loop pattern with a Graph
-│   ├── graph-nested/            Nested Pipeline inside a Graph node
-│   ├── mini-code-agent/         Minimal coding agent example
-│   ├── multi-agent/             Supervisor coordinating worker agents
-│   ├── multimodal-chatbot/      Multimodal chatbot with image and document support
-│   ├── rag_batch_index/         Interactive RAG chatbot — BatchEmbedder + Qdrant
-│   ├── rag_docs/                RAG over local Markdown files with Ollama
-│   ├── rag_sqlite_observable/   RAG with SQLite and VectorStore observability
-│   └── streaming/               Real-time token streaming — text and tool-call paths
+├── examples/         Grouped by pattern into subdirectories:
+│   ├── basics/       calculator, chatbot, streaming
+│   ├── graph/        graph-conditional-parallel, graph-loop-judge, graph-nested
+│   ├── mcp/          chatbot-mcp-fs
+│   ├── memory/       chatbot-persistent, multimodal-chatbot
+│   ├── orchestration/ mini-code-agent, multi-agent
+│   ├── rag/          rag_docs, rag_batch_index, rag_sqlite_observable, semantic_chunker, embedder-bench, rag-eval
+│   └── rag-advanced/ agentic-rag, multi-agent-rag
 └── internal/testutil/           Shared mocks
 ```
 
@@ -869,7 +864,7 @@ This records spans and RED metrics for every `Upsert`, `Search`, `Delete`, `Bulk
 
 ### Streaming
 
-Stream tokens in real time instead of waiting for the complete response. Both Anthropic and Ollama providers support streaming.
+Stream tokens in real time instead of waiting for the complete response. The Anthropic, Ollama, and OpenAI providers support streaming. Providers that surface reasoning natively deliver it separately as thinking tokens (routed to `OnThinkingText`), so it never mixes into the final answer.
 
 ```go
 agent, _ := goagent.New(
@@ -977,8 +972,9 @@ case errors.As(err, &provErr):
 
 | Provider | Package | Notes |
 |---|---|---|
-| Anthropic | `providers/anthropic` | Reads `ANTHROPIC_API_KEY`; supports text, images (5 MB), PDFs (32 MB); streaming via SSE |
-| Ollama | `providers/ollama` | Default `http://localhost:11434/v1`; supports text and images; streaming via NDJSON; includes `NewEmbedder` |
+| Anthropic | `providers/anthropic` | Reads `ANTHROPIC_API_KEY`; supports text, images (5 MB), PDFs (32 MB); extended thinking; streaming via SSE |
+| Ollama | `providers/ollama` | Default `http://localhost:11434`; supports text and images; native streaming with reasoning; `ModelCatalog`; includes `NewEmbedder` |
+| OpenAI | `providers/openai` | Reads `OPENAI_API_KEY`; supports text and images; `reasoning_effort` for o-series; streaming via SSE |
 | Voyage AI | `providers/voyage` | Reads `VOYAGE_API_KEY`; embedder only (e.g. `"voyage-3"`) |
 
 ## License
