@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+**OpenAI provider model catalog (`goagent/providers/openai`)**
+- `Provider` now implements `goagent.ModelCatalog`. `Models(ctx)` lists the models exposed by the configured endpoint via `GET /models` (each `ModelInfo` carries `Name`; `Capabilities` is left empty, as the listing does not report them). Works for OpenAI and OpenAI-compatible services that mirror `/v1/models` (e.g. OpenRouter). `ModelInfo(ctx, model)` returns `ModelInfo{Name: model}` without a network call.
+
+### Fixed
+
+**Retry (`goagent`)**
+- `RetryProvider` now preserves the `ModelCatalog` capability of the wrapped provider, so consumers can still discover models via a `provider.(goagent.ModelCatalog)` type assertion after wrapping. All four capability combinations `{plain, stream-only, catalog-only, stream+catalog}` are handled; `Models`/`ModelInfo` are delegated to the inner provider unchanged, and providers that implement both `StreamingProvider` and `ModelCatalog` (e.g. Ollama) keep both. Previously the wrapper dropped `ModelCatalog`, breaking model discovery whenever retry was enabled (the default `RetryPolicy{}` always wraps).
+
 ### Changed
 
 **OpenAI provider streaming (`goagent/providers/openai`)**

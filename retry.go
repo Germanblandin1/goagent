@@ -77,19 +77,38 @@ type retryProvider struct {
 // while waiting, the wait returns immediately with ctx.Err().
 //
 // Optional interfaces are preserved: when inner also implements
-// StreamingProvider, the returned wrapper implements it too, so wrapping a
-// streaming provider with RetryProvider does not disable streaming. See
-// retryStreamProvider for the streaming retry semantics.
+// StreamingProvider and/or ModelCatalog, the returned wrapper implements the
+// same set, so wrapping a provider with RetryProvider does not disable
+// streaming or model discovery. All four combinations {plain, stream-only,
+// catalog-only, stream+catalog} are handled. See retryStreamProvider for the
+// streaming retry semantics; ModelCatalog methods are delegated to inner
+// unchanged (they carry no retry logic).
 func RetryProvider(inner Provider, policy RetryPolicy) Provider {
 	p := policy.defaults()
 	if p.MaxAttempts <= 1 {
 		return inner
 	}
 	rp := &retryProvider{inner: inner, policy: p}
-	if _, ok := inner.(StreamingProvider); ok {
+
+	_, isStream := inner.(StreamingProvider)
+	cat, isCatalog := inner.(ModelCatalog)
+
+	switch {
+	case isStream && isCatalog:
+		return &retryStreamCatalogProvider{
+			retryStreamProvider: &retryStreamProvider{retryProvider: rp},
+			catalogDelegate:     catalogDelegate{cat: cat},
+		}
+	case isStream:
 		return &retryStreamProvider{retryProvider: rp}
+	case isCatalog:
+		return &retryCatalogProvider{
+			retryProvider:   rp,
+			catalogDelegate: catalogDelegate{cat: cat},
+		}
+	default:
+		return rp
 	}
-	return rp
 }
 
 func (r *retryProvider) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
@@ -160,6 +179,43 @@ func (r *retryStreamProvider) CompleteStream(ctx context.Context, req Completion
 	}
 
 	return nil, lastErr
+}
+
+// catalogDelegate forwards ModelCatalog calls to a wrapped provider unchanged.
+// Model discovery carries no retry logic: it is a cheap, idempotent lookup, so
+// RetryProvider delegates Models/ModelInfo directly to inner. Embedding this in
+// the retry wrappers lets both the stream+catalog and catalog-only variants
+// share one implementation.
+type catalogDelegate struct {
+	cat ModelCatalog
+}
+
+// Models implements goagent.ModelCatalog by delegating to the wrapped provider.
+func (c catalogDelegate) Models(ctx context.Context) ([]ModelInfo, error) {
+	return c.cat.Models(ctx)
+}
+
+// ModelInfo implements goagent.ModelCatalog by delegating to the wrapped provider.
+func (c catalogDelegate) ModelInfo(ctx context.Context, model string) (ModelInfo, error) {
+	return c.cat.ModelInfo(ctx, model)
+}
+
+// retryCatalogProvider preserves the ModelCatalog capability of a non-streaming
+// inner provider. It embeds *retryProvider for Complete (with retry) and
+// catalogDelegate for Models/ModelInfo (delegated). The constructor only builds
+// it when inner implements ModelCatalog but not StreamingProvider.
+type retryCatalogProvider struct {
+	*retryProvider
+	catalogDelegate
+}
+
+// retryStreamCatalogProvider preserves both StreamingProvider and ModelCatalog
+// when inner implements both (e.g. the Ollama provider). It embeds
+// *retryStreamProvider for Complete and CompleteStream (both with retry) and
+// catalogDelegate for Models/ModelInfo (delegated).
+type retryStreamCatalogProvider struct {
+	*retryStreamProvider
+	catalogDelegate
 }
 
 // retryTool wraps a Tool with retry logic.
