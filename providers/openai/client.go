@@ -3,14 +3,31 @@ package openai
 import (
 	"net/http"
 	"os"
+	"sync"
 
 	openaiSDK "github.com/sashabaranov/go-openai"
+
+	"github.com/Germanblandin1/goagent"
 )
 
 // Provider implements goagent.Provider and goagent.StreamingProvider using
 // the OpenAI Chat Completions API.
 type Provider struct {
 	client *openaiSDK.Client
+
+	// baseURL, apiKey and httpClient are retained so the model catalog can issue
+	// a raw GET {baseURL}/models: the go-openai SDK decodes the listing into its
+	// vanilla Model type and discards the rich metadata (pricing, context
+	// length, supported parameters) that OpenAI-compatible endpoints such as
+	// OpenRouter return. See catalog.go.
+	baseURL    string
+	apiKey     string
+	httpClient *http.Client
+
+	// modelCache holds the metadata-rich catalog once fetched, so ModelInfo can
+	// resolve a single model without another network round trip.
+	modelCache []goagent.ModelInfo
+	cacheMu    sync.RWMutex
 }
 
 // providerConfig accumulates options before building the openai.Client.
@@ -60,11 +77,16 @@ func New(opts ...ProviderOption) *Provider {
 	if cfg.baseURL != "" {
 		sdkCfg.BaseURL = cfg.baseURL
 	}
-	if cfg.httpClient != nil {
-		sdkCfg.HTTPClient = cfg.httpClient
+	httpClient := cfg.httpClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
 	}
+	sdkCfg.HTTPClient = httpClient
 
 	return &Provider{
-		client: openaiSDK.NewClientWithConfig(sdkCfg),
+		client:     openaiSDK.NewClientWithConfig(sdkCfg),
+		baseURL:    sdkCfg.BaseURL,
+		apiKey:     apiKey,
+		httpClient: httpClient,
 	}
 }

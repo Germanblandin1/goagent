@@ -9,8 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+**Model metadata (`goagent`)**
+- `ModelInfo` gained best-effort metadata fields, all additive and backward-compatible (zero value means "unknown"): `DisplayName string`, `ContextLength int` (context window in tokens), `MaxOutputTokens int`, and `Pricing *Pricing`. Each provider fills what it can report and leaves the rest at its zero value; consumers degrade rather than treat 0 as a real limit.
+- `Pricing` — new type describing model cost normalized to USD per one million tokens (`InputPerMTok`, `OutputPerMTok`, `RequestUSD`, `Currency`), so a consumer can compute `cost = usage × pricing` against a usage ledger without per-provider unit conversion.
+- `ModelInfo.IsFree() bool` — reports whether a model is known to be free (`Pricing` non-nil and all amounts zero). Returns false when `Pricing` is nil, keeping "unknown" distinct from a factual zero so a ledger never books a false zero.
+
 **OpenAI provider model catalog (`goagent/providers/openai`)**
-- `Provider` now implements `goagent.ModelCatalog`. `Models(ctx)` lists the models exposed by the configured endpoint via `GET /models` (each `ModelInfo` carries `Name`; `Capabilities` is left empty, as the listing does not report them). Works for OpenAI and OpenAI-compatible services that mirror `/v1/models` (e.g. OpenRouter). `ModelInfo(ctx, model)` returns `ModelInfo{Name: model}` without a network call.
+- `Provider` implements `goagent.ModelCatalog`. `Models(ctx)` lists the models exposed by the configured endpoint via `GET {baseURL}/models`, decoding the raw payload (rather than the SDK's vanilla `Model`, which discards everything but the id) so metadata is preserved. For OpenAI-compatible endpoints like OpenRouter the listing already carries `context_length`, `pricing`, `top_provider.max_completion_tokens`, `supported_parameters` and `architecture.input_modalities`, so each `ModelInfo` is fully populated (including `Pricing` and `Capabilities`: `tools`→`CapabilityTools`, `reasoning`→`CapabilityThinking`, image modality→`CapabilityVision`) in a single call. For the official OpenAI API, which reports only ids, the extra fields stay empty/nil and callers degrade.
+- `ModelInfo(ctx, model)` resolves a single model from the cached listing (fetching it on first use) and returns `ModelInfo{Name: model}` when the id is absent.
 
 ### Fixed
 
