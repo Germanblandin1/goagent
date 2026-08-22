@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+**OpenAI provider streaming (`goagent/providers/openai`)**
+- `CompleteStream` now surfaces reasoning from OpenAI-compatible upstreams as `StreamEventThinking`, covering both field conventions: DeepSeek's `reasoning_content` and OpenRouter's `reasoning`. The official OpenAI API exposes neither, so its streams still emit no thinking events. Reasoning tokens are kept separate from the final text (routed to `OnThinkingText`), matching the Ollama provider.
+- Streaming now requests `stream_options.include_usage` and maps the final usage-only chunk onto `StreamEventDone.Usage` (`InputTokens`/`OutputTokens`), aligned with the non-streaming `Complete`. Previously `StreamEventDone.Usage` was always zero.
+
 ## [0.8.0] - 2026-08-22
 
 ### Added

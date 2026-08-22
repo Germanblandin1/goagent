@@ -38,8 +38,17 @@
 //
 // The provider implements [goagent.StreamingProvider]: [Provider.CompleteStream]
 // delivers text tokens over SSE as they arrive and translates tool calls to the
-// shared stream events. The OpenAI API does not expose reasoning in the response,
-// so no [goagent.StreamEventThinking] events are emitted.
+// shared stream events.
+//
+// When the upstream is an OpenAI-compatible API that surfaces reasoning, those
+// tokens are delivered as [goagent.StreamEventThinking] events, kept separate
+// from the final text. Two conventions are supported: DeepSeek's
+// reasoning_content and OpenRouter's reasoning field. The official OpenAI API
+// exposes neither, so it emits no thinking events.
+//
+// Streaming requests set stream_options.include_usage, so the terminal
+// StreamEventDone reports prompt and completion tokens as [goagent.Usage]
+// (InputTokens/OutputTokens), matching the non-streaming [Provider.Complete].
 //
 // # Retry classification
 //
@@ -52,8 +61,10 @@
 //
 //   - Document content ([goagent.ContentDocument]) is not supported.
 //     Sending a message with document blocks returns [*goagent.UnsupportedContentError].
-//   - [goagent.ThinkingConfig] is ignored — the OpenAI API does not expose
-//     thinking/reasoning in the response.
+//   - [goagent.ThinkingConfig] on the request is ignored — reasoning is
+//     controlled via [goagent.CompletionRequest.Effort] (reasoning_effort), not
+//     a thinking budget. Reasoning that an OpenAI-compatible upstream returns is
+//     still surfaced in streaming (see Streaming above).
 //   - For o-series models, the correct field is MaxCompletionTokens, but this
 //     provider uses MaxTokens for now. This will be addressed in a future option.
 package openai
