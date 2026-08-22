@@ -62,7 +62,7 @@ func (p *Provider) Complete(ctx context.Context, req goagent.CompletionRequest) 
 
 	resp, err := p.client.CreateChatCompletion(ctx, chatReq)
 	if err != nil {
-		return goagent.CompletionResponse{}, fmt.Errorf("openai completion: %w", err)
+		return goagent.CompletionResponse{}, fmt.Errorf("openai completion: %w", classifyError(err))
 	}
 
 	return toGoAgentResponse(resp)

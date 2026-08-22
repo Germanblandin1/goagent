@@ -48,6 +48,27 @@ func (s *anthropicStream) Next(_ context.Context) bool {
 				}
 				return true
 
+			case sdk.ThinkingDelta:
+				// Extended-thinking reasoning token. Emit it as StreamEventThinking
+				// so the agent routes it to OnThinkingText without mixing it into
+				// the final response text — mirroring the Ollama provider.
+				s.current = goagent.StreamEvent{
+					Type: goagent.StreamEventThinking,
+					Text: delta.Thinking,
+				}
+				return true
+
+			case sdk.SignatureDelta:
+				// Opaque signature that seals the thinking block. It carries no
+				// reasoning text; emit it on the Signature field so RunStream can
+				// rebuild a signed ContentThinking block and echo it back in a
+				// later turn (required by the API when thinking + tools are used).
+				s.current = goagent.StreamEvent{
+					Type:      goagent.StreamEventThinking,
+					Signature: delta.Signature,
+				}
+				return true
+
 			case sdk.InputJSONDelta:
 				if acc, ok := s.toolAccumulators[int(ev.Index)]; ok {
 					acc.input.WriteString(delta.PartialJSON)
@@ -111,7 +132,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req goagent.CompletionReq
 	return &anthropicStream{
 		nextFn:    func() bool { return inner.Next() },
 		currentFn: func() any { return inner.Current().AsAny() },
-		errFn:     func() error { return inner.Err() },
+		errFn:     func() error { return classifyError(inner.Err()) },
 		closeFn:   func() error { return inner.Close() },
 	}, nil
 }

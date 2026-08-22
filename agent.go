@@ -736,7 +736,7 @@ func (a *Agent) runStream(ctx context.Context, content []ContentBlock, handler S
 				fn(rctx.hook, i)
 			}
 
-			text, toolCalls, usage, stopReason, serr := a.completeWithStream(rctx, sp, req, handler, streamOpts)
+			text, toolCalls, usage, stopReason, thinking, serr := a.completeWithStream(rctx, sp, req, handler, streamOpts)
 			provDuration := time.Since(provStart)
 
 			if serr != nil {
@@ -778,6 +778,13 @@ func (a *Agent) runStream(ctx context.Context, content []ContentBlock, handler S
 				Role:      RoleAssistant,
 				Content:   []ContentBlock{},
 				ToolCalls: toolCalls,
+			}
+			// The thinking block must precede the text so the assistant turn can
+			// be echoed back to providers that require it (Anthropic, when
+			// thinking + tools are combined). Providers that do not sign reasoning
+			// yield an unsigned block that their own request conversion ignores.
+			if thinking.Thinking != "" {
+				assistantMsg.Content = append(assistantMsg.Content, ThinkingBlock(thinking.Thinking, thinking.Signature))
 			}
 			if text != "" {
 				assistantMsg.Content = append(assistantMsg.Content, TextBlock(text))
@@ -947,14 +954,16 @@ func (a *Agent) completeWithStream(
 	req CompletionRequest,
 	handler StreamHandler,
 	opts StreamOptions,
-) (text string, toolCalls []ToolCall, usage Usage, stopReason StopReason, err error) {
+) (text string, toolCalls []ToolCall, usage Usage, stopReason StopReason, thinking ThinkingData, err error) {
 	stream, err := sp.CompleteStream(rctx.io, req)
 	if err != nil {
-		return "", nil, Usage{}, StopReasonEndTurn, err
+		return "", nil, Usage{}, StopReasonEndTurn, ThinkingData{}, err
 	}
 	defer stream.Close()
 
 	var textBuf strings.Builder
+	var thinkingBuf strings.Builder
+	var thinkingSig string
 	var toolBuf map[string]*streamToolAccumulator
 	var hasTools bool
 
@@ -979,7 +988,7 @@ func (a *Agent) completeWithStream(
 				if opts.showThinkingText {
 					if handler != nil {
 						if herr := handler(ev); herr != nil {
-							return "", nil, Usage{}, StopReasonEndTurn, herr
+							return "", nil, Usage{}, StopReasonEndTurn, ThinkingData{}, herr
 						}
 					}
 					if fn := a.opts.hooks.OnThinkingText; fn != nil {
@@ -992,7 +1001,7 @@ func (a *Agent) completeWithStream(
 			// Final response in progress — emit immediately, not at end.
 			if handler != nil {
 				if herr := handler(ev); herr != nil {
-					return "", nil, Usage{}, StopReasonEndTurn, herr
+					return "", nil, Usage{}, StopReasonEndTurn, ThinkingData{}, herr
 				}
 			}
 			if fn := a.opts.hooks.OnStreamToken; fn != nil {
@@ -1000,16 +1009,27 @@ func (a *Agent) completeWithStream(
 			}
 
 		case StreamEventThinking:
-			// Native reasoning token (e.g. Ollama's message.thinking). It is
-			// delivered to the thinking handler/hook but never written to
-			// textBuf and never flips hasTools — so it cannot contaminate the
-			// final response text or the tool-call heuristic. Unlike the
-			// StreamEventText path, this does not depend on a preceding
+			// Native reasoning token (e.g. Ollama's message.thinking or
+			// Anthropic's thinking_delta). It is accumulated so RunStream can
+			// rebuild a ContentThinking block for the assistant turn, but it is
+			// never written to textBuf and never flips hasTools — so it cannot
+			// contaminate the final response text or the tool-call heuristic.
+			// A signature-only event (Signature set, Text empty) carries the seal
+			// for the reasoning block and is captured without display.
+			if ev.Signature != "" {
+				thinkingSig = ev.Signature
+			}
+			if ev.Text == "" {
+				continue
+			}
+			thinkingBuf.WriteString(ev.Text)
+
+			// Unlike the StreamEventText path, this does not depend on a preceding
 			// StreamEventToolStart to be recognised as thinking.
 			if opts.showThinkingText {
 				if handler != nil {
 					if herr := handler(ev); herr != nil {
-						return "", nil, Usage{}, StopReasonEndTurn, herr
+						return "", nil, Usage{}, StopReasonEndTurn, ThinkingData{}, herr
 					}
 				}
 				if fn := a.opts.hooks.OnThinkingText; fn != nil {
@@ -1029,7 +1049,7 @@ func (a *Agent) completeWithStream(
 	}
 
 	if serr := stream.Err(); serr != nil {
-		return "", nil, Usage{}, StopReasonEndTurn, serr
+		return "", nil, Usage{}, StopReasonEndTurn, ThinkingData{}, serr
 	}
 
 	for _, acc := range toolBuf {
@@ -1044,7 +1064,7 @@ func (a *Agent) completeWithStream(
 		})
 	}
 
-	return textBuf.String(), toolCalls, usage, stopReason, nil
+	return textBuf.String(), toolCalls, usage, stopReason, ThinkingData{Thinking: thinkingBuf.String(), Signature: thinkingSig}, nil
 }
 
 type streamToolAccumulator struct {
