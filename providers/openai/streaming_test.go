@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Germanblandin1/goagent"
@@ -124,6 +125,170 @@ func TestCompleteStream_TextTokens(t *testing.T) {
 	}
 	if doneEvent.StopReason != goagent.StopReasonEndTurn {
 		t.Errorf("Done.StopReason = %v, want EndTurn", doneEvent.StopReason)
+	}
+}
+
+// reasoningContentChunk builds a DeepSeek-style delta carrying reasoning_content.
+func reasoningContentChunk(text string) string {
+	return fmt.Sprintf(`{"choices":[{"delta":{"reasoning_content":%q},"finish_reason":null,"index":0}]}`, text)
+}
+
+// reasoningChunk builds an OpenRouter-style delta carrying reasoning (a field the
+// go-openai SDK delta struct does not model).
+func reasoningChunk(text string) string {
+	return fmt.Sprintf(`{"choices":[{"delta":{"reasoning":%q},"finish_reason":null,"index":0}]}`, text)
+}
+
+// usageChunk builds a final usage-only chunk (choices empty), as sent when
+// stream_options.include_usage is set.
+func usageChunk(prompt, completion int) string {
+	return fmt.Sprintf(`{"choices":[],"usage":{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d}}`,
+		prompt, completion, prompt+completion)
+}
+
+func collectStream(t *testing.T, p *openai.Provider, req goagent.CompletionRequest) []goagent.StreamEvent {
+	t.Helper()
+	stream, err := p.CompleteStream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("CompleteStream error: %v", err)
+	}
+	defer stream.Close()
+
+	var collected []goagent.StreamEvent
+	for stream.Next(context.Background()) {
+		collected = append(collected, stream.Event())
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	return collected
+}
+
+func TestCompleteStream_ReasoningContent_DeepSeek(t *testing.T) {
+	t.Parallel()
+
+	events := []string{
+		reasoningContentChunk("let me "),
+		reasoningContentChunk("think"),
+		textChunk("the answer"),
+		finishChunk("stop"),
+	}
+	p := newStreamProvider(t, sseServer(t, events))
+	collected := collectStream(t, p, goagent.CompletionRequest{Model: "deepseek-reasoner"})
+
+	var thinking, text []string
+	for _, ev := range collected {
+		switch ev.Type {
+		case goagent.StreamEventThinking:
+			thinking = append(thinking, ev.Text)
+		case goagent.StreamEventText:
+			text = append(text, ev.Text)
+		}
+	}
+	if got := strings.Join(thinking, ""); got != "let me think" {
+		t.Errorf("thinking = %q, want %q", got, "let me think")
+	}
+	if got := strings.Join(text, ""); got != "the answer" {
+		t.Errorf("text = %q, want %q", got, "the answer")
+	}
+}
+
+func TestCompleteStream_Reasoning_OpenRouter(t *testing.T) {
+	t.Parallel()
+
+	events := []string{
+		reasoningChunk("hmm "),
+		reasoningChunk("ok"),
+		textChunk("done"),
+		finishChunk("stop"),
+	}
+	p := newStreamProvider(t, sseServer(t, events))
+	collected := collectStream(t, p, goagent.CompletionRequest{Model: "deepseek/deepseek-r1"})
+
+	var thinking, text []string
+	for _, ev := range collected {
+		switch ev.Type {
+		case goagent.StreamEventThinking:
+			thinking = append(thinking, ev.Text)
+		case goagent.StreamEventText:
+			text = append(text, ev.Text)
+		}
+	}
+	if got := strings.Join(thinking, ""); got != "hmm ok" {
+		t.Errorf("thinking = %q, want %q", got, "hmm ok")
+	}
+	if got := strings.Join(text, ""); got != "done" {
+		t.Errorf("text = %q, want %q", got, "done")
+	}
+}
+
+// TestCompleteStream_NoReasoning_OfficialOpenAI verifies that a plain OpenAI
+// stream (no reasoning fields) emits no StreamEventThinking events.
+func TestCompleteStream_NoReasoning_OfficialOpenAI(t *testing.T) {
+	t.Parallel()
+
+	events := []string{
+		textChunk("Hello"),
+		finishChunk("stop"),
+	}
+	p := newStreamProvider(t, sseServer(t, events))
+	collected := collectStream(t, p, goagent.CompletionRequest{Model: "gpt-4o"})
+
+	for _, ev := range collected {
+		if ev.Type == goagent.StreamEventThinking {
+			t.Fatalf("unexpected StreamEventThinking for official OpenAI stream: %+v", ev)
+		}
+	}
+}
+
+// TestCompleteStream_UsagePopulatesDone verifies the usage-only chunk fills the
+// terminal Done event's Usage, matching the non-streaming Complete mapping.
+func TestCompleteStream_UsagePopulatesDone(t *testing.T) {
+	t.Parallel()
+
+	events := []string{
+		textChunk("hi"),
+		finishChunk("stop"),
+		usageChunk(11, 7),
+	}
+	p := newStreamProvider(t, sseServer(t, events))
+	collected := collectStream(t, p, goagent.CompletionRequest{Model: "gpt-4o"})
+
+	var done *goagent.StreamEvent
+	for i := range collected {
+		if collected[i].Type == goagent.StreamEventDone {
+			done = &collected[i]
+		}
+	}
+	if done == nil {
+		t.Fatal("no Done event received")
+	}
+	if done.Usage.InputTokens != 11 {
+		t.Errorf("Usage.InputTokens = %d, want 11", done.Usage.InputTokens)
+	}
+	if done.Usage.OutputTokens != 7 {
+		t.Errorf("Usage.OutputTokens = %d, want 7", done.Usage.OutputTokens)
+	}
+	if done.StopReason != goagent.StopReasonEndTurn {
+		t.Errorf("Done.StopReason = %v, want EndTurn", done.StopReason)
+	}
+}
+
+// TestCompleteStream_IncludeUsageRequested verifies the request opts into usage.
+func TestCompleteStream_IncludeUsageRequested(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	srv := capturingSSEServer(t, []string{finishChunk("stop"), usageChunk(1, 1)}, &captured)
+	p := newStreamProvider(t, srv)
+	collectStream(t, p, goagent.CompletionRequest{Model: "gpt-4o"})
+
+	opts, ok := captured["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("stream_options missing from request body: %v", captured)
+	}
+	if inc, _ := opts["include_usage"].(bool); !inc {
+		t.Errorf("include_usage = %v, want true", opts["include_usage"])
 	}
 }
 

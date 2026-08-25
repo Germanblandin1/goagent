@@ -15,6 +15,7 @@ import (
 var (
 	_ goagent.Provider          = (*Provider)(nil)
 	_ goagent.StreamingProvider = (*Provider)(nil)
+	_ goagent.ModelCatalog      = (*Provider)(nil)
 )
 
 // Complete implements goagent.Provider.
@@ -24,7 +25,9 @@ var (
 // If req.Effort is non-empty ("low", "medium", "high"), it is forwarded as
 // reasoning_effort to support o-series reasoning models.
 //
-// req.Thinking is ignored — the OpenAI API does not expose thinking blocks.
+// req.Thinking is ignored; use req.Effort to drive reasoning models. This
+// non-streaming path does not surface reasoning content as thinking blocks —
+// streaming (CompleteStream) does, for OpenAI-compatible upstreams that return it.
 //
 // If any message contains ContentDocument blocks, Complete returns an
 // *goagent.UnsupportedContentError.

@@ -260,6 +260,97 @@ func (p *flakyStreamProvider) callCount() int {
 	return p.calls
 }
 
+// catalogModels is the fixed model list returned by the catalog mocks below.
+var catalogModels = []goagent.ModelInfo{{Name: "model-a"}, {Name: "model-b"}}
+
+// streamCatalogProvider implements Provider, StreamingProvider and ModelCatalog
+// at once, mirroring providers like Ollama. It is used to verify RetryProvider
+// preserves both optional capabilities simultaneously.
+type streamCatalogProvider struct {
+	*testutil.MockStreamingProvider
+}
+
+func (p *streamCatalogProvider) Models(context.Context) ([]goagent.ModelInfo, error) {
+	return catalogModels, nil
+}
+
+func (p *streamCatalogProvider) ModelInfo(_ context.Context, model string) (goagent.ModelInfo, error) {
+	return goagent.ModelInfo{Name: model}, nil
+}
+
+// catalogOnlyProvider implements Provider and ModelCatalog but NOT
+// StreamingProvider, exercising the catalog-only wrapper branch.
+type catalogOnlyProvider struct {
+	*testutil.MockProvider
+}
+
+func (p *catalogOnlyProvider) Models(context.Context) ([]goagent.ModelInfo, error) {
+	return catalogModels, nil
+}
+
+func (p *catalogOnlyProvider) ModelInfo(_ context.Context, model string) (goagent.ModelInfo, error) {
+	return goagent.ModelInfo{Name: model}, nil
+}
+
+// TestRetryProvider_PreservesStreamAndCatalog is the regression test for the bug
+// where wrapping a provider that implements both StreamingProvider and
+// ModelCatalog dropped the catalog capability: the returned wrapper must satisfy
+// both interfaces at once, and Models must delegate to the inner provider.
+func TestRetryProvider_PreservesStreamAndCatalog(t *testing.T) {
+	t.Parallel()
+
+	inner := &streamCatalogProvider{MockStreamingProvider: testutil.NewMockStreamingProvider(nil)}
+	provider := goagent.RetryProvider(inner, goagent.RetryPolicy{
+		MaxAttempts:  3,
+		InitialDelay: time.Millisecond,
+	})
+
+	if _, ok := provider.(goagent.StreamingProvider); !ok {
+		t.Error("wrapper must implement StreamingProvider")
+	}
+	cat, ok := provider.(goagent.ModelCatalog)
+	if !ok {
+		t.Fatal("wrapper must implement ModelCatalog")
+	}
+
+	models, err := cat.Models(context.Background())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if len(models) != len(catalogModels) || models[0].Name != "model-a" {
+		t.Errorf("Models = %v, want delegation to inner (%v)", models, catalogModels)
+	}
+}
+
+// TestRetryProvider_PreservesCatalogWithoutStreaming covers the catalog-only
+// branch: an inner that implements ModelCatalog but not StreamingProvider must
+// keep the catalog and must NOT gain a fabricated streaming capability.
+func TestRetryProvider_PreservesCatalogWithoutStreaming(t *testing.T) {
+	t.Parallel()
+
+	inner := &catalogOnlyProvider{MockProvider: testutil.NewMockProvider(endTurnResp("ok"))}
+	provider := goagent.RetryProvider(inner, goagent.RetryPolicy{
+		MaxAttempts:  3,
+		InitialDelay: time.Millisecond,
+	})
+
+	if _, ok := provider.(goagent.StreamingProvider); ok {
+		t.Error("catalog-only inner must not gain StreamingProvider")
+	}
+	cat, ok := provider.(goagent.ModelCatalog)
+	if !ok {
+		t.Fatal("wrapper must implement ModelCatalog")
+	}
+
+	models, err := cat.Models(context.Background())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if len(models) != len(catalogModels) {
+		t.Errorf("Models len = %d, want %d", len(models), len(catalogModels))
+	}
+}
+
 // TestRetryProvider_PreservesStreamingCapability is the regression test for the
 // bug where wrapping a StreamingProvider disabled streaming: the returned
 // wrapper must still satisfy StreamingProvider so Agent.RunStream detects it.

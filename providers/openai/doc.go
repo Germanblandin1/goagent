@@ -38,8 +38,43 @@
 //
 // The provider implements [goagent.StreamingProvider]: [Provider.CompleteStream]
 // delivers text tokens over SSE as they arrive and translates tool calls to the
-// shared stream events. The OpenAI API does not expose reasoning in the response,
-// so no [goagent.StreamEventThinking] events are emitted.
+// shared stream events.
+//
+// When the upstream is an OpenAI-compatible API that surfaces reasoning, those
+// tokens are delivered as [goagent.StreamEventThinking] events, kept separate
+// from the final text. Two conventions are supported: DeepSeek's
+// reasoning_content and OpenRouter's reasoning field. The official OpenAI API
+// exposes neither, so it emits no thinking events.
+//
+// Streaming requests set stream_options.include_usage, so the terminal
+// StreamEventDone reports prompt and completion tokens as [goagent.Usage]
+// (InputTokens/OutputTokens), matching the non-streaming [Provider.Complete].
+//
+// # Model catalog
+//
+// The provider implements [goagent.ModelCatalog]: [Provider.Models] and
+// [Provider.ModelInfo] list the models exposed by the configured endpoint via
+// GET {baseURL}/models, and enrich each [goagent.ModelInfo] with best-effort
+// metadata (DisplayName, ContextLength, MaxOutputTokens, Pricing, Capabilities).
+//
+// Note on portability: the /models envelope ({"data": [...]}) is shared across
+// OpenAI-compatible backends, but the rich metadata is NOT part of the OpenAI
+// standard — the fields decoded here (context_length, pricing, top_provider,
+// supported_parameters, architecture.input_modalities) follow OpenRouter's
+// listing convention. Consequently:
+//
+//   - Against OpenRouter, every ModelInfo is fully populated in a single call.
+//   - Against the official OpenAI API, which reports only model ids, the extra
+//     fields stay empty/nil ("unknown") and callers degrade — pricing and
+//     capabilities cannot be discovered from OpenAI's /models at all.
+//   - Against other OpenAI-compatible backends, whatever fields match this
+//     convention are filled; the rest degrade to Name only.
+//
+// The capability mapping (supported_parameters "tools"->CapabilityTools,
+// "reasoning"->CapabilityThinking, and an "image" input modality->CapabilityVision)
+// likewise reflects OpenRouter's semantics, not an OpenAI-wide contract. If a
+// future backend reports metadata under a different schema, it may warrant a
+// dedicated provider rather than extending this decoder.
 //
 // # Retry classification
 //
@@ -52,8 +87,10 @@
 //
 //   - Document content ([goagent.ContentDocument]) is not supported.
 //     Sending a message with document blocks returns [*goagent.UnsupportedContentError].
-//   - [goagent.ThinkingConfig] is ignored — the OpenAI API does not expose
-//     thinking/reasoning in the response.
+//   - [goagent.ThinkingConfig] on the request is ignored — reasoning is
+//     controlled via [goagent.CompletionRequest.Effort] (reasoning_effort), not
+//     a thinking budget. Reasoning that an OpenAI-compatible upstream returns is
+//     still surfaced in streaming (see Streaming above).
 //   - For o-series models, the correct field is MaxCompletionTokens, but this
 //     provider uses MaxTokens for now. This will be addressed in a future option.
 package openai

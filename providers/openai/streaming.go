@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -10,6 +11,37 @@ import (
 
 	"github.com/Germanblandin1/goagent"
 )
+
+// openaiStreamChunk is a streaming SSE chunk decoded directly from the raw
+// bytes (via ChatCompletionStream.RecvRaw) instead of the SDK's typed
+// ChatCompletionStreamResponse. Decoding it ourselves lets us read reasoning
+// fields the SDK's delta struct omits: OpenAI-compatible upstreams surface
+// reasoning under two different conventions, and only one is modelled by the SDK.
+//
+//   - reasoning_content — DeepSeek (direct). The SDK also exposes this as
+//     ChatCompletionStreamChoiceDelta.ReasoningContent.
+//   - reasoning (with optional reasoning_details) — OpenRouter. The SDK delta
+//     has no such field, so Recv() would silently drop it. The text lives in the
+//     plain reasoning string; reasoning_details is a redundant structured mirror
+//     we do not need.
+//
+// The official OpenAI API sends neither field, so its chunks produce no thinking
+// events and behaviour there is unchanged.
+type openaiStreamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content          string               `json:"content"`
+			ReasoningContent string               `json:"reasoning_content"`
+			Reasoning        string               `json:"reasoning"`
+			ToolCalls        []openaiSDK.ToolCall `json:"tool_calls"`
+		} `json:"delta"`
+		FinishReason openaiSDK.FinishReason `json:"finish_reason"`
+		Index        int                    `json:"index"`
+	} `json:"choices"`
+	// Usage is present only on the final chunk when the request sets
+	// stream_options.include_usage; it is null on every other chunk.
+	Usage *openaiSDK.Usage `json:"usage"`
+}
 
 // openaiToolAcc accumulates a single tool call across multiple stream deltas.
 // OpenAI sends ID and Name only in the first delta for a given index; subsequent
@@ -27,8 +59,13 @@ type openaiStream struct {
 	current       goagent.StreamEvent
 	toolAccs      map[int]*openaiToolAcc
 	pendingEvents []goagent.StreamEvent
-	done          bool
-	err           error
+	// stopReason and usage are captured as their chunks arrive and folded into
+	// the single StreamEventDone emitted at EOF. The finish_reason chunk arrives
+	// before the usage-only chunk, so Done must be deferred until both are seen.
+	stopReason goagent.StopReason
+	usage      goagent.Usage
+	done       bool
+	err        error
 }
 
 // Next advances to the next StreamEvent. Returns false when the stream is
@@ -49,12 +86,15 @@ func (s *openaiStream) Next(_ context.Context) bool {
 	}
 
 	for {
-		chunk, err := s.inner.Recv()
+		raw, err := s.inner.RecvRaw()
 		if err == io.EOF {
 			if !s.done {
+				// finish_reason and usage arrived in earlier chunks; emit the
+				// single terminal Done now carrying both.
 				s.current = goagent.StreamEvent{
 					Type:       goagent.StreamEventDone,
-					StopReason: goagent.StopReasonEndTurn,
+					StopReason: s.stopReason,
+					Usage:      s.usage,
 				}
 				s.done = true
 				return true
@@ -66,9 +106,24 @@ func (s *openaiStream) Next(_ context.Context) bool {
 			return false
 		}
 
+		var chunk openaiStreamChunk
+		if err := json.Unmarshal(raw, &chunk); err != nil {
+			s.err = fmt.Errorf("openai: decoding stream chunk: %w", err)
+			return false
+		}
+
+		// Usage arrives on a dedicated final chunk (include_usage). Capture it
+		// for the deferred Done event; align field mapping with Complete.
+		if chunk.Usage != nil {
+			s.usage = goagent.Usage{
+				InputTokens:  chunk.Usage.PromptTokens,
+				OutputTokens: chunk.Usage.CompletionTokens,
+			}
+		}
+
 		if len(chunk.Choices) == 0 {
-			// Usage-only chunk — StreamEventDone was already emitted from the
-			// finish_reason chunk, so we skip this.
+			// Usage-only or keep-alive chunk with no choice payload. Done is
+			// deferred to EOF so it can carry the usage captured above.
 			continue
 		}
 
@@ -126,6 +181,24 @@ func (s *openaiStream) Next(_ context.Context) bool {
 			}
 		}
 
+		// Handle reasoning tokens. DeepSeek uses reasoning_content, OpenRouter
+		// uses reasoning; upstreams send one or the other, never both. Emit them
+		// as StreamEventThinking (like Ollama's thinking field) so the agent
+		// routes them to OnThinkingText without mixing them into the final text.
+		// Reasoning tokens arrive before content. Checked before Content: a chunk
+		// carries reasoning or content, not both.
+		reasoning := delta.ReasoningContent
+		if reasoning == "" {
+			reasoning = delta.Reasoning
+		}
+		if reasoning != "" {
+			s.current = goagent.StreamEvent{
+				Type: goagent.StreamEventThinking,
+				Text: reasoning,
+			}
+			return true
+		}
+
 		// Handle text delta.
 		if delta.Content != "" {
 			s.current = goagent.StreamEvent{
@@ -137,14 +210,10 @@ func (s *openaiStream) Next(_ context.Context) bool {
 
 		// Handle finish reason — FinishReasonNull ("null") must be ignored.
 		if choice.FinishReason != "" && choice.FinishReason != openaiSDK.FinishReasonNull {
-			// Usage is not reliably available here; it comes in a separate
-			// usage-only chunk after this one. StreamEventDone.Usage will be zero.
-			s.current = goagent.StreamEvent{
-				Type:       goagent.StreamEventDone,
-				StopReason: toStopReason(choice.FinishReason),
-			}
-			s.done = true
-			return true
+			// Capture the stop reason but defer Done to EOF: usage arrives in a
+			// separate usage-only chunk after this one, and Done must carry it.
+			s.stopReason = toStopReason(choice.FinishReason)
+			continue
 		}
 	}
 }
@@ -157,9 +226,15 @@ func (s *openaiStream) Close() error               { return s.inner.Close() }
 // Completions API with streaming enabled.
 //
 // Text tokens are delivered as StreamEventText events as they arrive.
-// Tool calls are translated to StreamEventToolStart + StreamEventToolDelta
-// events before StreamEventDone, so the agent loop handles them the same way
-// as other providers.
+// Reasoning tokens, when the upstream provides them (OpenAI-compatible APIs
+// such as DeepSeek via reasoning_content or OpenRouter via reasoning), are
+// delivered as StreamEventThinking events, keeping them separate from the final
+// text. The official OpenAI API does not surface reasoning, so no thinking
+// events are emitted there. Tool calls are translated to StreamEventToolStart +
+// StreamEventToolDelta events before StreamEventDone, so the agent loop handles
+// them the same way as other providers. The request sets
+// stream_options.include_usage, so the terminal StreamEventDone carries token
+// usage.
 func (p *Provider) CompleteStream(ctx context.Context, req goagent.CompletionRequest) (goagent.Stream, error) {
 	if req.Model == "" {
 		return nil, fmt.Errorf("openai: model not set; use goagent.WithModel")
@@ -195,5 +270,7 @@ func (p *Provider) CompleteStream(ctx context.Context, req goagent.CompletionReq
 		return nil, fmt.Errorf("openai: creating stream: %w", classifyError(err))
 	}
 
-	return &openaiStream{inner: inner}, nil
+	// stopReason defaults to end-turn: if a stream ends without a finish_reason
+	// chunk, Done still reports a sensible terminal reason.
+	return &openaiStream{inner: inner, stopReason: goagent.StopReasonEndTurn}, nil
 }
